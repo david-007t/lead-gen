@@ -392,6 +392,14 @@ export default function LeadQualifier() {
   const [indeedLinkedInMsg, setIndeedLinkedInMsg] = useState({});   // { [id]: { connectionNote, followUpDm } }
   const [generatingLinkedInMsg, setGeneratingLinkedInMsg] = useState(null);
 
+  // Ship List state
+  const [shipListResults, setShipListResults] = useState([]);
+  const [shipListLoading, setShipListLoading] = useState(false);
+  const [shipListError, setShipListError] = useState(null);
+  const [shipListCount, setShipListCount] = useState(15);
+  const [shipListCompanyType, setShipListCompanyType] = useState("all");
+  const [shipListCity, setShipListCity] = useState("San Francisco");
+
   const fileRef = useRef();
   const t = themes[theme];
   const ind = INDUSTRIES[industry] || INDUSTRIES.construction;
@@ -718,6 +726,123 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
       showToast("Failed to generate email", "error");
     }
     setDraftingEmail(null);
+  };
+
+  // ─── SHIP LIST SEARCH ────────────────────────────────────
+  const handleShipListSearch = async () => {
+    setShipListLoading(true);
+    setShipListError(null);
+    setShipListResults([]);
+
+    const cityFilter = shipListCity.trim() || "San Francisco, San Jose, Oakland, Palo Alto";
+    const typeFilter = shipListCompanyType === "saas"
+      ? "SaaS companies (Series B or later, or well-funded startups)"
+      : shipListCompanyType === "professional_services"
+      ? "established professional services firms (law, finance, consulting, recruiting)"
+      : "SaaS companies (Series B+) and established professional services firms";
+
+    const prompt = `You are a content agency researcher building a "Ship List" — a list of Bay Area companies that have a CONTENT GAP (underutilized or missing social video presence).
+
+TARGET CRITERIA:
+- Geography: ${cityFilter}
+- Company size: 100+ employees
+- Financial profile: ${typeFilter}
+- Content gap definition: NO YouTube channel, OR Instagram/TikTok with less than 1 post per month
+
+SEARCH PROCESS:
+Step 1: Search for well-funded / established companies in ${cityFilter} matching the profile above.
+Step 2: For each company found, search for their YouTube channel, Instagram, and TikTok presence. Look at posting frequency.
+Step 3: Keep ONLY companies with a content gap (missing YouTube, or Instagram/TikTok < 1 post/month).
+Step 4: Return up to ${shipListCount} qualifying companies.
+
+RESPOND WITH A JSON ARRAY ONLY. No markdown, no explanation. Each object:
+{
+  "companyName": "Acme Corp",
+  "website": "https://acmecorp.com",
+  "city": "San Francisco",
+  "employeeCount": "250-500",
+  "fundingStage": "Series C",
+  "estimatedRevenue": "$20M-50M ARR",
+  "companyType": "SaaS",
+  "youtube": "",
+  "instagram": "https://instagram.com/acmecorp",
+  "instagramPostsPerMonth": 0.5,
+  "tiktok": "",
+  "tiktokPostsPerMonth": 0,
+  "linkedIn": "https://linkedin.com/company/acmecorp",
+  "contentGap": ["No YouTube channel", "Instagram: 0.5 posts/month (below threshold)"]
+}
+
+Return ${shipListCount} companies. Only include companies WITH a content gap.`;
+
+    try {
+      const response = await fetch("/api/anthropic", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 8000,
+          system: "You are a business research assistant. Search the web for real companies. Respond with ONLY a raw JSON array. No markdown, no explanation — just [ ... ].",
+          messages: [{ role: "user", content: prompt }],
+          tools: [{ type: "web_search_20250305", name: "web_search" }],
+        }),
+      });
+      const data = await response.json();
+      if (data.error) { setShipListError(data.error.message || "API error."); setShipListLoading(false); return; }
+
+      const textParts = [];
+      (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
+      const fullText = textParts.join("\n");
+
+      let parsed = null;
+      const fenceMatch = fullText.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
+      if (fenceMatch) { try { parsed = JSON.parse(fenceMatch[1]); } catch {} }
+      if (!parsed) {
+        const allArrays = [...fullText.matchAll(/\[[\s\S]*?\](?=\s*$|\s*```|\s*\n\n)/g)];
+        for (let i = allArrays.length - 1; i >= 0; i--) {
+          try { const c = JSON.parse(allArrays[i][0]); if (Array.isArray(c) && c.length > 0 && c[0].companyName) { parsed = c; break; } } catch {}
+        }
+      }
+      if (!parsed) {
+        const greedyMatch = fullText.match(/\[\s*\{[\s\S]*\}\s*\]/);
+        if (greedyMatch) {
+          try { parsed = JSON.parse(greedyMatch[0]); } catch {
+            try { parsed = JSON.parse(greedyMatch[0].replace(/,\s*(?=[}\]])/g, '')); } catch {}
+          }
+        }
+      }
+
+      if (!parsed || !Array.isArray(parsed) || parsed.length === 0) {
+        setShipListError("No qualifying companies found. Try adjusting your filters.");
+        setShipListLoading(false);
+        return;
+      }
+
+      const results = parsed.map((r, i) => ({
+        id: Date.now() + i + Math.random(),
+        companyName: r.companyName || "Unknown Company",
+        website: r.website || "",
+        city: r.city || "",
+        employeeCount: r.employeeCount || "",
+        fundingStage: r.fundingStage || "",
+        estimatedRevenue: r.estimatedRevenue || "",
+        companyType: r.companyType || "",
+        youtube: r.youtube || "",
+        instagram: r.instagram || "",
+        instagramPostsPerMonth: r.instagramPostsPerMonth ?? 0,
+        tiktok: r.tiktok || "",
+        tiktokPostsPerMonth: r.tiktokPostsPerMonth ?? 0,
+        linkedIn: r.linkedIn || "",
+        contentGap: r.contentGap || [],
+      }));
+
+      setShipListResults(results);
+      showToast(`Found ${results.length} companies for the Ship List`);
+    } catch (err) {
+      console.error("Ship List search error:", err);
+      setShipListError("Search failed — please try again.");
+    }
+    setShipListLoading(false);
   };
 
   // ─── INDEED LEAD SEARCH ──────────────────────────────────
@@ -1595,7 +1720,7 @@ Respond with ONLY a JSON object:
         {/* Tabs */}
         <div style={{ borderBottom: `1px solid ${t.border}` }}>
           <div style={{ maxWidth: 1240, margin: "0 auto", padding: "0 32px", display: "flex", gap: 2, overflowX: "auto" }} className="tab-bar">
-            {[{ id: "indeed", label: "LeadGen" }, { id: "leads", label: "Pipeline", count: leads.length }, { id: "queue", label: "Outreach" }, { id: "dashboard", label: "Dashboard" }].map(tb => (
+            {[{ id: "indeed", label: "LeadGen" }, { id: "shiplist", label: "Ship List", count: shipListResults.length || undefined }, { id: "leads", label: "Pipeline", count: leads.length }, { id: "queue", label: "Outreach" }, { id: "dashboard", label: "Dashboard" }].map(tb => (
               <button key={tb.id} onClick={() => setTab(tb.id)} style={{ padding: "12px 20px", background: tab === tb.id ? t.accent : "transparent", color: tab === tb.id ? "#0c0a09" : t.textMuted, border: "none", borderBottom: tab === tb.id ? `3px solid ${t.accent}` : "3px solid transparent", cursor: "pointer", fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: tab === tb.id ? 700 : 500, letterSpacing: "0.02em", transition: "all 0.2s", display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}>
                 {tb.label}
                 {tb.count !== undefined && <span style={{ background: tab === tb.id ? "#00000033" : t.bgHover, color: tab === tb.id ? "#0c0a09" : t.textDim, padding: "1px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700 }}>{tb.count}</span>}
@@ -1605,6 +1730,144 @@ Respond with ONLY a JSON object:
         </div>
 
         <div style={{ maxWidth: 1240, margin: "0 auto", padding: "28px 32px" }} className="app-content">
+
+          {/* ════════════ SHIP LIST ════════════ */}
+          {tab === "shiplist" && (
+            <div style={{ animation: "fadeIn 0.3s ease" }}>
+              <div style={{ marginBottom: 24 }}>
+                <h2 style={{ fontSize: 20, fontWeight: 700, fontFamily: "'Outfit', sans-serif", marginBottom: 6 }}>📋 Ship List</h2>
+                <p style={{ color: t.textDim, fontSize: 14 }}>Find Bay Area companies (100+ employees, Series B+ SaaS or professional services) with content gaps — no YouTube, or Instagram/TikTok under 1 post/month.</p>
+              </div>
+
+              {/* Controls */}
+              <div style={{ ...cardStyle, marginBottom: 24 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 16, alignItems: "flex-end" }}>
+                  <div>
+                    <label style={labelStyle}>City / Region</label>
+                    <select style={{ ...inputStyle, cursor: "pointer" }} value={shipListCity} onChange={e => setShipListCity(e.target.value)}>
+                      <option value="San Francisco">San Francisco</option>
+                      <option value="San Jose">San Jose</option>
+                      <option value="Oakland">Oakland</option>
+                      <option value="Palo Alto">Palo Alto</option>
+                      <option value="Bay Area">All Bay Area</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Company Type</label>
+                    <select style={{ ...inputStyle, cursor: "pointer" }} value={shipListCompanyType} onChange={e => setShipListCompanyType(e.target.value)}>
+                      <option value="all">All (SaaS + Prof. Services)</option>
+                      <option value="saas">SaaS Only (Series B+)</option>
+                      <option value="professional_services">Professional Services Only</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Results</label>
+                    <select style={{ ...inputStyle, cursor: "pointer" }} value={shipListCount} onChange={e => setShipListCount(Number(e.target.value))}>
+                      {[10, 15, 20, 25].map(n => <option key={n} value={n}>{n} companies</option>)}
+                    </select>
+                  </div>
+                  <button onClick={handleShipListSearch} disabled={shipListLoading} style={{ ...btnPrimary, whiteSpace: "nowrap", opacity: shipListLoading ? 0.7 : 1 }}>
+                    {shipListLoading ? "⏳ Searching..." : "⚡ Build Ship List"}
+                  </button>
+                </div>
+              </div>
+
+              {shipListError && (
+                <div style={{ background: "#7f1d1d33", border: "1px solid #b91c1c44", borderRadius: 10, padding: "12px 16px", color: "#fca5a5", fontSize: 13, marginBottom: 20 }}>
+                  {shipListError}
+                </div>
+              )}
+
+              {shipListResults.length > 0 && (
+                <>
+                  <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center" }}>
+                    <span style={{ fontSize: 13, color: t.textMuted, flex: 1 }}>{shipListResults.length} companies with content gaps</span>
+                    <button onClick={() => {
+                      const headers = ["Company Name", "Website", "City", "Employee Count", "Funding Stage", "Est. Revenue", "Company Type", "YouTube", "Instagram", "Instagram Posts/Mo", "TikTok", "TikTok Posts/Mo", "LinkedIn", "Content Gaps"];
+                      const rows = shipListResults.map(r => [
+                        r.companyName, r.website, r.city, r.employeeCount, r.fundingStage, r.estimatedRevenue, r.companyType,
+                        r.youtube || "none", r.instagram || "none", r.instagramPostsPerMonth, r.tiktok || "none", r.tiktokPostsPerMonth,
+                        r.linkedIn || "none", r.contentGap.join("; ")
+                      ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(","));
+                      const csv = [headers.join(","), ...rows].join("\n");
+                      const blob = new Blob([csv], { type: "text/csv" });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a"); a.href = url; a.download = "ship_list.csv"; a.click();
+                    }} style={btnSecondary}>↓ Export CSV</button>
+                    <button onClick={() => {
+                      const json = JSON.stringify(shipListResults.map(({ id, ...rest }) => rest), null, 2);
+                      const blob = new Blob([json], { type: "application/json" });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a"); a.href = url; a.download = "ship_list.json"; a.click();
+                    }} style={btnSecondary}>↓ Export JSON</button>
+                  </div>
+
+                  <div style={{ display: "grid", gap: 14 }}>
+                    {shipListResults.map(r => (
+                      <div key={r.id} style={{ ...cardStyle, marginBottom: 0 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
+                          <div style={{ flex: 1, minWidth: 220 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                              <span style={{ fontSize: 15, fontWeight: 700, color: t.text }}>{r.companyName}</span>
+                              {r.companyType && (
+                                <span style={{ background: r.companyType === "SaaS" ? "#1d4ed844" : "#065f4644", color: r.companyType === "SaaS" ? "#93c5fd" : "#6ee7b7", fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 6, letterSpacing: "0.06em" }}>{r.companyType}</span>
+                              )}
+                            </div>
+                            <div style={{ fontSize: 12, color: t.textMuted, marginBottom: 2 }}>
+                              {r.city && <span>{r.city} · </span>}
+                              {r.employeeCount && <span>{r.employeeCount} employees · </span>}
+                              {r.fundingStage && <span style={{ color: t.accent }}>{r.fundingStage}</span>}
+                            </div>
+                            {r.estimatedRevenue && <div style={{ fontSize: 12, color: t.textFaint }}>{r.estimatedRevenue}</div>}
+                            {r.website && <a href={r.website} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: t.accent, textDecoration: "none", display: "block", marginTop: 4 }}>{r.website}</a>}
+                            {r.linkedIn && <a href={r.linkedIn} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "#60a5fa", textDecoration: "none", display: "block", marginTop: 4 }}>🔗 LinkedIn</a>}
+                          </div>
+
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" }}>
+                            <div style={{ background: r.youtube ? "#15532e44" : "#7f1d1d33", border: `1px solid ${r.youtube ? "#16a34a44" : "#b91c1c44"}`, borderRadius: 8, padding: "6px 10px", minWidth: 80, textAlign: "center" }}>
+                              <div style={{ fontSize: 16 }}>▶</div>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: r.youtube ? "#86efac" : "#fca5a5", marginTop: 2 }}>{r.youtube ? "Has YouTube" : "No YouTube"}</div>
+                              {r.youtube && <a href={r.youtube} target="_blank" rel="noopener noreferrer" style={{ fontSize: 9, color: t.textFaint, textDecoration: "none" }}>view →</a>}
+                            </div>
+                            <div style={{ background: r.instagramPostsPerMonth >= 1 ? "#15532e44" : "#7f1d1d33", border: `1px solid ${r.instagramPostsPerMonth >= 1 ? "#16a34a44" : "#b91c1c44"}`, borderRadius: 8, padding: "6px 10px", minWidth: 80, textAlign: "center" }}>
+                              <div style={{ fontSize: 16 }}>📸</div>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: r.instagramPostsPerMonth >= 1 ? "#86efac" : "#fca5a5", marginTop: 2 }}>
+                                {r.instagram ? `${r.instagramPostsPerMonth}/mo` : "No IG"}
+                              </div>
+                              {r.instagram && <a href={r.instagram} target="_blank" rel="noopener noreferrer" style={{ fontSize: 9, color: t.textFaint, textDecoration: "none" }}>view →</a>}
+                            </div>
+                            <div style={{ background: r.tiktokPostsPerMonth >= 1 ? "#15532e44" : "#7f1d1d33", border: `1px solid ${r.tiktokPostsPerMonth >= 1 ? "#16a34a44" : "#b91c1c44"}`, borderRadius: 8, padding: "6px 10px", minWidth: 80, textAlign: "center" }}>
+                              <div style={{ fontSize: 16 }}>🎵</div>
+                              <div style={{ fontSize: 10, fontWeight: 700, color: r.tiktokPostsPerMonth >= 1 ? "#86efac" : "#fca5a5", marginTop: 2 }}>
+                                {r.tiktok ? `${r.tiktokPostsPerMonth}/mo` : "No TikTok"}
+                              </div>
+                              {r.tiktok && <a href={r.tiktok} target="_blank" rel="noopener noreferrer" style={{ fontSize: 9, color: t.textFaint, textDecoration: "none" }}>view →</a>}
+                            </div>
+                          </div>
+                        </div>
+
+                        {r.contentGap && r.contentGap.length > 0 && (
+                          <div style={{ marginTop: 12, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {r.contentGap.map((gap, gi) => (
+                              <span key={gi} style={{ background: "#7f1d1d22", border: "1px solid #b91c1c33", color: "#fca5a5", fontSize: 11, padding: "3px 8px", borderRadius: 6 }}>⚠ {gap}</span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
+
+              {!shipListLoading && !shipListError && shipListResults.length === 0 && (
+                <div style={{ textAlign: "center", padding: "60px 20px", color: t.textFaint }}>
+                  <div style={{ fontSize: 40, marginBottom: 12 }}>📋</div>
+                  <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6, color: t.textMuted }}>No Ship List yet</div>
+                  <div style={{ fontSize: 13 }}>Configure your filters above and click "Build Ship List" to find content-cold companies.</div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* ════════════ DASHBOARD ════════════ */}
           {tab === "dashboard" && (() => {
