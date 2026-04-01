@@ -399,6 +399,7 @@ export default function LeadQualifier() {
   const [shipListCount, setShipListCount] = useState(15);
   const [shipListCompanyType, setShipListCompanyType] = useState("all");
   const [shipListCity, setShipListCity] = useState("San Francisco");
+  const [shipListProgress, setShipListProgress] = useState(null);
 
   const fileRef = useRef();
   const t = themes[theme];
@@ -733,6 +734,7 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
     setShipListLoading(true);
     setShipListError(null);
     setShipListResults([]);
+    setShipListProgress(null);
 
     const cityFilter = shipListCity.trim() || "San Francisco, San Jose, Oakland, Palo Alto";
     const typeFilter = shipListCompanyType === "saas"
@@ -741,19 +743,53 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
       ? "established professional services firms (law, finance, consulting, recruiting)"
       : "SaaS companies (Series B+) and established professional services firms";
 
-    const prompt = `You are a content agency researcher building a "Ship List" — a list of Bay Area companies that have a CONTENT GAP (underutilized or missing social video presence).
+    const BATCH_SIZE = 5;
+    const totalBatches = Math.ceil(shipListCount / BATCH_SIZE);
+    const allResults = [];
+
+    const parseShipListResponse = (fullText) => {
+      let parsed = null;
+      const fenceMatch = fullText.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
+      if (fenceMatch) { try { parsed = JSON.parse(fenceMatch[1]); } catch {} }
+      if (!parsed) {
+        const allArrays = [...fullText.matchAll(/\[[\s\S]*?\](?=\s*$|\s*```|\s*\n\n)/g)];
+        for (let i = allArrays.length - 1; i >= 0; i--) {
+          try { const c = JSON.parse(allArrays[i][0]); if (Array.isArray(c) && c.length > 0 && c[0].companyName) { parsed = c; break; } } catch {}
+        }
+      }
+      if (!parsed) {
+        const greedyMatch = fullText.match(/\[\s*\{[\s\S]*\}\s*\]/);
+        if (greedyMatch) {
+          try { parsed = JSON.parse(greedyMatch[0]); } catch {
+            try { parsed = JSON.parse(greedyMatch[0].replace(/,\s*(?=[}\]])/g, '')); } catch {}
+          }
+        }
+      }
+      return parsed;
+    };
+
+    try {
+      for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+        setShipListProgress({ current: batchIndex + 1, total: totalBatches });
+
+        const excludeList = allResults.map(r => r.companyName);
+        const excludeClause = excludeList.length > 0
+          ? `\nEXCLUSION LIST (do NOT return these companies — already found): ${excludeList.join(", ")}\n`
+          : "";
+
+        const prompt = `You are a content agency researcher building a "Ship List" — a list of Bay Area companies that have a CONTENT GAP (underutilized or missing social video presence).
 
 TARGET CRITERIA:
 - Geography: ${cityFilter}
 - Company size: 100+ employees
 - Financial profile: ${typeFilter}
 - Content gap definition: NO YouTube channel, OR Instagram/TikTok with less than 1 post per month
-
+${excludeClause}
 SEARCH PROCESS:
 Step 1: Search for well-funded / established companies in ${cityFilter} matching the profile above.
 Step 2: For each company found, search for their YouTube channel, Instagram, and TikTok presence. Look at posting frequency.
 Step 3: Keep ONLY companies with a content gap (missing YouTube, or Instagram/TikTok < 1 post/month).
-Step 4: Return up to ${shipListCount} qualifying companies.
+Step 4: Return exactly 5 qualifying companies that are NOT in the exclusion list above.
 
 RESPOND WITH A JSON ARRAY ONLY. No markdown, no explanation. Each object:
 {
@@ -773,76 +809,61 @@ RESPOND WITH A JSON ARRAY ONLY. No markdown, no explanation. Each object:
   "contentGap": ["No YouTube channel", "Instagram: 0.5 posts/month (below threshold)"]
 }
 
-Return ${shipListCount} companies. Only include companies WITH a content gap.`;
+Return 5 companies. Only include companies WITH a content gap.`;
 
-    try {
-      const response = await fetch("/api/anthropic", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 8000,
-          system: "You are a business research assistant. Search the web for real companies. Respond with ONLY a raw JSON array. No markdown, no explanation — just [ ... ].",
-          messages: [{ role: "user", content: prompt }],
-          tools: [{ type: "web_search_20250305", name: "web_search" }],
-        }),
-      });
-      const data = await response.json();
-      if (data.error) { setShipListError(data.error.message || "API error."); setShipListLoading(false); return; }
+        const response = await fetch("/api/anthropic", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 4000,
+            system: "You are a business research assistant. Search the web for real companies. Respond with ONLY a raw JSON array. No markdown, no explanation — just [ ... ].",
+            messages: [{ role: "user", content: prompt }],
+            tools: [{ type: "web_search_20250305", name: "web_search" }],
+          }),
+        });
+        const data = await response.json();
+        if (data.error) { setShipListError(data.error.message || "API error."); setShipListLoading(false); setShipListProgress(null); return; }
 
-      const textParts = [];
-      (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
-      const fullText = textParts.join("\n");
+        const textParts = [];
+        (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
+        const fullText = textParts.join("\n");
 
-      let parsed = null;
-      const fenceMatch = fullText.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
-      if (fenceMatch) { try { parsed = JSON.parse(fenceMatch[1]); } catch {} }
-      if (!parsed) {
-        const allArrays = [...fullText.matchAll(/\[[\s\S]*?\](?=\s*$|\s*```|\s*\n\n)/g)];
-        for (let i = allArrays.length - 1; i >= 0; i--) {
-          try { const c = JSON.parse(allArrays[i][0]); if (Array.isArray(c) && c.length > 0 && c[0].companyName) { parsed = c; break; } } catch {}
+        const parsed = parseShipListResponse(fullText);
+        if (parsed && Array.isArray(parsed) && parsed.length > 0) {
+          const batchResults = parsed.map((r, i) => ({
+            id: Date.now() + batchIndex * 100 + i + Math.random(),
+            companyName: r.companyName || "Unknown Company",
+            website: r.website || "",
+            city: r.city || "",
+            employeeCount: r.employeeCount || "",
+            fundingStage: r.fundingStage || "",
+            estimatedRevenue: r.estimatedRevenue || "",
+            companyType: r.companyType || "",
+            youtube: r.youtube || "",
+            instagram: r.instagram || "",
+            instagramPostsPerMonth: r.instagramPostsPerMonth ?? 0,
+            tiktok: r.tiktok || "",
+            tiktokPostsPerMonth: r.tiktokPostsPerMonth ?? 0,
+            linkedIn: r.linkedIn || "",
+            contentGap: r.contentGap || [],
+          }));
+          allResults.push(...batchResults);
+          setShipListResults(prev => [...prev, ...batchResults]);
         }
       }
-      if (!parsed) {
-        const greedyMatch = fullText.match(/\[\s*\{[\s\S]*\}\s*\]/);
-        if (greedyMatch) {
-          try { parsed = JSON.parse(greedyMatch[0]); } catch {
-            try { parsed = JSON.parse(greedyMatch[0].replace(/,\s*(?=[}\]])/g, '')); } catch {}
-          }
-        }
-      }
 
-      if (!parsed || !Array.isArray(parsed) || parsed.length === 0) {
+      if (allResults.length === 0) {
         setShipListError("No qualifying companies found. Try adjusting your filters.");
-        setShipListLoading(false);
-        return;
+      } else {
+        showToast(`Found ${allResults.length} companies for the Ship List`);
       }
-
-      const results = parsed.map((r, i) => ({
-        id: Date.now() + i + Math.random(),
-        companyName: r.companyName || "Unknown Company",
-        website: r.website || "",
-        city: r.city || "",
-        employeeCount: r.employeeCount || "",
-        fundingStage: r.fundingStage || "",
-        estimatedRevenue: r.estimatedRevenue || "",
-        companyType: r.companyType || "",
-        youtube: r.youtube || "",
-        instagram: r.instagram || "",
-        instagramPostsPerMonth: r.instagramPostsPerMonth ?? 0,
-        tiktok: r.tiktok || "",
-        tiktokPostsPerMonth: r.tiktokPostsPerMonth ?? 0,
-        linkedIn: r.linkedIn || "",
-        contentGap: r.contentGap || [],
-      }));
-
-      setShipListResults(results);
-      showToast(`Found ${results.length} companies for the Ship List`);
     } catch (err) {
       console.error("Ship List search error:", err);
       setShipListError("Search failed — please try again.");
     }
     setShipListLoading(false);
+    setShipListProgress(null);
   };
 
   // ─── INDEED LEAD SEARCH ──────────────────────────────────
@@ -1767,7 +1788,7 @@ Respond with ONLY a JSON object:
                     </select>
                   </div>
                   <button onClick={handleShipListSearch} disabled={shipListLoading} style={{ ...btnPrimary, whiteSpace: "nowrap", opacity: shipListLoading ? 0.7 : 1 }}>
-                    {shipListLoading ? "⏳ Searching..." : "⚡ Build Ship List"}
+                    {shipListLoading ? (shipListProgress ? `⏳ Batch ${shipListProgress.current}/${shipListProgress.total}...` : "⏳ Searching...") : "⚡ Build Ship List"}
                   </button>
                 </div>
               </div>
