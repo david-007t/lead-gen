@@ -1,5 +1,10 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
+import { createClient } from "@supabase/supabase-js";
+const supabase = createClient(
+  "https://eosxzlqvvxagxwmhozmp.supabase.co",
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVvc3h6bHF2dnhhZ3h3bWhvem1wIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ1NjU5OTMsImV4cCI6MjA5MDE0MTk5M30.z86D2Hjp0M3AIsrKlBeoh-v2EXHtBROUiL-9ekOn56A"
+);
 
 // ─── CONSTANTS ────────────────────────────────────────────────
 const INDUSTRIES = {
@@ -401,6 +406,14 @@ export default function LeadQualifier() {
   const [shipListCity, setShipListCity] = useState("San Francisco");
   const [shipListProgress, setShipListProgress] = useState(null);
 
+  // Ship List DB state
+  const [savedCompanies, setSavedCompanies] = useState([]); // companies saved to Supabase
+  const [savedLoading, setSavedLoading] = useState(false);
+  const [shipListContacts, setShipListContacts] = useState({}); // { [id]: { name, title, linkedin, email, platform } }
+  const [shipListOutreach, setShipListOutreach] = useState({}); // { [id]: string (draft) }
+  const [generatingContact, setGeneratingContact] = useState(null); // id currently being looked up
+  const [shipListOutreachOpen, setShipListOutreachOpen] = useState({}); // { [id]: boolean }
+
   const fileRef = useRef();
   const t = themes[theme];
   const ind = INDUSTRIES[industry] || INDUSTRIES.construction;
@@ -423,6 +436,7 @@ export default function LeadQualifier() {
         if (savedSettings.setupComplete) { setSetupComplete(true); setTab("dashboard"); }
       }
       setLoading(false);
+      loadSavedCompanies();
     })();
   }, []);
 
@@ -736,6 +750,9 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
     setShipListResults([]);
     setShipListProgress(null);
 
+    // Build global exclusion list from DB + already-found results
+    const savedNames = savedCompanies.map(c => c.company_name);
+
     const cityFilter = shipListCity.trim() || "San Francisco, San Jose, Oakland, Palo Alto";
     const typeFilter = shipListCompanyType === "saas"
       ? "SaaS companies (Series B or later, or well-funded startups)"
@@ -772,9 +789,9 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
       for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
         setShipListProgress({ current: batchIndex + 1, total: totalBatches });
 
-        const excludeList = allResults.map(r => r.companyName);
+        const excludeList = [...savedNames, ...allResults.map(r => r.companyName)];
         const excludeClause = excludeList.length > 0
-          ? `\nEXCLUSION LIST (do NOT return these companies — already found): ${excludeList.join(", ")}\n`
+          ? `\nEXCLUSION LIST (do NOT return these — already in database or found this session): ${excludeList.join(", ")}\n`
           : "";
 
         const prompt = `You are a content agency researcher building a "Ship List" — a list of Bay Area companies that have a CONTENT GAP (underutilized or missing social video presence).
@@ -878,6 +895,175 @@ Return 5 companies. Only include companies WITH a content gap.`;
     }
     setShipListLoading(false);
     setShipListProgress(null);
+  };
+
+  // ─── SHIP LIST DB ─────────────────────────────────────────
+  const loadSavedCompanies = async () => {
+    setSavedLoading(true);
+    const { data, error } = await supabase
+      .from("ship_list_companies")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (!error && data) setSavedCompanies(data);
+    setSavedLoading(false);
+  };
+
+  const saveCompanyToDB = async (company) => {
+    const payload = {
+      company_name: company.companyName,
+      website: company.website,
+      city: company.city,
+      employee_count: company.employeeCount,
+      funding_stage: company.fundingStage,
+      estimated_revenue: company.estimatedRevenue,
+      company_type: company.companyType,
+      youtube: company.youtube,
+      instagram: company.instagram,
+      instagram_posts_per_month: company.instagramPostsPerMonth,
+      tiktok: company.tiktok,
+      tiktok_posts_per_month: company.tiktokPostsPerMonth,
+      linked_in: company.linkedIn,
+      content_gap: company.contentGap,
+      contact_name: shipListContacts[company.id]?.name || "",
+      contact_title: shipListContacts[company.id]?.title || "",
+      contact_linkedin: shipListContacts[company.id]?.linkedin || "",
+      contact_email: shipListContacts[company.id]?.email || "",
+      outreach_platform: shipListContacts[company.id]?.platform || "",
+      outreach_draft: shipListOutreach[company.id] || "",
+      status: "new",
+    };
+    const { data, error } = await supabase
+      .from("ship_list_companies")
+      .upsert(payload, { onConflict: "company_name" })
+      .select()
+      .single();
+    if (!error && data) {
+      setSavedCompanies(prev => {
+        const exists = prev.find(c => c.company_name === data.company_name);
+        return exists ? prev.map(c => c.company_name === data.company_name ? data : c) : [data, ...prev];
+      });
+      showToast(`${company.companyName} saved to Ship List DB`);
+    } else {
+      showToast("Failed to save — " + (error?.message || "unknown error"), "error");
+    }
+  };
+
+  const updateCompanyStatus = async (dbId, status) => {
+    const { data, error } = await supabase
+      .from("ship_list_companies")
+      .update({ status })
+      .eq("id", dbId)
+      .select()
+      .single();
+    if (!error && data) {
+      setSavedCompanies(prev => prev.map(c => c.id === dbId ? data : c));
+      showToast(`Status updated to ${status}`);
+    }
+  };
+
+  const deleteFromDB = async (dbId, companyName) => {
+    const { error } = await supabase.from("ship_list_companies").delete().eq("id", dbId);
+    if (!error) {
+      setSavedCompanies(prev => prev.filter(c => c.id !== dbId));
+      showToast(`${companyName} removed from DB`);
+    }
+  };
+
+  // ─── FIND CONTACT + DRAFT OUTREACH ───────────────────────
+  const handleFindContact = async (company) => {
+    setGeneratingContact(company.id);
+    setShipListOutreachOpen(prev => ({ ...prev, [company.id]: true }));
+    try {
+      const prompt = `Find the best contact person at ${company.companyName} (${company.website || company.city}) to pitch content production / video storytelling services to.
+
+Target roles (in priority order): Head of Content, Director of Content, VP Marketing, CMO, Head of Brand, Director of Marketing.
+
+Search for:
+1. The person's full name and title
+2. Their LinkedIn profile URL
+3. Their work email (if publicly findable)
+4. Which platform they are most active on (LinkedIn, email, Twitter/X)
+
+Company context:
+- Type: ${company.companyType}
+- Funding: ${company.fundingStage}
+- City: ${company.city}
+- Content gap: ${(company.contentGap || []).join(", ")}
+
+Respond with ONLY a JSON object (no markdown):
+{
+  "name": "Jane Smith",
+  "title": "Head of Content",
+  "linkedin": "https://linkedin.com/in/janesmith",
+  "email": "jane@${(company.website || "company.com").replace(/https?:\/\//, "").replace(/\/$/, "")}",
+  "platform": "linkedin",
+  "confidence": "high"
+}
+
+If you cannot find a specific person, return the best guess with confidence "low".`;
+
+      const res = await fetch("/api/anthropic", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          system: "You are a B2B contact research assistant. Search the web and return ONLY a raw JSON object — no markdown, no explanation.",
+          messages: [{ role: "user", content: prompt }],
+          tools: [{ type: "web_search_20250305", name: "web_search" }],
+        }),
+      });
+      const data = await res.json();
+      const textParts = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
+      let contact = null;
+      const objMatch = textParts.match(/\{[\s\S]*\}/);
+      if (objMatch) { try { contact = JSON.parse(objMatch[0]); } catch {} }
+
+      if (contact) {
+        setShipListContacts(prev => ({ ...prev, [company.id]: contact }));
+        // Auto-draft outreach after finding contact
+        await handleDraftOutreach(company, contact);
+      } else {
+        showToast("Could not find contact — try manually", "error");
+      }
+    } catch (err) {
+      console.error("Find contact error:", err);
+      showToast("Contact search failed", "error");
+    }
+    setGeneratingContact(null);
+  };
+
+  const handleDraftOutreach = async (company, contact) => {
+    const platform = contact?.platform || "linkedin";
+    const isLinkedIn = platform === "linkedin";
+    const prompt = `Draft a personalized ${isLinkedIn ? "LinkedIn message" : "cold email"} to ${contact?.name || "the marketing lead"} (${contact?.title || "Marketing"}) at ${company.companyName}.
+
+Context about their company:
+- Industry: ${company.companyType}
+- Funding stage: ${company.fundingStage}
+- Location: ${company.city}
+- Content gaps: ${(company.contentGap || []).join(", ")}
+
+You represent a visual storytelling / content agency reaching out because this company has a clear content gap.
+
+${isLinkedIn
+      ? "Write a LinkedIn connection note (under 300 characters) that is personal, specific, and NOT salesy. Reference their content gap subtly."
+      : "Write a cold email (subject line + 4-5 sentence body) that is personal and specific. Reference their content gap. End with a low-friction CTA (a question, not a meeting ask)."}
+
+Return ONLY the message text. No labels, no markdown.`;
+
+    const res = await fetch("/api/anthropic", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 400,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    const data = await res.json();
+    const draft = (data.content || []).find(b => b.type === "text")?.text || "";
+    if (draft) setShipListOutreach(prev => ({ ...prev, [company.id]: draft }));
   };
 
   // ─── INDEED LEAD SEARCH ──────────────────────────────────
@@ -1881,11 +2067,92 @@ Respond with ONLY a JSON object:
                           </div>
                         </div>
 
+                        {/* Save to DB / Status */}
+                        {(() => {
+                          const saved = savedCompanies.find(c => c.company_name === r.companyName);
+                          return saved ? (
+                            <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 10 }}>
+                              {["new","contacted","replied","won","lost","skipped"].map(s => (
+                                <button key={s} onClick={() => updateCompanyStatus(saved.id, s)}
+                                  style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, border: "none", cursor: "pointer",
+                                    background: saved.status === s ? t.accent : t.bgHover,
+                                    color: saved.status === s ? "#0c0a09" : t.textMuted, fontWeight: saved.status === s ? 700 : 400 }}>
+                                  {s}
+                                </button>
+                              ))}
+                              <button onClick={() => deleteFromDB(saved.id, r.companyName)}
+                                style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, border: "none", cursor: "pointer", background: "#7f1d1d33", color: "#fca5a5" }}>
+                                ✕ remove
+                              </button>
+                            </div>
+                          ) : (
+                            <button onClick={() => saveCompanyToDB(r)}
+                              style={{ fontSize: 11, padding: "5px 12px", borderRadius: 8, border: "none", cursor: "pointer", background: t.accent, color: "#0c0a09", fontWeight: 700, marginTop: 10 }}>
+                              + Save to DB
+                            </button>
+                          );
+                        })()}
+
                         {r.contentGap && r.contentGap.length > 0 && (
                           <div style={{ marginTop: 12, display: "flex", gap: 6, flexWrap: "wrap" }}>
                             {r.contentGap.map((gap, gi) => (
                               <span key={gi} style={{ background: "#7f1d1d22", border: "1px solid #b91c1c33", color: "#fca5a5", fontSize: 11, padding: "3px 8px", borderRadius: 6 }}>⚠ {gap}</span>
                             ))}
+                          </div>
+                        )}
+
+                        {/* Outreach panel */}
+                        <div style={{ marginTop: 10 }}>
+                          <button
+                            onClick={() => {
+                              if (!shipListContacts[r.id]) {
+                                handleFindContact(r);
+                              } else {
+                                setShipListOutreachOpen(prev => ({ ...prev, [r.id]: !prev[r.id] }));
+                              }
+                            }}
+                            disabled={generatingContact === r.id}
+                            style={{ fontSize: 12, padding: "6px 14px", borderRadius: 8, border: `1px solid ${t.border}`, background: shipListOutreachOpen[r.id] ? t.accent : t.bgHover, color: shipListOutreachOpen[r.id] ? "#0c0a09" : t.text, cursor: "pointer", fontWeight: 600 }}>
+                            {generatingContact === r.id ? "🔍 Finding contact..." : shipListContacts[r.id] ? (shipListOutreachOpen[r.id] ? "▲ Hide Outreach" : "▼ Show Outreach") : "⚡ Find Contact + Draft Outreach"}
+                          </button>
+                        </div>
+
+                        {shipListOutreachOpen[r.id] && shipListContacts[r.id] && (
+                          <div style={{ marginTop: 12, background: t.bgHover, borderRadius: 10, padding: "14px 16px" }}>
+                            {/* Contact info */}
+                            <div style={{ marginBottom: 10 }}>
+                              <div style={{ fontSize: 12, fontWeight: 700, color: t.text, marginBottom: 4 }}>👤 Contact Found</div>
+                              <div style={{ fontSize: 13, color: t.text }}>{shipListContacts[r.id].name} — <span style={{ color: t.textMuted }}>{shipListContacts[r.id].title}</span></div>
+                              <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+                                {shipListContacts[r.id].linkedin && <a href={shipListContacts[r.id].linkedin} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#60a5fa", textDecoration: "none" }}>🔗 LinkedIn</a>}
+                                {shipListContacts[r.id].email && <span style={{ fontSize: 11, color: t.textMuted }}>✉ {shipListContacts[r.id].email}</span>}
+                                <span style={{ fontSize: 11, background: "#1d4ed844", color: "#93c5fd", padding: "1px 6px", borderRadius: 4 }}>via {shipListContacts[r.id].platform || "linkedin"}</span>
+                                <span style={{ fontSize: 11, color: t.textFaint }}>confidence: {shipListContacts[r.id].confidence || "medium"}</span>
+                              </div>
+                            </div>
+                            {/* Outreach draft */}
+                            {shipListOutreach[r.id] && (
+                              <div>
+                                <div style={{ fontSize: 12, fontWeight: 700, color: t.text, marginBottom: 6 }}>
+                                  ✍ {shipListContacts[r.id].platform === "linkedin" ? "LinkedIn Message" : "Email Draft"}
+                                </div>
+                                <textarea
+                                  value={shipListOutreach[r.id]}
+                                  onChange={e => setShipListOutreach(prev => ({ ...prev, [r.id]: e.target.value }))}
+                                  style={{ width: "100%", minHeight: 100, background: t.bg, border: `1px solid ${t.border}`, borderRadius: 8, padding: "10px 12px", color: t.text, fontSize: 12, fontFamily: "inherit", resize: "vertical", boxSizing: "border-box" }}
+                                />
+                                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                                  <button onClick={() => { navigator.clipboard.writeText(shipListOutreach[r.id]); showToast("Copied!"); }}
+                                    style={{ fontSize: 11, padding: "5px 12px", borderRadius: 6, border: "none", cursor: "pointer", background: t.accent, color: "#0c0a09", fontWeight: 600 }}>
+                                    Copy
+                                  </button>
+                                  <button onClick={() => saveCompanyToDB(r)}
+                                    style={{ fontSize: 11, padding: "5px 12px", borderRadius: 6, border: `1px solid ${t.border}`, cursor: "pointer", background: t.bgHover, color: t.text }}>
+                                    Save to DB
+                                  </button>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
@@ -1899,6 +2166,49 @@ Respond with ONLY a JSON object:
                   <div style={{ fontSize: 40, marginBottom: 12 }}>📋</div>
                   <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6, color: t.textMuted }}>No Ship List yet</div>
                   <div style={{ fontSize: 13 }}>Configure your filters above and click "Build Ship List" to find content-cold companies.</div>
+                </div>
+              )}
+
+              {/* ── Saved Companies (DB) ── */}
+              {savedCompanies.length > 0 && (
+                <div style={{ marginTop: 40 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+                    <h3 style={{ fontSize: 16, fontWeight: 700, fontFamily: "'Outfit', sans-serif", margin: 0 }}>🗄 Ship List DB</h3>
+                    <span style={{ fontSize: 12, color: t.textMuted }}>{savedCompanies.length} companies saved</span>
+                    <button onClick={loadSavedCompanies} style={{ ...btnSecondary, fontSize: 11, padding: "3px 10px", marginLeft: "auto" }}>↺ Refresh</button>
+                  </div>
+                  <div style={{ display: "grid", gap: 10 }}>
+                    {savedCompanies.map(c => (
+                      <div key={c.id} style={{ ...cardStyle, marginBottom: 0, padding: "12px 16px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                              <span style={{ fontSize: 14, fontWeight: 700, color: t.text }}>{c.company_name}</span>
+                              {c.company_type && <span style={{ fontSize: 10, background: "#1d4ed822", color: "#93c5fd", padding: "1px 6px", borderRadius: 4 }}>{c.company_type}</span>}
+                              <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, fontWeight: 700,
+                                background: c.status === "won" ? "#15532e44" : c.status === "contacted" ? "#1d4ed844" : c.status === "replied" ? "#4c1d9544" : c.status === "lost" || c.status === "skipped" ? "#7f1d1d33" : t.bgHover,
+                                color: c.status === "won" ? "#86efac" : c.status === "contacted" ? "#93c5fd" : c.status === "replied" ? "#c4b5fd" : c.status === "lost" || c.status === "skipped" ? "#fca5a5" : t.textMuted }}>
+                                {c.status}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: 11, color: t.textFaint }}>{c.city} · {c.funding_stage} · {c.employee_count} employees</div>
+                            {c.contact_name && <div style={{ fontSize: 11, color: t.textMuted, marginTop: 2 }}>👤 {c.contact_name} ({c.contact_title}){c.contact_linkedin ? <a href={c.contact_linkedin} target="_blank" rel="noopener noreferrer" style={{ color: "#60a5fa", marginLeft: 6 }}>LinkedIn</a> : ""}</div>}
+                          </div>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                            {["new","contacted","replied","won","lost","skipped"].map(s => (
+                              <button key={s} onClick={() => updateCompanyStatus(c.id, s)}
+                                style={{ fontSize: 10, padding: "2px 7px", borderRadius: 5, border: "none", cursor: "pointer",
+                                  background: c.status === s ? t.accent : t.bgHover,
+                                  color: c.status === s ? "#0c0a09" : t.textMuted, fontWeight: c.status === s ? 700 : 400 }}>
+                                {s}
+                              </button>
+                            ))}
+                            <button onClick={() => deleteFromDB(c.id, c.company_name)} style={{ fontSize: 10, padding: "2px 7px", borderRadius: 5, border: "none", cursor: "pointer", background: "#7f1d1d33", color: "#fca5a5" }}>✕</button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
