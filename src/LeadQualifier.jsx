@@ -404,6 +404,7 @@ export default function LeadQualifier() {
   const [shipListCount, setShipListCount] = useState(10);
   const [shipListCompanyType, setShipListCompanyType] = useState("all");
   const [shipListCity, setShipListCity] = useState("San Francisco");
+  const [shipListTierFilter, setShipListTierFilter] = useState("all");
   const [shipListProgress, setShipListProgress] = useState(null);
 
   // Ship List DB state
@@ -794,25 +795,46 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
           ? `\nEXCLUSION LIST (do NOT return these — already in database or found this session): ${excludeList.join(", ")}\n`
           : "";
 
-        const prompt = `You are a content agency researcher building a "Ship List" — a list of Bay Area companies that have a CONTENT GAP (underutilized or missing social video presence).
+        const prompt = `You are a content agency researcher building a "Ship List" of Bay Area companies for a visual storytelling / content agency.
 
-TARGET CRITERIA:
-- Geography: ${cityFilter}
-- Company size: 100+ employees
-- Financial profile: ${typeFilter}
-- Content gap definition: NO YouTube channel, OR Instagram/TikTok with less than 1 post per month
+STRICT GEOGRAPHY: Companies must be headquartered in ${cityFilter}, CALIFORNIA, USA. Do NOT return UK, Canadian, or non-US companies. If a company name is ambiguous, verify the Bay Area / California location before including it.
+
+COMPANY PROFILE:
+- Size: 100+ employees
+- Financial: ${typeFilter}
+- Must be ACTIVELY OPERATING as of 2025 — skip any company that is shut down, acquired-and-dissolved, or announced closure
 ${excludeClause}
-SEARCH PROCESS:
-Step 1: Search for well-funded / established companies in ${cityFilter} matching the profile above.
-Step 2: For each company found, search for their YouTube channel, Instagram, and TikTok presence. Look at posting frequency.
-Step 3: Keep ONLY companies with a content gap (missing YouTube, or Instagram/TikTok < 1 post/month).
-Step 4: Return exactly 5 qualifying companies that are NOT in the exclusion list above.
+SOCIAL MEDIA RESEARCH (search each company individually):
+For every company, find ALL of the following (use empty string "" if not found):
+- YouTube channel URL
+- Instagram URL + estimated posts per month
+- TikTok URL + estimated posts per month
+- LinkedIn company page URL (MUST be the Bay Area company, not a UK or other country homonym — verify by checking the LinkedIn page shows California/US location)
+- Twitter/X URL
+- Facebook page URL
 
-RESPOND WITH A JSON ARRAY ONLY. No markdown, no explanation. Each object:
+TIER CLASSIFICATION (assign one tier per company):
+- Tier 1 — Ghost: 0–1 social platforms, minimal/no presence. Small company that never built social. HIGH opportunity.
+- Tier 2 — Underutilized: Has some presence (decent IG following etc.) but not maximized. Could level up. MEDIUM opportunity.
+- Tier 3 — Broken Strategy: Bigger company (500+ employees or Series C+), has multiple platforms and followers, BUT content is low-quality/not working (e.g. Notion-style: big company, bad content). Strategy overhaul opportunity. HIGH opportunity.
+- Tier 4 — Established: Thriving social media everywhere, great engagement, working strategy. SKIP — not a fit.
+
+IMPORTANT: Return Tier 1, 2, and 3 companies ONLY. Do NOT return Tier 4 companies.
+
+CONTENT SCORE (1–10): Rate the opportunity for a content agency. Higher = bigger gap/opportunity.
+- Tier 1: 7–10
+- Tier 2: 4–7
+- Tier 3: 7–9
+- Tier 4: 1–3 (excluded anyway)
+
+RESPOND WITH A JSON ARRAY ONLY. No markdown, no explanation. Each object MUST have:
 {
   "companyName": "Acme Corp",
   "website": "https://acmecorp.com",
   "city": "San Francisco",
+  "country": "US",
+  "isActive": true,
+  "activeNote": "",
   "employeeCount": "250-500",
   "fundingStage": "Series C",
   "estimatedRevenue": "$20M-50M ARR",
@@ -823,10 +845,16 @@ RESPOND WITH A JSON ARRAY ONLY. No markdown, no explanation. Each object:
   "tiktok": "",
   "tiktokPostsPerMonth": 0,
   "linkedIn": "https://linkedin.com/company/acmecorp",
-  "contentGap": ["No YouTube channel", "Instagram: 0.5 posts/month (below threshold)"]
+  "twitter": "",
+  "facebook": "",
+  "tier": 1,
+  "tierLabel": "Ghost",
+  "tierReason": "No YouTube, no Twitter, Instagram posts once every 2 months",
+  "contentScore": 9,
+  "contentGap": ["No YouTube channel", "Instagram: 0.5 posts/month (below threshold)", "No Twitter/X presence"]
 }
 
-Return 5 companies. Only include companies WITH a content gap.`;
+Return 5 companies. ONLY Tier 1, 2, or 3. Verify Bay Area California location for each.`;
 
         const response = await fetch("/api/anthropic", {
           method: "POST",
@@ -862,6 +890,9 @@ Return 5 companies. Only include companies WITH a content gap.`;
             companyName: r.companyName || "Unknown Company",
             website: r.website || "",
             city: r.city || "",
+            country: r.country || "US",
+            isActive: r.isActive !== false,
+            activeNote: r.activeNote || "",
             employeeCount: r.employeeCount || "",
             fundingStage: r.fundingStage || "",
             estimatedRevenue: r.estimatedRevenue || "",
@@ -872,6 +903,12 @@ Return 5 companies. Only include companies WITH a content gap.`;
             tiktok: r.tiktok || "",
             tiktokPostsPerMonth: r.tiktokPostsPerMonth ?? 0,
             linkedIn: r.linkedIn || "",
+            twitter: r.twitter || "",
+            facebook: r.facebook || "",
+            tier: r.tier || 1,
+            tierLabel: r.tierLabel || "Ghost",
+            tierReason: r.tierReason || "",
+            contentScore: r.contentScore || 5,
             contentGap: r.contentGap || [],
           }));
           allResults.push(...batchResults);
@@ -923,6 +960,15 @@ Return 5 companies. Only include companies WITH a content gap.`;
       tiktok: company.tiktok,
       tiktok_posts_per_month: company.tiktokPostsPerMonth,
       linked_in: company.linkedIn,
+      twitter: company.twitter || "",
+      facebook: company.facebook || "",
+      tier: company.tier || null,
+      tier_label: company.tierLabel || null,
+      tier_reason: company.tierReason || null,
+      content_score: company.contentScore || null,
+      is_active: company.isActive !== false,
+      active_note: company.activeNote || "",
+      country: company.country || "US",
       content_gap: company.contentGap,
       contact_name: shipListContacts[company.id]?.name || "",
       contact_title: shipListContacts[company.id]?.title || "",
@@ -1962,7 +2008,7 @@ Respond with ONLY a JSON object:
 
               {/* Controls */}
               <div style={{ ...cardStyle, marginBottom: 24 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 16, alignItems: "flex-end" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr auto", gap: 16, alignItems: "flex-end" }}>
                   <div>
                     <label style={labelStyle}>City / Region</label>
                     <select style={{ ...inputStyle, cursor: "pointer" }} value={shipListCity} onChange={e => setShipListCity(e.target.value)}>
@@ -1979,6 +2025,16 @@ Respond with ONLY a JSON object:
                       <option value="all">All (SaaS + Prof. Services)</option>
                       <option value="saas">SaaS Only (Series B+)</option>
                       <option value="professional_services">Professional Services Only</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Show Tiers</label>
+                    <select style={{ ...inputStyle, cursor: "pointer" }} value={shipListTierFilter} onChange={e => setShipListTierFilter(e.target.value)}>
+                      <option value="all">All (T1 + T2 + T3)</option>
+                      <option value="1">T1 Only — Ghost</option>
+                      <option value="2">T2 Only — Underutilized</option>
+                      <option value="3">T3 Only — Broken Strategy</option>
+                      <option value="13">T1 + T3 (High Priority)</option>
                     </select>
                   </div>
                   <div>
@@ -2024,85 +2080,112 @@ Respond with ONLY a JSON object:
                   </div>
 
                   <div style={{ display: "grid", gap: 14 }}>
-                    {shipListResults.map(r => (
-                      <div key={r.id} style={{ ...cardStyle, marginBottom: 0 }}>
+                    {shipListResults.filter(r => {
+                      if (shipListTierFilter === "all") return true;
+                      if (shipListTierFilter === "13") return r.tier === 1 || r.tier === 3;
+                      return r.tier === parseInt(shipListTierFilter);
+                    }).map(r => (
+                      <div key={r.id} style={{ ...cardStyle, marginBottom: 0, opacity: r.isActive === false ? 0.6 : 1, borderLeft: r.tier === 1 ? "3px solid #f87171" : r.tier === 2 ? "3px solid #fbbf24" : r.tier === 3 ? "3px solid #a78bfa" : `3px solid ${t.border}` }}>
+                        {/* Header row */}
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
+                          {/* Company info */}
                           <div style={{ flex: 1, minWidth: 220 }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
                               <span style={{ fontSize: 15, fontWeight: 700, color: t.text }}>{r.companyName}</span>
-                              {r.companyType && (
-                                <span style={{ background: r.companyType === "SaaS" ? "#1d4ed844" : "#065f4644", color: r.companyType === "SaaS" ? "#93c5fd" : "#6ee7b7", fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 6, letterSpacing: "0.06em" }}>{r.companyType}</span>
-                              )}
+                              {/* Tier badge */}
+                              <span style={{
+                                fontSize: 10, fontWeight: 800, padding: "2px 8px", borderRadius: 6, letterSpacing: "0.06em", textTransform: "uppercase",
+                                background: r.tier === 1 ? "#7f1d1d44" : r.tier === 2 ? "#78350f44" : r.tier === 3 ? "#4c1d9544" : t.bgHover,
+                                color: r.tier === 1 ? "#fca5a5" : r.tier === 2 ? "#fcd34d" : r.tier === 3 ? "#c4b5fd" : t.textMuted,
+                              }}>
+                                T{r.tier} · {r.tierLabel || "Unknown"}
+                              </span>
+                              {/* Content score */}
+                              <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 6, background: r.contentScore >= 8 ? "#15532e44" : r.contentScore >= 5 ? "#78350f44" : t.bgHover, color: r.contentScore >= 8 ? "#86efac" : r.contentScore >= 5 ? "#fcd34d" : t.textMuted }}>
+                                Score: {r.contentScore}/10
+                              </span>
+                              {r.companyType && <span style={{ fontSize: 10, background: "#1d4ed822", color: "#93c5fd", padding: "2px 6px", borderRadius: 4 }}>{r.companyType}</span>}
+                              {r.country && r.country !== "US" && <span style={{ fontSize: 10, background: "#7f1d1d33", color: "#fca5a5", padding: "2px 6px", borderRadius: 4 }}>⚠ {r.country}</span>}
                             </div>
+                            {!r.isActive && <div style={{ fontSize: 11, color: "#fca5a5", marginBottom: 4 }}>⚠ {r.activeNote || "Company may be inactive"}</div>}
                             <div style={{ fontSize: 12, color: t.textMuted, marginBottom: 2 }}>
                               {r.city && <span>{r.city} · </span>}
-                              {r.employeeCount && <span>{r.employeeCount} employees · </span>}
+                              {r.employeeCount && <span>{r.employeeCount} emp · </span>}
                               {r.fundingStage && <span style={{ color: t.accent }}>{r.fundingStage}</span>}
                             </div>
                             {r.estimatedRevenue && <div style={{ fontSize: 12, color: t.textFaint }}>{r.estimatedRevenue}</div>}
-                            {r.website && <a href={r.website} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: t.accent, textDecoration: "none", display: "block", marginTop: 4 }}>{r.website}</a>}
-                            {r.linkedIn && <a href={r.linkedIn} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: "#60a5fa", textDecoration: "none", display: "block", marginTop: 4 }}>🔗 LinkedIn</a>}
+                            {r.tierReason && <div style={{ fontSize: 11, color: t.textFaint, marginTop: 4, fontStyle: "italic" }}>"{r.tierReason}"</div>}
+                            {/* All links row */}
+                            <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+                              {r.website && <a href={r.website} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: t.accent, textDecoration: "none" }}>🌐 Site</a>}
+                              {r.linkedIn && <a href={r.linkedIn} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#60a5fa", textDecoration: "none" }}>💼 LinkedIn</a>}
+                              {r.instagram && <a href={r.instagram} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#f472b6", textDecoration: "none" }}>📸 IG</a>}
+                              {r.youtube && <a href={r.youtube} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#f87171", textDecoration: "none" }}>▶ YT</a>}
+                              {r.tiktok && <a href={r.tiktok} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#e879f9", textDecoration: "none" }}>🎵 TT</a>}
+                              {r.twitter && <a href={r.twitter} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#93c5fd", textDecoration: "none" }}>𝕏 Twitter</a>}
+                              {r.facebook && <a href={r.facebook} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#818cf8", textDecoration: "none" }}>fb Facebook</a>}
+                            </div>
                           </div>
 
-                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" }}>
-                            <div style={{ background: r.youtube ? "#15532e44" : "#7f1d1d33", border: `1px solid ${r.youtube ? "#16a34a44" : "#b91c1c44"}`, borderRadius: 8, padding: "6px 10px", minWidth: 80, textAlign: "center" }}>
-                              <div style={{ fontSize: 16 }}>▶</div>
-                              <div style={{ fontSize: 10, fontWeight: 700, color: r.youtube ? "#86efac" : "#fca5a5", marginTop: 2 }}>{r.youtube ? "Has YouTube" : "No YouTube"}</div>
-                              {r.youtube && <a href={r.youtube} target="_blank" rel="noopener noreferrer" style={{ fontSize: 9, color: t.textFaint, textDecoration: "none" }}>view →</a>}
-                            </div>
-                            <div style={{ background: r.instagramPostsPerMonth >= 1 ? "#15532e44" : "#7f1d1d33", border: `1px solid ${r.instagramPostsPerMonth >= 1 ? "#16a34a44" : "#b91c1c44"}`, borderRadius: 8, padding: "6px 10px", minWidth: 80, textAlign: "center" }}>
-                              <div style={{ fontSize: 16 }}>📸</div>
-                              <div style={{ fontSize: 10, fontWeight: 700, color: r.instagramPostsPerMonth >= 1 ? "#86efac" : "#fca5a5", marginTop: 2 }}>
-                                {r.instagram ? `${r.instagramPostsPerMonth}/mo` : "No IG"}
+                          {/* Social platform status badges */}
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-start" }}>
+                            {[
+                              { label: "YT", icon: "▶", present: !!r.youtube, freq: null },
+                              { label: "IG", icon: "📸", present: !!r.instagram, freq: r.instagramPostsPerMonth },
+                              { label: "TT", icon: "🎵", present: !!r.tiktok, freq: r.tiktokPostsPerMonth },
+                              { label: "LI", icon: "💼", present: !!r.linkedIn, freq: null },
+                              { label: "𝕏", icon: "𝕏", present: !!r.twitter, freq: null },
+                              { label: "FB", icon: "fb", present: !!r.facebook, freq: null },
+                            ].map(p => (
+                              <div key={p.label} style={{ background: p.present && (p.freq === null || p.freq >= 1) ? "#15532e44" : "#7f1d1d33", border: `1px solid ${p.present && (p.freq === null || p.freq >= 1) ? "#16a34a44" : "#b91c1c44"}`, borderRadius: 8, padding: "5px 8px", minWidth: 44, textAlign: "center" }}>
+                                <div style={{ fontSize: 13 }}>{p.icon}</div>
+                                <div style={{ fontSize: 9, fontWeight: 700, color: p.present && (p.freq === null || p.freq >= 1) ? "#86efac" : "#fca5a5", marginTop: 1 }}>
+                                  {p.freq !== null ? (p.present ? `${p.freq}/mo` : "none") : (p.present ? "✓" : "✗")}
+                                </div>
                               </div>
-                              {r.instagram && <a href={r.instagram} target="_blank" rel="noopener noreferrer" style={{ fontSize: 9, color: t.textFaint, textDecoration: "none" }}>view →</a>}
-                            </div>
-                            <div style={{ background: r.tiktokPostsPerMonth >= 1 ? "#15532e44" : "#7f1d1d33", border: `1px solid ${r.tiktokPostsPerMonth >= 1 ? "#16a34a44" : "#b91c1c44"}`, borderRadius: 8, padding: "6px 10px", minWidth: 80, textAlign: "center" }}>
-                              <div style={{ fontSize: 16 }}>🎵</div>
-                              <div style={{ fontSize: 10, fontWeight: 700, color: r.tiktokPostsPerMonth >= 1 ? "#86efac" : "#fca5a5", marginTop: 2 }}>
-                                {r.tiktok ? `${r.tiktokPostsPerMonth}/mo` : "No TikTok"}
-                              </div>
-                              {r.tiktok && <a href={r.tiktok} target="_blank" rel="noopener noreferrer" style={{ fontSize: 9, color: t.textFaint, textDecoration: "none" }}>view →</a>}
-                            </div>
+                            ))}
                           </div>
                         </div>
 
-                        {/* Save to DB / Status */}
-                        {(() => {
-                          const saved = savedCompanies.find(c => c.company_name === r.companyName);
-                          return saved ? (
-                            <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 10 }}>
-                              {["new","contacted","replied","won","lost","skipped"].map(s => (
-                                <button key={s} onClick={() => updateCompanyStatus(saved.id, s)}
-                                  style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, border: "none", cursor: "pointer",
-                                    background: saved.status === s ? t.accent : t.bgHover,
-                                    color: saved.status === s ? "#0c0a09" : t.textMuted, fontWeight: saved.status === s ? 700 : 400 }}>
-                                  {s}
-                                </button>
-                              ))}
-                              <button onClick={() => deleteFromDB(saved.id, r.companyName)}
-                                style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, border: "none", cursor: "pointer", background: "#7f1d1d33", color: "#fca5a5" }}>
-                                ✕ remove
-                              </button>
-                            </div>
-                          ) : (
-                            <button onClick={() => saveCompanyToDB(r)}
-                              style={{ fontSize: 11, padding: "5px 12px", borderRadius: 8, border: "none", cursor: "pointer", background: t.accent, color: "#0c0a09", fontWeight: 700, marginTop: 10 }}>
-                              + Save to DB
-                            </button>
-                          );
-                        })()}
-
+                        {/* Content gaps */}
                         {r.contentGap && r.contentGap.length > 0 && (
-                          <div style={{ marginTop: 12, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                          <div style={{ marginTop: 10, display: "flex", gap: 6, flexWrap: "wrap" }}>
                             {r.contentGap.map((gap, gi) => (
                               <span key={gi} style={{ background: "#7f1d1d22", border: "1px solid #b91c1c33", color: "#fca5a5", fontSize: 11, padding: "3px 8px", borderRadius: 6 }}>⚠ {gap}</span>
                             ))}
                           </div>
                         )}
 
-                        {/* Outreach panel */}
-                        <div style={{ marginTop: 10 }}>
+                        {/* Save / status row */}
+                        <div style={{ marginTop: 12 }}>
+                          {(() => {
+                            const saved = savedCompanies.find(c => c.company_name === r.companyName);
+                            return saved ? (
+                              <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                                {["new","contacted","replied","won","lost","skipped"].map(s => (
+                                  <button key={s} onClick={() => updateCompanyStatus(saved.id, s)}
+                                    style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, border: "none", cursor: "pointer",
+                                      background: saved.status === s ? t.accent : t.bgHover,
+                                      color: saved.status === s ? "#0c0a09" : t.textMuted, fontWeight: saved.status === s ? 700 : 400 }}>
+                                    {s}
+                                  </button>
+                                ))}
+                                <button onClick={() => deleteFromDB(saved.id, r.companyName)}
+                                  style={{ fontSize: 10, padding: "3px 8px", borderRadius: 6, border: "none", cursor: "pointer", background: "#7f1d1d33", color: "#fca5a5" }}>
+                                  ✕ remove
+                                </button>
+                              </div>
+                            ) : (
+                              <button onClick={() => saveCompanyToDB(r)}
+                                style={{ fontSize: 11, padding: "5px 12px", borderRadius: 8, border: "none", cursor: "pointer", background: t.accent, color: "#0c0a09", fontWeight: 700 }}>
+                                + Save to DB
+                              </button>
+                            );
+                          })()}
+                        </div>
+
+                        {/* Outreach panel toggle */}
+                        <div style={{ marginTop: 8 }}>
                           <button
                             onClick={() => {
                               if (!shipListContacts[r.id]) {
@@ -2119,7 +2202,6 @@ Respond with ONLY a JSON object:
 
                         {shipListOutreachOpen[r.id] && shipListContacts[r.id] && (
                           <div style={{ marginTop: 12, background: t.bgHover, borderRadius: 10, padding: "14px 16px" }}>
-                            {/* Contact info */}
                             <div style={{ marginBottom: 10 }}>
                               <div style={{ fontSize: 12, fontWeight: 700, color: t.text, marginBottom: 4 }}>👤 Contact Found</div>
                               <div style={{ fontSize: 13, color: t.text }}>{shipListContacts[r.id].name} — <span style={{ color: t.textMuted }}>{shipListContacts[r.id].title}</span></div>
@@ -2130,7 +2212,6 @@ Respond with ONLY a JSON object:
                                 <span style={{ fontSize: 11, color: t.textFaint }}>confidence: {shipListContacts[r.id].confidence || "medium"}</span>
                               </div>
                             </div>
-                            {/* Outreach draft */}
                             {shipListOutreach[r.id] && (
                               <div>
                                 <div style={{ fontSize: 12, fontWeight: 700, color: t.text, marginBottom: 6 }}>
