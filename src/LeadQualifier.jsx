@@ -396,7 +396,7 @@ export default function LeadQualifier() {
   const [shipListResults, setShipListResults] = useState([]);
   const [shipListLoading, setShipListLoading] = useState(false);
   const [shipListError, setShipListError] = useState(null);
-  const [shipListCount, setShipListCount] = useState(15);
+  const [shipListCount, setShipListCount] = useState(10);
   const [shipListCompanyType, setShipListCompanyType] = useState("all");
   const [shipListCity, setShipListCity] = useState("San Francisco");
   const [shipListProgress, setShipListProgress] = useState(null);
@@ -823,7 +823,16 @@ Return 5 companies. Only include companies WITH a content gap.`;
           }),
         });
         const data = await response.json();
-        if (data.error) { setShipListError(data.error.message || "API error."); setShipListLoading(false); setShipListProgress(null); return; }
+        if (data.error) {
+          const msg = data.error.message || "API error.";
+          const isRateLimit = msg.toLowerCase().includes("rate limit") || data.error.type === "rate_limit_error";
+          setShipListError(isRateLimit
+            ? `Rate limit hit — ${allResults.length > 0 ? `showing ${allResults.length} companies found so far. Wait 60s and try again for more.` : "please wait 60 seconds and try again."}`
+            : msg);
+          setShipListLoading(false);
+          setShipListProgress(null);
+          return;
+        }
 
         const textParts = [];
         (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
@@ -850,6 +859,11 @@ Return 5 companies. Only include companies WITH a content gap.`;
           }));
           allResults.push(...batchResults);
           setShipListResults(prev => [...prev, ...batchResults]);
+        }
+
+        // Pause between batches to avoid rate limit (450k tokens/min)
+        if (batchIndex < totalBatches - 1) {
+          await new Promise(r => setTimeout(r, 3000));
         }
       }
 
