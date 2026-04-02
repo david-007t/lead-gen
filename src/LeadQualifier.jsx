@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { createClient } from "@supabase/supabase-js";
+// NOTE: Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in the Vercel dashboard under Project Settings > Environment Variables
 const supabase = createClient(
-  "https://eosxzlqvvxagxwmhozmp.supabase.co",
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVvc3h6bHF2dnhhZ3h3bWhvem1wIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ1NjU5OTMsImV4cCI6MjA5MDE0MTk5M30.z86D2Hjp0M3AIsrKlBeoh-v2EXHtBROUiL-9ekOn56A"
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
 );
 
 // ─── CONSTANTS ────────────────────────────────────────────────
@@ -326,7 +327,7 @@ async function saveData(key, val) {
 // ─── MAIN COMPONENT ──────────────────────────────────────────
 export default function LeadQualifier() {
   const [loading, setLoading] = useState(true);
-  const [theme, setTheme] = useState("dark");
+  const [theme, setTheme] = useState(() => localStorage.getItem('lq-theme') || 'dark');
   const [companyName, setCompanyName] = useState("");
   const [industry, setIndustry] = useState("construction");
   const [setupComplete, setSetupComplete] = useState(false);
@@ -445,6 +446,7 @@ export default function LeadQualifier() {
   useEffect(() => { if (!loading) saveData(SK.leads, leads); }, [leads, loading]);
   useEffect(() => { if (!loading) saveData(SK.criteria, criteria); }, [criteria, loading]);
   useEffect(() => { if (!loading) saveData(SK.settings, { companyName, theme, industry, setupComplete }); }, [companyName, theme, industry, setupComplete, loading]);
+  useEffect(() => { localStorage.setItem('lq-theme', theme); }, [theme]);
 
   // ─── KEYBOARD SHORTCUTS ───────────────────────────────────
   useEffect(() => {
@@ -809,9 +811,11 @@ For every company, find ALL of the following (use empty string "" if not found):
 - YouTube channel URL
 - Instagram URL + estimated posts per month
 - TikTok URL + estimated posts per month
-- LinkedIn company page URL (MUST be the Bay Area company, not a UK or other country homonym — verify by checking the LinkedIn page shows California/US location)
+- LinkedIn company page URL (MUST be the Bay Area company, not a UK or other country homonym — verify by checking the LinkedIn page shows California/US location). CRITICAL: LinkedIn company URL must be for a Bay Area, CA company. If you find multiple companies with the same name, always use the one headquartered in San Francisco, Oakland, San Jose, or surrounding Bay Area cities. Verify the company location before including the LinkedIn URL.
 - Twitter/X URL
 - Facebook page URL
+
+SOCIAL MEDIA URL CONFIDENCE: For all social media URLs, only include them if you are highly confident they belong to this specific Bay Area company. If uncertain, omit the field rather than guess.
 
 TIER CLASSIFICATION (assign one tier per company):
 - Tier 1 — Ghost: 0–1 social platforms, minimal/no presence. Small company that never built social. HIGH opportunity.
@@ -1132,6 +1136,7 @@ Return ONLY the message text. No labels, no markdown.`;
     }
 
     const allRaw = [];
+    let failedBatches = 0;
 
     for (const batch of batches) {
       // 3 query variations per role for broader coverage
@@ -1207,6 +1212,7 @@ Return fewer results if needed. Quality over quantity.`;
         if (data.error) {
           console.log("API ERROR:", JSON.stringify(data.error));
           console.error("API error for batch:", batch, data.error);
+          failedBatches++;
           continue;
         }
 
@@ -1303,7 +1309,12 @@ Return fewer results if needed. Quality over quantity.`;
         }
       } catch (err) {
         console.error("Search error for batch:", batch, err);
+        failedBatches++;
       }
+    }
+
+    if (failedBatches > 0 && allRaw.length > 0) {
+      setIndeedError(`${failedBatches} batch${failedBatches > 1 ? "es" : ""} failed to load. Results may be incomplete.`);
     }
 
     if (allRaw.length === 0) {
@@ -1688,38 +1699,6 @@ Respond with ONLY a JSON object:
     });
     return result;
   }, [leads, searchQuery, filterStatus, filterFollowUp, sortBy, sortDir]);
-
-  // ─── ANALYTICS DATA ──────────────────────────────────────
-  const analytics = useMemo(() => {
-    if (leads.length === 0) return null;
-    const qualified = leads.filter(l => l.result.qualified).length;
-    const unqualified = leads.length - qualified;
-    const qualRate = Math.round((qualified / leads.length) * 100);
-    const byType = {}; leads.forEach(l => { const tp = l.projectType || "unknown"; byType[tp] = (byType[tp] || 0) + 1; });
-    const typeData = Object.entries(byType).map(([name, value]) => ({ name: name.replace(/_/g, " "), value })).sort((a, b) => b.value - a.value);
-    const bySource = {}; leads.forEach(l => { const s = l.source || "Unknown"; bySource[s] = (bySource[s] || 0) + 1; });
-    const sourceData = Object.entries(bySource).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
-    const budgets = leads.map(l => parseFloat(l.budget)).filter(b => !isNaN(b));
-    const totalPipeline = budgets.reduce((a, b) => a + b, 0);
-    const qualifiedPipeline = leads.filter(l => l.result.qualified).map(l => parseFloat(l.budget)).filter(b => !isNaN(b)).reduce((a, b) => a + b, 0);
-    const avgDeal = budgets.length > 0 ? totalPipeline / budgets.length : 0;
-    const budgetBrackets = [
-      { label: "<$50K", min: 0, max: 50000 },
-      { label: "$50K–250K", min: 50000, max: 250000 },
-      { label: "$250K–1M", min: 250000, max: 1000000 },
-      { label: "$1M–5M", min: 1000000, max: 5000000 },
-      { label: "$5M+", min: 5000000, max: Infinity },
-    ];
-    const budgetDistribution = budgetBrackets.map(b => ({
-      name: b.label,
-      count: budgets.filter(v => v >= b.min && v < b.max).length,
-    })).filter(b => b.count > 0);
-    const disqualReasons = {};
-    leads.forEach(l => { l.result.criteria.filter(c => !c.pass).forEach(c => { disqualReasons[c.name] = (disqualReasons[c.name] || 0) + 1; }); });
-    const topDisqualReasons = Object.entries(disqualReasons).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count);
-    const byFollowUp = {}; leads.forEach(l => { const f = l.followUp || "new"; byFollowUp[f] = (byFollowUp[f] || 0) + 1; });
-    return { qualified, unqualified, qualRate, typeData, sourceData, totalPipeline, qualifiedPipeline, avgDeal, budgetDistribution, topDisqualReasons, byFollowUp };
-  }, [leads]);
 
   // ─── STYLES ───────────────────────────────────────────────
   const inputStyle = { width: "100%", padding: "10px 14px", background: t.bgAlt, border: `1px solid ${t.borderInput}`, borderRadius: 6, color: t.text, fontFamily: "'DM Sans', sans-serif", fontSize: 14, outline: "none", transition: "border-color 0.2s", boxSizing: "border-box" };
@@ -2195,8 +2174,8 @@ Respond with ONLY a JSON object:
                               }
                             }}
                             disabled={generatingContact === r.id}
-                            style={{ fontSize: 12, padding: "6px 14px", borderRadius: 8, border: `1px solid ${t.border}`, background: shipListOutreachOpen[r.id] ? t.accent : t.bgHover, color: shipListOutreachOpen[r.id] ? "#0c0a09" : t.text, cursor: "pointer", fontWeight: 600 }}>
-                            {generatingContact === r.id ? "🔍 Finding contact..." : shipListContacts[r.id] ? (shipListOutreachOpen[r.id] ? "▲ Hide Outreach" : "▼ Show Outreach") : "⚡ Find Contact + Draft Outreach"}
+                            style={{ fontSize: 12, padding: "6px 14px", borderRadius: 8, border: `1px solid ${t.border}`, background: shipListOutreachOpen[r.id] ? t.accent : t.bgHover, color: shipListOutreachOpen[r.id] ? "#0c0a09" : t.text, cursor: generatingContact === r.id ? "not-allowed" : "pointer", opacity: generatingContact === r.id ? 0.7 : 1, fontWeight: 600 }}>
+                            {generatingContact === r.id ? "Finding..." : shipListContacts[r.id] ? (shipListOutreachOpen[r.id] ? "▲ Hide Outreach" : "▼ Show Outreach") : "⚡ Find Contact + Draft Outreach"}
                           </button>
                         </div>
 
