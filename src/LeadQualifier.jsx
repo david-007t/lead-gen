@@ -631,7 +631,7 @@ Return ${prospectCount} businesses. Use real data from your search. If you can't
         }),
       });
       const data = await response.json();
-      if (data.error) { setFinderError(data.error.message || "API error. Please try again."); setFinderLoading(false); return; }
+      if (data.error) { setProspectError("API error: " + (data.error.message || "Unknown error from the AI service. Please try again.")); setProspectLoading(false); return; }
       
       // Extract all text from response blocks (web search responses have many block types)
       const textParts = [];
@@ -653,7 +653,7 @@ Return ${prospectCount} businesses. Use real data from your search. If you can't
       if (!parsed) {
         const allArrays = [...fullText.matchAll(/\[[\s\S]*?\](?=\s*$|\s*```|\s*\n\n)/g)];
         for (let i = allArrays.length - 1; i >= 0; i--) {
-          try { const candidate = JSON.parse(allArrays[i][0]); if (Array.isArray(candidate) && candidate.length > 0 && candidate[0].name !== undefined) { parsed = candidate; break; } } catch {}
+          try { const candidate = JSON.parse(allArrays[i][0]); if (Array.isArray(candidate) && candidate.length > 0 && (candidate[0].businessName !== undefined || candidate[0].name !== undefined)) { parsed = candidate; break; } } catch {}
         }
       }
       
@@ -669,7 +669,18 @@ Return ${prospectCount} businesses. Use real data from your search. If you can't
       }
       
       if (!parsed || !Array.isArray(parsed) || parsed.length === 0) {
-        setProspectError("No businesses found. Try a larger city or different niche.");
+        // Give the CEO a specific reason so they know which step failed
+        let reason;
+        if (!fullText.trim()) {
+          reason = "The AI returned an empty response — the API may be rate-limited or temporarily unavailable. Please try again in a moment.";
+        } else if (!parsed) {
+          const preview = fullText.slice(0, 200).replace(/\n/g, " ");
+          reason = `The AI responded but the result could not be parsed as business data (it may have returned a plain-text explanation instead of JSON). Response preview: "${preview}…"`;
+        } else {
+          // parsed is an empty array
+          reason = `The AI searched for "${prospectNiche}" businesses in "${prospectCity.trim()}" and returned an empty list. Try a broader city name (e.g. "Oakland, CA" instead of "Oakland") or a less specific niche.`;
+        }
+        setProspectError(reason);
         setProspectLoading(false);
         return;
       }
@@ -701,7 +712,7 @@ Return ${prospectCount} businesses. Use real data from your search. If you can't
       setProspects(results);
       showToast(`Found ${results.length} prospects`);
     } catch (err) {
-      setProspectError("Search failed — please try again.");
+      setProspectError("Search failed — " + (err?.message || "unexpected error. Please try again."));
     }
     setProspectLoading(false);
   };
