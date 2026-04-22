@@ -279,32 +279,44 @@ function parseCSV(text) {
 const LEAD_REQUEST_EXAMPLE = `Act as freight broker in the US. Identify shippers in Healthcare & Medical Supply, Food & Beverage especially refrigerated, and Construction & Building Materials. Target Transportation Managers, Logistics Managers, and Shipping Supervisors. Companies should be $10M-$100M revenue, regional distributors, overflow freight, after-hours coverage. Include company name, contact person, email, phone, LinkedIn, and high-demand lanes right now. Format as target shipper list and lanes in an Excel/Google Sheet.`;
 
 const FREIGHT_MIN_COLUMNS = [
-  "Industry",
   "Company Name",
-  "Target Role",
   "Contact Person",
+  "Target Role",
+  "Best Phone",
+  "Phone Type",
+  "Phone Status",
   "Email",
-  "Phone",
   "LinkedIn",
+  "Contact Status",
+  "Reachability Score",
+  "Industry",
   "Estimated Revenue",
   "Company Type",
   "Region",
   "High-Demand Lane",
   "Reason / Buying Signal",
   "Source URL",
+  "Contact Source URL",
+  "Call Notes",
   "Confidence",
 ];
 
 const DEFAULT_LEAD_COLUMNS = [
   "Company Name",
-  "Target Role",
   "Contact Person",
+  "Target Role",
+  "Best Phone",
+  "Phone Type",
+  "Phone Status",
   "Email",
-  "Phone",
   "LinkedIn",
+  "Contact Status",
+  "Reachability Score",
   "Region",
   "Reason / Buying Signal",
   "Source URL",
+  "Contact Source URL",
+  "Call Notes",
   "Confidence",
 ];
 
@@ -366,7 +378,7 @@ function buildLeadColumns(job, rows, promptText) {
     ...((job?.requiredColumns || job?.columns || []).map(normalizeColumnName)),
     ...((rows || []).flatMap(row => Object.keys(row || {}).filter(k => !k.startsWith("__")).map(normalizeColumnName))),
   ].filter(Boolean);
-  const looksFreight = /freight|broker|shipper|lane|refrigerated|logistics/i.test(promptText || "");
+  const looksFreight = /freight|broker|shipper|lane|refrigerated|logistics|distributor|wholesale|foodservice/i.test(promptText || "");
   const base = looksFreight ? FREIGHT_MIN_COLUMNS : DEFAULT_LEAD_COLUMNS;
   return [...base, ...requested].filter((col, index, list) => (
     list.findIndex(other => columnKey(other) === columnKey(col)) === index
@@ -1805,11 +1817,30 @@ Engine requirements:
    - requiredColumns
    - specialResearchRequirements
 2. Research real companies and contacts using web search.
-3. Do not invent unavailable contact data. If a person, email, phone, LinkedIn, revenue, or lane cannot be verified, use an empty string and lower the confidence.
-4. Every row must include a Source URL when possible and a Confidence value of High, Medium, or Low.
-5. Add dynamic columns requested by the user. If the request is about freight brokers, shippers, logistics, lanes, refrigerated freight, or overflow freight, include at minimum these columns:
+3. Prioritize callable leads. A row with a usable phone number is more valuable than a row with only company info.
+4. Prefer named decision makers with a phone number. If no named person is public, use the best call target role and the main/location phone.
+5. Search specifically for:
+   - main company phone
+   - location/branch phone
+   - dispatch, logistics, shipping, warehouse, operations, or distribution department phone
+   - named decision maker
+   - contact source URL that verifies the phone/name when possible
+6. If a company has no phone number after research, include it only if it is an exceptional fit; mark Phone Status as "Missing", Reachability Score as "Low", and explain what is missing.
+7. For freight/shipper searches, include shippers, distributors, manufacturers, and wholesalers. Exclude carriers, brokers, 3PLs, couriers, directories, job boards, and national mega-companies unless the user asks for them.
+8. Do not invent unavailable contact data. If a person, email, LinkedIn, revenue, lane, or direct phone cannot be verified, use an empty string and lower the confidence.
+9. Every row must include a Source URL when possible and a Confidence value of High, Medium, or Low.
+10. Add dynamic columns requested by the user. If the request is about freight brokers, shippers, logistics, lanes, refrigerated freight, or overflow freight, include at minimum these columns:
 ${FREIGHT_MIN_COLUMNS.map(c => `   - ${c}`).join("\n")}
-6. Special research requirements like "high-demand lanes" should become columns and should be supported by a reason / buying signal.
+11. Special research requirements like "high-demand lanes" should become columns and should be supported by a reason / buying signal.
+
+Phone and contact field rules:
+- Best Phone: the most useful number to call.
+- Phone Type: Direct, Department, Location/Main Line, or Missing.
+- Phone Status: Direct, Main Line, or Missing.
+- Contact Status: Named Contact, Role Only, or Company Only.
+- Reachability Score: High if named contact + phone, Medium if role/company + phone, Low if no phone.
+- Call Notes: one short sentence telling a caller who to ask for and why.
+- Return fewer rows if needed. Five callable leads are better than ten thin company records.
 
 RESPOND WITH ONLY this JSON object:
 {
@@ -1825,19 +1856,25 @@ RESPOND WITH ONLY this JSON object:
   "columns": ["Company Name", "..."],
   "rows": [
     {
-      "Industry": "...",
       "Company Name": "...",
-      "Target Role": "...",
       "Contact Person": "",
+      "Target Role": "Operations Manager",
+      "Best Phone": "(555) 123-4567",
+      "Phone Type": "Location/Main Line",
+      "Phone Status": "Main Line",
       "Email": "",
-      "Phone": "",
       "LinkedIn": "",
+      "Contact Status": "Role Only",
+      "Reachability Score": "Medium",
+      "Industry": "...",
       "Estimated Revenue": "...",
       "Company Type": "...",
       "Region": "...",
       "High-Demand Lane": "...",
       "Reason / Buying Signal": "...",
       "Source URL": "https://...",
+      "Contact Source URL": "https://...",
+      "Call Notes": "Call main line and ask for the operations or logistics manager about refrigerated overflow coverage.",
       "Confidence": "Medium"
     }
   ]
@@ -1851,7 +1888,7 @@ RESPOND WITH ONLY this JSON object:
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
           max_tokens: 10000,
-          system: "You are the Lead Request Engine for a B2B lead generation app. Parse natural-language lead requests into reusable structured jobs, search the web for real leads, cite source URLs, and return ONLY valid JSON. Accuracy beats volume. Never fabricate contact data.",
+          system: "You are the Lead Request Engine for a B2B sales app. Parse natural-language requests into reusable lead jobs, search the web for real leads, and return call-ready rows. Phone numbers and reachable contacts are the priority. Accuracy beats volume. Never fabricate contact data. Return ONLY valid JSON.",
           messages: [{ role: "user", content: prompt }],
           tools: [{ type: "web_search_20250305", name: "web_search" }],
         }),
@@ -2000,11 +2037,11 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
     const company = getFirstLeadCell(lead, ["Company Name", "Business Name", "Company"]);
     const contact = getFirstLeadCell(lead, ["Contact Person", "Owner Name", "Name"]);
     const email = getFirstLeadCell(lead, ["Email", "Email Address"]);
-    const phone = getFirstLeadCell(lead, ["Phone", "Phone Number"]);
+    const phone = getFirstLeadCell(lead, ["Best Phone", "Phone", "Phone Number"]);
     const industryValue = getFirstLeadCell(lead, ["Industry", "Niche", "Company Type"]);
     const region = getFirstLeadCell(lead, ["Region", "Location", "Address", "City"]);
     const source = getFirstLeadCell(lead, ["Source URL", "Website", "Source"]);
-    const signal = getFirstLeadCell(lead, ["Reason / Buying Signal", "Buying Signals", "Description", "High-Demand Lane"]);
+    const signal = getFirstLeadCell(lead, ["Call Notes", "Reason / Buying Signal", "Buying Signals", "Description", "High-Demand Lane"]);
     const newLead = {
       id: Date.now() + Math.random(),
       createdAt: Date.now(),
