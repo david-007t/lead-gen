@@ -58,13 +58,9 @@ export default async function handler(req, res) {
 
   const clientEmail = process.env.GOOGLE_SHEETS_CLIENT_EMAIL || process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
   const privateKey = getPrivateKey();
+  const webhookUrl = process.env.GOOGLE_SHEETS_WEBHOOK_URL;
+  const webhookToken = process.env.GOOGLE_SHEETS_WEBHOOK_TOKEN;
   const defaultSpreadsheetId = process.env.GOOGLE_SHEETS_SPREADSHEET_ID;
-
-  if (!clientEmail || !privateKey || !defaultSpreadsheetId) {
-    return res.status(503).json({
-      error: 'Google Sheets append is not configured. Set GOOGLE_SHEETS_CLIENT_EMAIL, GOOGLE_SHEETS_PRIVATE_KEY, and GOOGLE_SHEETS_SPREADSHEET_ID in Vercel.',
-    });
-  }
 
   const { columns, rows, spreadsheetId, sheetName = 'Lead Request Results', range } = req.body || {};
   if (!Array.isArray(columns) || !Array.isArray(rows)) {
@@ -79,6 +75,39 @@ export default async function handler(req, res) {
   ];
 
   try {
+    if (webhookUrl) {
+      const webhookResponse = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({
+          token: webhookToken || '',
+          sheetName,
+          columns,
+          rows,
+          values,
+        }),
+      });
+      const rawText = await webhookResponse.text();
+      let data = {};
+      try { data = JSON.parse(rawText); } catch {}
+      if (!webhookResponse.ok || data.error) {
+        return res.status(webhookResponse.status || 502).json({
+          error: data.error || rawText || 'Google Sheets webhook append failed',
+        });
+      }
+      return res.status(200).json({
+        success: true,
+        updatedRows: data.updatedRows || values.length,
+        updatedRange: data.updatedRange || '',
+      });
+    }
+
+    if (!clientEmail || !privateKey || !defaultSpreadsheetId) {
+      return res.status(503).json({
+        error: 'Google Sheets append is not configured. Set GOOGLE_SHEETS_WEBHOOK_URL in Vercel, or set GOOGLE_SHEETS_CLIENT_EMAIL, GOOGLE_SHEETS_PRIVATE_KEY, and GOOGLE_SHEETS_SPREADSHEET_ID.',
+      });
+    }
+
     const token = await getAccessToken(clientEmail, privateKey);
     const targetSpreadsheetId = spreadsheetId || defaultSpreadsheetId;
     const appendRange = range || `${sheetName}!A1`;
