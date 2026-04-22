@@ -630,7 +630,10 @@ Return ${prospectCount} businesses. Use real data from your search. If you can't
           tools: [{ type: "web_search_20250305", name: "web_search" }],
         }),
       });
-      const data = await response.json();
+      // Guard against non-JSON responses (Vercel/CDN error pages, timeouts, etc.)
+      const _prospectRaw = await response.text();
+      let data;
+      try { data = JSON.parse(_prospectRaw); } catch { throw new Error(`Search service unavailable (HTTP ${response.status}) — please try again in a moment.`); }
       if (data.error) { setProspectError("API error: " + (data.error.message || "Unknown error from the AI service. Please try again.")); setProspectLoading(false); return; }
       
       // Extract all text from response blocks (web search responses have many block types)
@@ -1670,7 +1673,10 @@ RESPOND WITH A JSON ARRAY ONLY. No markdown, no explanation. Each object must ha
           tools: [{ type: "web_search_20250305", name: "web_search" }],
         }),
       });
-      const data = await response.json();
+      // Guard against non-JSON responses (Vercel/CDN error pages, timeouts, etc.)
+      const _leadListRaw = await response.text();
+      let data;
+      try { data = JSON.parse(_leadListRaw); } catch { throw new Error(`Search service unavailable (HTTP ${response.status}) — please try again in a moment.`); }
       if (data.error) { setLeadListError(data.error.message || "API error. Please try again."); setLeadListLoading(false); return; }
 
       const textParts = [];
