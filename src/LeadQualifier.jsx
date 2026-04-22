@@ -368,6 +368,7 @@ export default function LeadQualifier() {
   const [prospects, setProspects] = useState([]);
   const [prospectLoading, setProspectLoading] = useState(false);
   const [prospectError, setProspectError] = useState(null);
+  const [prospectProgress, setProspectProgress] = useState(null); // { phase, current, total, batchIndex, totalBatches }
   const [expandedProspect, setExpandedProspect] = useState(null);
   const [draftingEmail, setDraftingEmail] = useState(null);
   const [emailDrafts, setEmailDrafts] = useState({});
@@ -556,167 +557,192 @@ export default function LeadQualifier() {
     setSettingsEdited(false);
   };
 
-  // ─── PROSPECT SEARCH (Multi-pass deep search) ────────────
+  // ─── PROSPECT SEARCH (Batched: discover then enrich) ─────
   const handleProspectSearch = async () => {
     if (!prospectCity.trim()) { showToast("Enter a city or region", "error"); return; }
     if (!prospectNiche.trim()) { showToast("Enter a business niche", "error"); return; }
     setProspectLoading(true);
     setProspectError(null);
     setProspects([]);
+    setProspectProgress({ phase: "discovery", current: 0, total: prospectCount });
 
-    const filterList = [];
-    if (prospectFilters.hiringOnIndeed) filterList.push("Hiring on Indeed (growth signal)");
-    if (prospectFilters.badWebsite) filterList.push("No website or bad website");
-    if (prospectFilters.lowReviews) filterList.push("Low/few Google reviews (<20 reviews or <4.0 stars)");
-    if (prospectFilters.noSocial) filterList.push("No social media presence");
-    if (prospectFilters.runningAds) filterList.push("Running ads (Google/Facebook)");
-    if (prospectFilters.recentlyStarted) filterList.push("Recently started business");
+    const ENRICH_BATCH_SIZE = 4;
 
-    const prompt = `You are helping Ascend Solutions (a digital agency offering AI automation, web development, and advertising services) find ${prospectNiche} businesses in ${prospectCity.trim()} that need their services.
-
-MULTI-STEP SEARCH PROCESS:
-
-Step 1: Search for "${prospectNiche} companies in ${prospectCity.trim()}" — find ${prospectCount} real businesses with names, addresses, phone numbers, websites.
-
-Step 2: For each business found, search for:
-- Their Indeed job postings (hiring = growth signal)
-- Google reviews (rating and count)
-- Facebook/Instagram presence
-- Website quality (modern vs outdated, has online booking/lead capture?)
-- Any signs they're running ads
-
-Step 3: Identify buying signals based on these filters: ${filterList.join(", ")}
-
-RESPOND WITH A JSON ARRAY ONLY. No markdown, no explanation. Each object must have:
-
-{
-  "businessName": "Summit HVAC Services",
-  "ownerName": "Mike Rivera",
-  "phone": "(512) 555-0188",
-  "email": "mike@summithvac.com",
-  "website": "summithvac.com",
-  "websiteQuality": "outdated, no online booking",
-  "address": "1234 Main St, Austin TX 78701",
-  "googleReviews": { "rating": 4.2, "count": 47 },
-  "socialMedia": { "facebook": "active", "instagram": "none", "linkedin": "none" },
-  "indeedHiring": ["HVAC Technician", "Office Manager"],
-  "estimatedRevenue": "$500K-1M",
-  "yearEstablished": "2019",
-  "niche": "${prospectNiche}",
-  "buyingSignals": [
-    "Hiring 2 positions on Indeed — scaling fast",
-    "Website has no online booking or lead capture",
-    "No Instagram presence"
-  ],
-  "opportunities": [
-    "Needs lead capture automation",
-    "Website rebuild opportunity",
-    "Could benefit from review management"
-  ],
-  "sourceUrls": ["https://indeed.com/...", "https://yelp.com/..."]
-}
-
-Return ${prospectCount} businesses. Use real data from your search. If you can't find a field, use empty string or empty array.`;
-
-    try {
-      const response = await fetch("/api/anthropic", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 8000,
-          system: "You are a business research assistant for a digital agency. Search the web thoroughly for real businesses. Respond with ONLY a raw JSON array. No markdown, no explanation — just [ ... ]. This is critical.",
-          messages: [{ role: "user", content: prompt }],
-          tools: [{ type: "web_search_20250305", name: "web_search" }],
-        }),
-      });
-      // Guard against non-JSON responses (Vercel/CDN error pages, timeouts, etc.)
-      const _prospectRaw = await response.text();
-      let data;
-      try { data = JSON.parse(_prospectRaw); } catch { throw new Error(`Search service unavailable (HTTP ${response.status}) — please try again in a moment.`); }
-      if (data.error) { setProspectError("API error: " + (data.error.message || "Unknown error from the AI service. Please try again.")); setProspectLoading(false); return; }
-      
-      // Extract all text from response blocks (web search responses have many block types)
-      const textParts = [];
-      (data.content || []).forEach(block => {
-        if (block.type === "text" && block.text) textParts.push(block.text);
-      });
-      const fullText = textParts.join("\n");
-      
-      // Try multiple strategies to extract JSON array
+    // Shared helper: extract JSON array from Claude response text
+    const parseProspectJSON = (fullText) => {
       let parsed = null;
-      
-      // Strategy 1: Find JSON array in code fences
       const fenceMatch = fullText.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
-      if (fenceMatch) {
-        try { parsed = JSON.parse(fenceMatch[1]); } catch {}
-      }
-      
-      // Strategy 2: Find the last JSON array in the text (most likely to be the final answer)
+      if (fenceMatch) { try { parsed = JSON.parse(fenceMatch[1]); } catch {} }
       if (!parsed) {
         const allArrays = [...fullText.matchAll(/\[[\s\S]*?\](?=\s*$|\s*```|\s*\n\n)/g)];
         for (let i = allArrays.length - 1; i >= 0; i--) {
-          try { const candidate = JSON.parse(allArrays[i][0]); if (Array.isArray(candidate) && candidate.length > 0 && (candidate[0].businessName !== undefined || candidate[0].name !== undefined)) { parsed = candidate; break; } } catch {}
+          try { const c = JSON.parse(allArrays[i][0]); if (Array.isArray(c) && c.length > 0) { parsed = c; break; } } catch {}
         }
       }
-      
-      // Strategy 3: Greedy — find anything that looks like a JSON array with objects
       if (!parsed) {
         const greedyMatch = fullText.match(/\[\s*\{[\s\S]*\}\s*\]/);
         if (greedyMatch) {
           try { parsed = JSON.parse(greedyMatch[0]); } catch {
-            // Try fixing common issues: trailing commas, etc
             try { parsed = JSON.parse(greedyMatch[0].replace(/,\s*(?=[}\]])/g, '')); } catch {}
           }
         }
       }
-      
-      if (!parsed || !Array.isArray(parsed) || parsed.length === 0) {
-        // Give the CEO a specific reason so they know which step failed
-        let reason;
-        if (!fullText.trim()) {
-          reason = "The AI returned an empty response — the API may be rate-limited or temporarily unavailable. Please try again in a moment.";
-        } else if (!parsed) {
-          const preview = fullText.slice(0, 200).replace(/\n/g, " ");
-          reason = `The AI responded but the result could not be parsed as business data (it may have returned a plain-text explanation instead of JSON). Response preview: "${preview}…"`;
+      return parsed;
+    };
+
+    const filterList = [];
+    if (prospectFilters.hiringOnIndeed) filterList.push("Hiring on Indeed");
+    if (prospectFilters.badWebsite) filterList.push("No/bad website");
+    if (prospectFilters.lowReviews) filterList.push("Low Google reviews");
+    if (prospectFilters.noSocial) filterList.push("No social media");
+    if (prospectFilters.runningAds) filterList.push("Running ads");
+    if (prospectFilters.recentlyStarted) filterList.push("Recently started");
+
+    // ── PHASE 1: Quick discovery — get basic business list ───
+    let basicList = [];
+    try {
+      const discResp = await fetch("/api/anthropic", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 2500,
+          system: "You are a business research assistant. Search the web for real local businesses. Return ONLY a raw JSON array — no markdown, no explanation.",
+          messages: [{ role: "user", content: `Find ${prospectCount} real ${prospectNiche} businesses in ${prospectCity.trim()}. Return a JSON array with basic info only:\n[{"businessName":"...","address":"...","phone":"...","website":"..."}]` }],
+          tools: [{ type: "web_search_20250305", name: "web_search" }],
+        }),
+      });
+      const discRaw = await discResp.text();
+      let discData;
+      try { discData = JSON.parse(discRaw); } catch { throw new Error(`Search service unavailable (HTTP ${discResp.status}) — please try again in a moment.`); }
+      if (discData.error) {
+        setProspectError("API error: " + (discData.error.message || "Unknown error from the AI service."));
+        setProspectLoading(false); setProspectProgress(null); return;
+      }
+      const discText = (discData.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
+      basicList = parseProspectJSON(discText) || [];
+      if (basicList.length === 0) {
+        const preview = discText.slice(0, 200).replace(/\n/g, " ");
+        setProspectError(preview
+          ? `No ${prospectNiche} businesses found in ${prospectCity.trim()}. AI response preview: "${preview}…" — try a broader city name or different niche.`
+          : `No ${prospectNiche} businesses found in ${prospectCity.trim()}. Try a broader city name or a different niche.`);
+        setProspectLoading(false); setProspectProgress(null); return;
+      }
+    } catch (err) {
+      setProspectError("Discovery failed — " + (err?.message || "unexpected error. Please try again."));
+      setProspectLoading(false); setProspectProgress(null); return;
+    }
+
+    // ── PHASE 2: Enrich in batches of ENRICH_BATCH_SIZE ──────
+    const totalBatches = Math.ceil(basicList.length / ENRICH_BATCH_SIZE);
+    let enrichedCount = 0;
+
+    for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
+      const batchSlice = basicList.slice(batchIdx * ENRICH_BATCH_SIZE, (batchIdx + 1) * ENRICH_BATCH_SIZE);
+      setProspectProgress({ phase: "enriching", current: enrichedCount, total: basicList.length, batchIndex: batchIdx + 1, totalBatches });
+
+      const businessList = batchSlice.map(b => `- ${b.businessName}${b.address ? ` (${b.address})` : ""}${b.website ? ` — ${b.website}` : ""}`).join("\n");
+
+      const enrichPrompt = `Enrich these ${batchSlice.length} ${prospectNiche} businesses in ${prospectCity.trim()} with deep research.
+
+Businesses to research:
+${businessList}
+
+For each, search for: Google reviews (rating + count), Facebook/Instagram/LinkedIn presence, Indeed job postings, website quality, estimated revenue, year established, owner name, and buying signals relevant to: ${filterList.length ? filterList.join(", ") : "digital agency services (web dev, AI automation, advertising)"}.
+
+RESPOND WITH A JSON ARRAY ONLY. No markdown, no explanation.
+[
+  {
+    "businessName": "...",
+    "ownerName": "...",
+    "phone": "...",
+    "email": "...",
+    "website": "...",
+    "websiteQuality": "...",
+    "address": "...",
+    "googleReviews": { "rating": 4.2, "count": 47 },
+    "socialMedia": { "facebook": "active", "instagram": "none", "linkedin": "none" },
+    "indeedHiring": ["Role 1"],
+    "estimatedRevenue": "$500K-1M",
+    "yearEstablished": "2019",
+    "niche": "${prospectNiche}",
+    "buyingSignals": ["signal 1"],
+    "opportunities": ["opportunity 1"],
+    "sourceUrls": ["https://..."]
+  }
+]`;
+
+      try {
+        const enrichResp = await fetch("/api/anthropic", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 4000,
+            system: "You are a business research assistant for a digital agency. Search the web thoroughly. Respond with ONLY a raw JSON array. No markdown, no explanation.",
+            messages: [{ role: "user", content: enrichPrompt }],
+            tools: [{ type: "web_search_20250305", name: "web_search" }],
+          }),
+        });
+        const enrichRaw = await enrichResp.text();
+        let enrichData;
+        try { enrichData = JSON.parse(enrichRaw); } catch { throw new Error(`Service unavailable (HTTP ${enrichResp.status})`); }
+        if (enrichData.error) throw new Error(enrichData.error.message || "API error");
+
+        const enrichText = (enrichData.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
+        const parsedBatch = parseProspectJSON(enrichText);
+
+        // Build results — fall back to Phase 1 basic data if enrichment parse failed
+        const sourceBatch = (parsedBatch && Array.isArray(parsedBatch) && parsedBatch.length > 0)
+          ? parsedBatch
+          : batchSlice.map(b => ({ ...b, niche: prospectNiche }));
+
+        const batchResults = sourceBatch.map((r, i) => {
+          const fallback = batchSlice[i] || {};
+          const p = {
+            id: Date.now() + batchIdx * 100 + i + Math.random(),
+            businessName: r.businessName || fallback.businessName || "Unknown Business",
+            ownerName: r.ownerName || "",
+            phone: r.phone || fallback.phone || "",
+            email: r.email || "",
+            website: r.website || fallback.website || "",
+            websiteQuality: r.websiteQuality || "",
+            address: r.address || fallback.address || "",
+            googleReviews: r.googleReviews || { rating: 0, count: 0 },
+            socialMedia: r.socialMedia || { facebook: "none", instagram: "none", linkedin: "none" },
+            indeedHiring: r.indeedHiring || [],
+            estimatedRevenue: r.estimatedRevenue || "",
+            yearEstablished: r.yearEstablished || "",
+            niche: r.niche || prospectNiche,
+            buyingSignals: r.buyingSignals || [],
+            opportunities: r.opportunities || [],
+            sourceUrls: r.sourceUrls || [],
+            classification: null,
+          };
+          p.classification = classifyProspect(p);
+          return p;
+        });
+
+        enrichedCount += batchResults.length;
+        setProspects(prev => [...prev, ...batchResults]);
+        if (batchIdx === totalBatches - 1) showToast(`Found ${enrichedCount} prospects`);
+      } catch (err) {
+        // Stop cleanly — surface partial results with an inline warning
+        if (enrichedCount > 0) {
+          setProspectError(`Loaded ${enrichedCount} of ${basicList.length} prospects — search stopped early (batch ${batchIdx + 1} failed: ${err?.message || "network error"}). Results above are complete.`);
         } else {
-          // parsed is an empty array
-          reason = `The AI searched for "${prospectNiche}" businesses in "${prospectCity.trim()}" and returned an empty list. Try a broader city name (e.g. "Oakland, CA" instead of "Oakland") or a less specific niche.`;
+          setProspectError("Enrichment failed — " + (err?.message || "unexpected error. Please try again."));
         }
-        setProspectError(reason);
-        setProspectLoading(false);
-        return;
+        break;
       }
 
-      const results = parsed.map((r, i) => ({
-        id: Date.now() + i + Math.random(),
-        businessName: r.businessName || "Unknown Business",
-        ownerName: r.ownerName || "",
-        phone: r.phone || "",
-        email: r.email || "",
-        website: r.website || "",
-        websiteQuality: r.websiteQuality || "",
-        address: r.address || "",
-        googleReviews: r.googleReviews || { rating: 0, count: 0 },
-        socialMedia: r.socialMedia || { facebook: "none", instagram: "none", linkedin: "none" },
-        indeedHiring: r.indeedHiring || [],
-        estimatedRevenue: r.estimatedRevenue || "",
-        yearEstablished: r.yearEstablished || "",
-        niche: r.niche || prospectNiche,
-        buyingSignals: r.buyingSignals || [],
-        opportunities: r.opportunities || [],
-        sourceUrls: r.sourceUrls || [],
-        classification: null,
-      }));
-
-      // Auto-classify each prospect
-      results.forEach(p => { p.classification = classifyProspect(p); });
-
-      setProspects(results);
-      showToast(`Found ${results.length} prospects`);
-    } catch (err) {
-      setProspectError("Search failed — " + (err?.message || "unexpected error. Please try again."));
+      // Brief pause between batches to avoid rate limits
+      if (batchIdx < totalBatches - 1) {
+        await new Promise(r => setTimeout(r, 2000));
+      }
     }
+
+    setProspectProgress(null);
     setProspectLoading(false);
   };
 
@@ -2797,19 +2823,41 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
                 </div>
 
                 <button onClick={handleProspectSearch} disabled={prospectLoading} style={{ ...btnPrimary, padding: "12px 32px", fontSize: 15, opacity: prospectLoading ? 0.6 : 1, cursor: prospectLoading ? "wait" : "pointer" }}>
-                  {prospectLoading ? "Searching..." : "🔍 Search Prospects"}
+                  {prospectLoading
+                    ? (prospectProgress?.phase === "discovery"
+                        ? "⏳ Finding businesses..."
+                        : prospectProgress?.phase === "enriching"
+                          ? `⏳ Enriching ${prospectProgress.current}/${prospectProgress.total}...`
+                          : "⏳ Searching...")
+                    : "🔍 Search Prospects"}
                 </button>
               </div>
 
               {prospectLoading && (
                 <div style={{ ...cardStyle, textAlign: "center", padding: "48px 24px" }}>
                   <div style={{ fontSize: 36, marginBottom: 16, animation: "pulse 1.2s infinite" }}>🔍</div>
-                  <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Deep search in progress...</div>
-                  <div style={{ fontSize: 13, color: t.textDim, maxWidth: 500, margin: "0 auto", lineHeight: 1.5 }}>
-                    Step 1: Finding {prospectNiche} businesses in {prospectCity}<br />
-                    Step 2: Checking Indeed, Google, social media<br />
-                    Step 3: Identifying buying signals
-                  </div>
+                  {prospectProgress?.phase === "discovery" && (
+                    <>
+                      <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Finding {prospectNiche} businesses in {prospectCity}...</div>
+                      <div style={{ fontSize: 13, color: t.textDim }}>Step 1 of 2 — building business list</div>
+                    </>
+                  )}
+                  {prospectProgress?.phase === "enriching" && (
+                    <>
+                      <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>
+                        Enriching batch {prospectProgress.batchIndex} of {prospectProgress.totalBatches}...
+                      </div>
+                      <div style={{ fontSize: 13, color: t.textDim, marginBottom: 12 }}>
+                        {prospectProgress.current} of {prospectProgress.total} prospects loaded — results appear below as each batch completes
+                      </div>
+                      <div style={{ maxWidth: 300, margin: "0 auto", height: 6, background: t.bgHover, borderRadius: 4, overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: `${Math.round((prospectProgress.current / prospectProgress.total) * 100)}%`, background: t.accent, borderRadius: 4, transition: "width 0.4s ease" }} />
+                      </div>
+                    </>
+                  )}
+                  {!prospectProgress && (
+                    <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Searching...</div>
+                  )}
                 </div>
               )}
 
@@ -2819,9 +2867,13 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
                 </div>
               )}
 
-              {prospects.length > 0 && !prospectLoading && (
+              {prospects.length > 0 && (
                 <div style={{ marginTop: 20 }}>
-                  <div style={{ marginBottom: 16, fontSize: 15, fontWeight: 700 }}>Found {prospects.length} prospects</div>
+                  <div style={{ marginBottom: 16, fontSize: 15, fontWeight: 700 }}>
+                    {prospectLoading
+                      ? `${prospects.length} prospects loaded so far...`
+                      : `Found ${prospects.length} prospects`}
+                  </div>
                   <div style={{ display: "grid", gap: 16 }}>
                     {prospects.map(p => (
                       <div key={p.id} style={{ ...cardStyle, borderLeft: `4px solid ${p.classification.color}` }}>

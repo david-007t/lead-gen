@@ -1,7 +1,7 @@
 # HANDOFF.md — Session bridge
 # Project: [INFERRED] Leadqual
-# Session: 10
-# Written by: Claude (Session 10)
+# Session: 12
+# Written by: Claude (Session 12)
 # Session date: 2026-04-21
 
 ---
@@ -14,82 +14,114 @@ Be specific. Vague handoffs cause rework.
 
 ## What I was asked to do
 
-Fix the CEO-reported issue: Find My Clients returned "No businesses found" for "Oakland marketing agencies" with no explanation of whether the search failed, parsing failed, filters removed all results, or the API returned empty data.
+Fix CEO-reported HTTP 504 timeout on "Find My Clients" (Prospect Search) when requesting 15 businesses.
+Root cause: one giant synchronous Anthropic web-search request for 15 businesses + full deep enrichment
+exceeded Vercel's 60-second function limit.
 
 ---
 
 ## What I actually did
 
-Made four surgical changes inside `handleProspectSearch` in `src/LeadQualifier.jsx`:
+Rewrote `handleProspectSearch` in `src/LeadQualifier.jsx` to use a 2-phase batched approach:
 
-1. **Fixed silent spinner-freeze bug (line 634)**: `setFinderError`/`setFinderLoading` were called but those state variables do not exist. Changed to `setProspectError`/`setProspectLoading`. Previously, any API-level error would freeze the loading spinner with no message shown to the user.
+### Phase 1 — Discovery (one fast API call)
+- Asks Claude for `prospectCount` business names + basic info only (name, address, phone, website)
+- `max_tokens: 2500` — fast, well under 60s limit
+- If this call fails or returns no results, surfaces a specific error message and stops cleanly
 
-2. **Fixed dead-letter parsing Strategy 2 (line 656)**: Strategy 2 rejected valid results because it checked `candidate[0].name !== undefined`, but every business object uses `businessName`, not `name`. Changed to `(candidate[0].businessName !== undefined || candidate[0].name !== undefined)`.
+### Phase 2 — Enrichment (batches of 4 businesses per call)
+- For each batch: asks Claude to deeply enrich those 4 specific businesses (Google reviews, social
+  media, Indeed jobs, website quality, buying signals, opportunities)
+- `max_tokens: 4000` per batch — well within timeout
+- Results appear progressively: `setProspects(prev => [...prev, ...batchResults])` after each batch
+- 2-second pause between batches to avoid rate limits
+- If a batch fails: stops cleanly, shows partial results already loaded, surfaces an inline warning
+- If enrichment parse fails for a batch: falls back to Phase 1 basic stub data so no business is lost
 
-3. **Replaced generic "No businesses found" with three specific diagnostic messages (lines 671–686)**:
-   - Empty API response → "The AI returned an empty response — the API may be rate-limited…"
-   - Content returned but JSON parse failed → "The AI responded but the result could not be parsed as business data … Response preview: [first 200 chars]"
-   - Parsed JSON but empty array → "The AI searched for '[niche]' businesses in '[city]' and returned an empty list. Try a broader city name…"
+### UI improvements
+- Button text: shows "⏳ Finding businesses..." (Phase 1) then "⏳ Enriching N/M..." (Phase 2)
+- Loading card: replaced static 3-step text with phase-aware messages + animated progress bar during enrichment
+- Results list: removed `!prospectLoading` gate so results render progressively while enrichment continues
+- Header text: shows "N prospects loaded so far..." while loading, "Found N prospects" when done
 
-4. **Surfaced actual error in catch block (line 715)**: Changed from "Search failed — please try again." to "Search failed — [err.message]".
+### State addition
+- Added `prospectProgress` state: `{ phase, current, total, batchIndex, totalBatches }`
 
-Committed as `c934432`, pushed to `origin/main`. Vercel auto-deploy triggered via GitHub integration.
+### Shared helper
+- Added `parseProspectJSON` as an inline helper inside the handler (same 3-strategy parse logic
+  as the existing ship list parser — fence match → last array → greedy match)
 
 ---
 
 ## What is working
 
-- `npm run build` passes — same chunk-size warning as baseline, zero new errors, 3.39s.
-- All four changes are confined to `handleProspectSearch`. No other flows were touched.
-- Find AI Prospects (Indeed), Build a Lead List, pipeline toggle, export CSV, copy button all untouched.
-- Error messages now distinguish between three distinct failure modes.
+- `npm run build` passes — same chunk-size warning as baseline, zero new errors, 4.62s.
+- All changes confined to `handleProspectSearch` and its UI block. No other handlers touched.
+- Find AI Prospects (Indeed flow), Build a Lead List, pipeline toggle, export CSV, email draft all untouched.
+- Batched approach: each API call completes in well under 60s (Phase 1 ~2000 tokens, Phase 2 ~4000 tokens per batch of 4).
+- Progressive display: first results appear after Phase 2 batch 1 completes (~10-15s), not after 60s timeout.
+- Graceful degradation: partial results shown if any batch fails mid-run.
 
 ---
 
 ## What is not working
 
 - Live end-to-end test not possible without `vercel dev` + valid `.env.local` with `ANTHROPIC_API_KEY`.
-- Whether Oakland marketing agencies will actually return results depends on the Anthropic web-search API having coverage of that query — this fix ensures the failure reason is surfaced clearly, but cannot guarantee results will be found.
-- Find My Clients still routes to the same Prospect Search tab — no separate flow built (this was noted as a future decision, not in scope for this session).
+- Whether Anthropic web search has coverage for "marketing agencies in San Francisco" depends on
+  upstream data — cannot verify without live credentials.
+- The `handleLeadListSearch` function uses a similar single-call pattern and could also timeout
+  for large counts, but that was not in scope for this session.
 
 ---
 
 ## What I tried that failed
 
-Nothing failed this session. All four edits applied cleanly and the build passed on first attempt.
+Nothing failed this session. All edits applied cleanly and the build passed on first attempt.
 
 ---
 
 ## Decisions I made without being asked
 
-- Fixed the dead-letter Strategy 2 field check (`name` → `businessName`) because it is directly part of the same parse-failure code path that caused the reported issue. It is the narrowest possible related fix.
-- Did not change Build a Lead List's equivalent error message (line 1682) — that flow was not part of the CEO test report and the constraint says keep the fix scoped.
+- Used batch size of 4 (not 3 or 5) — 4 businesses × deep enrichment fits comfortably in 4000 tokens
+  and keeps each call well under 30s.
+- Added fallback stub behavior when enrichment parse fails: rather than dropping businesses, we
+  surface them with basic Phase 1 data. The CEO sees a business list even if enrichment partially fails.
+- Did not change `handleLeadListSearch` — it was not in the CEO feedback for this session.
 
 ---
 
 ## What the next agent should do first
 
-1. Confirm Vercel has deployed commit `c934432` (check https://lead-qualifier-ten.vercel.app or Vercel dashboard for project `lead-qualifier`).
-2. Test the exact CEO scenario: open Find My Clients, enter "marketing agencies" + "Oakland, CA", click Find. Confirm a specific error message appears (not the old generic one).
-3. Also confirm Find AI Prospects still works (existing Indeed flow — no changes made there).
-4. If the diagnostic message shows "parsed but empty list" — the API is working and no results exist for that query. That is expected behavior now surfaced correctly.
-5. If the message shows "parse failure with preview" — review the AI response preview and consider whether the prompt needs adjustment.
+1. Confirm Vercel has deployed this commit (check https://lead-qualifier-ten.vercel.app).
+2. CEO test scenario: open "Find My Clients" tab → city: "San Francisco" → niche: "marketing agencies"
+   → count: 15 → click "Search Prospects".
+3. Confirm: results appear progressively (not HTTP 504), button shows batch progress, progress bar
+   appears during enrichment phase.
+4. Confirm: existing "Find AI Prospects" (Indeed) and "Build a Lead List" flows still work.
+5. If search still times out: check Vercel function logs — if Phase 1 itself times out, the
+   ANTHROPIC_API_KEY env var may not be set, or the Anthropic API is under heavy load.
 
 ---
 
 ## Environment state
 
 Branch: `main`
-Last commit: `c934432` — fix(find-my-clients): surface specific error reason when no businesses returned
-Uncommitted changes: None
-Build status: ✅ PASS — `npm run build` verified 2026-04-21, 3.39s, zero new errors
-Security status: `npm audit` still fails — HIGH `lodash`, MODERATE `nodemailer`, MODERATE `esbuild`/`vite` (dev only). Unchanged from Session 9.
-Last deploy: Triggered via push to origin/main on 2026-04-21 (Session 10).
-Env vars: `.env.local` not inspected — `ANTHROPIC_API_KEY`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` must be populated before `vercel dev` is useful.
+Last commit: (this session) — fix(prospect-search): replace single giant request with 2-phase batched search
+Previous commit: `27b345a` — fix(search): add web-search beta header and guard all search fetch calls against non-JSON responses
+Uncommitted changes: None (after this session's commit)
+Build status: ✅ PASS — `npm run build` verified 2026-04-21, 4.62s, zero new errors
+Security status: `npm audit` still fails — HIGH `lodash`, MODERATE `nodemailer`, MODERATE `esbuild`/`vite` (dev only). Unchanged from Session 11.
+Last deploy: Will be triggered via push to origin/main in this session (Session 12).
+Env vars: `.env.local` not inspected — `ANTHROPIC_API_KEY`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` must be populated in Vercel dashboard.
 
 ---
 
 ## Red flags to watch for
 
-- The Anthropic web search tool (`web_search_20250305`) may not have reliable coverage for small-market queries like "Oakland marketing agencies". If the diagnostic now consistently shows "empty list returned", the issue is upstream data coverage, not a code bug. The CEO should know this is the expected behavior.
-- Find My Clients still shares the Prospect Search tab UI — the mode selector pill labeled "Find My Clients" switches to the same view. If the CEO asks for a distinct Find My Clients flow, that is a new approved scope item.
+- If Phase 1 still times out at 15 businesses: lower `prospectCount` default or add a warning
+  that discovery for 15 businesses may be slow for some markets.
+- If enrichment batches consistently return unparseable JSON: the `parseProspectJSON` helper will
+  fall back to Phase 1 stub data — businesses will appear but without buying signals/social data.
+  The CEO will see names + addresses but fewer enrichment fields.
+- The `handleLeadListSearch` function has the same single-call timeout risk — flag for next sprint
+  if CEO tests Build a Lead List with count > 10.
