@@ -321,7 +321,7 @@ async function loadData(key) {
   catch { return null; }
 }
 async function saveData(key, val) {
-  try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) { console.error("Storage save error:", e); }
+  try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
 }
 
 // ─── MAIN COMPONENT ──────────────────────────────────────────
@@ -415,6 +415,16 @@ export default function LeadQualifier() {
   const [shipListOutreach, setShipListOutreach] = useState({}); // { [id]: string (draft) }
   const [generatingContact, setGeneratingContact] = useState(null); // id currently being looked up
   const [shipListOutreachOpen, setShipListOutreachOpen] = useState({}); // { [id]: boolean }
+
+  // Build a Lead List state (Mode 2B)
+  const [leadListCity, setLeadListCity] = useState("");
+  const [leadListNiche, setLeadListNiche] = useState("");
+  const [leadListCount, setLeadListCount] = useState(10);
+  const [leadListResults, setLeadListResults] = useState([]);
+  const [leadListLoading, setLeadListLoading] = useState(false);
+  const [leadListError, setLeadListError] = useState(null);
+  const [leadListOutreach, setLeadListOutreach] = useState({});
+  const [generatingLeadListOutreach, setGeneratingLeadListOutreach] = useState(null);
 
   const fileRef = useRef();
   const t = themes[theme];
@@ -691,7 +701,6 @@ Return ${prospectCount} businesses. Use real data from your search. If you can't
       setProspects(results);
       showToast(`Found ${results.length} prospects`);
     } catch (err) {
-      console.error("Prospect search error:", err);
       setProspectError("Search failed — please try again.");
     }
     setProspectLoading(false);
@@ -740,7 +749,6 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
       setEmailDrafts(prev => ({ ...prev, [prospect.id]: emailText }));
       showToast("Email draft generated");
     } catch (err) {
-      console.error("Email draft error:", err);
       showToast("Failed to generate email", "error");
     }
     setDraftingEmail(null);
@@ -931,7 +939,6 @@ Return 5 companies. ONLY Tier 1, 2, or 3. Verify Bay Area California location fo
         showToast(`Found ${allResults.length} companies for the Ship List`);
       }
     } catch (err) {
-      console.error("Ship List search error:", err);
       setShipListError("Search failed — please try again.");
     }
     setShipListLoading(false);
@@ -1077,7 +1084,6 @@ If you cannot find a specific person, return the best guess with confidence "low
         showToast("Could not find contact — try manually", "error");
       }
     } catch (err) {
-      console.error("Find contact error:", err);
       showToast("Contact search failed", "error");
     }
     setGeneratingContact(null);
@@ -1174,18 +1180,6 @@ RULES:
 Return fewer results if needed. Quality over quantity.`;
 
       try {
-        console.log("=== SEARCH START ===");
-        console.log("Selected roles:", rolesToSearch);
-        console.log("City:", indeedCity);
-        console.log("Batch:", batch);
-        console.log("Request body:", JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 12000,
-          system: "(see source)",
-          messages: [{ role: "user", content: prompt }],
-          tools: [{ type: "web_search_20250305", name: "web_search" }],
-        }, null, 2));
-
         const response = await fetch("/api/anthropic", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1198,20 +1192,8 @@ Return fewer results if needed. Quality over quantity.`;
           }),
         });
 
-        console.log("=== API RESPONSE ===");
-        console.log("HTTP Status:", response.status);
         const data = await response.json();
-        console.log("Response has content:", !!data.content);
-        console.log("Content blocks:", data.content?.length);
-        data.content?.forEach((block, i) => {
-          console.log(`Block ${i}: type=${block.type}, length=${block.type === "text" ? block.text?.length : "n/a"}`);
-          if (block.type === "text") {
-            console.log(`Block ${i} text preview:`, block.text?.substring(0, 300));
-          }
-        });
         if (data.error) {
-          console.log("API ERROR:", JSON.stringify(data.error));
-          console.error("API error for batch:", batch, data.error);
           failedBatches++;
           continue;
         }
@@ -1219,10 +1201,6 @@ Return fewer results if needed. Quality over quantity.`;
         const textParts = [];
         (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
         const fullText = textParts.join("\n");
-
-        console.log("=== PARSING ===");
-        console.log("Full text to parse (first 500 chars):", fullText?.substring(0, 500));
-        console.log("Full text length:", fullText?.length);
 
         let parsed = null;
         let jsonMatch = fullText.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
@@ -1234,14 +1212,6 @@ Return fewer results if needed. Quality over quantity.`;
               try { parsed = JSON.parse(jsonMatch[0].replace(/,\s*(?=[}\]])/g, "")); } catch {}
             }
           }
-        }
-
-        console.log("=== PARSE RESULT ===");
-        console.log("Parsed successfully:", !!parsed);
-        console.log("Is array:", Array.isArray(parsed));
-        console.log("Result count:", parsed?.length);
-        if (parsed?.length > 0) {
-          console.log("First result:", JSON.stringify(parsed[0], null, 2));
         }
 
         if (parsed && Array.isArray(parsed)) {
@@ -1262,24 +1232,6 @@ Return fewer results if needed. Quality over quantity.`;
             if (!isJobBoard && !isCompanySite) return false;
 
             return true;
-          });
-
-          console.log("=== FILTERING (URL validation) ===");
-          console.log("Before filter:", parsed.length);
-          console.log("After filter:", validated.length);
-          console.log("Filtered out:", parsed.length - validated.length, "listings (no valid postingUrl or not from known job board)");
-          parsed.forEach((listing, i) => {
-            const kept = validated.includes(listing);
-            if (!kept) {
-              const hasUrl = !!(listing.postingUrl && listing.postingUrl.trim());
-              let validUrl = false;
-              if (hasUrl) { try { new URL(listing.postingUrl); validUrl = true; } catch {} }
-              const validDomains = ['indeed.com', 'linkedin.com', 'ziprecruiter.com', 'glassdoor.com', 'careerbuilder.com', 'monster.com', 'simplyhired.com'];
-              const url = (listing.postingUrl || "").toLowerCase();
-              const isJobBoard = validDomains.some(d => url.includes(d));
-              const isCompanySite = listing.company && url.includes(listing.company.toLowerCase().split(' ')[0]);
-              console.log(`  Dropped [${i}] "${listing.company}" — hasUrl:${hasUrl}, validUrl:${validUrl}, isJobBoard:${isJobBoard}, isCompanySite:${isCompanySite}, url:"${listing.postingUrl}"`);
-            }
           });
 
           // Map new prompt field names to the field names the rest of the code expects
@@ -1308,7 +1260,6 @@ Return fewer results if needed. Quality over quantity.`;
           allRaw.push(...normalized);
         }
       } catch (err) {
-        console.error("Search error for batch:", batch, err);
         failedBatches++;
       }
     }
@@ -1318,7 +1269,7 @@ Return fewer results if needed. Quality over quantity.`;
     }
 
     if (allRaw.length === 0) {
-      setIndeedError("No results returned. Check the browser console for details, or try selecting fewer roles.");
+      setIndeedError("No results returned. Try selecting fewer roles and rerun the search.");
       setIndeedLoading(false);
       return;
     }
@@ -1334,15 +1285,6 @@ Return fewer results if needed. Quality over quantity.`;
 
     // Fix 1: Filter out listings with no confirmed job URL
     const withLinks = dedupedRaw.filter(r => r.jobUrl && r.jobUrl.trim() !== "");
-    console.log("=== FILTERING (jobUrl gate) ===");
-    console.log("Before filter:", dedupedRaw.length);
-    console.log("After filter:", withLinks.length);
-    console.log("Filtered out:", dedupedRaw.length - withLinks.length, "listings with empty jobUrl");
-    dedupedRaw.forEach((r, i) => {
-      if (!r.jobUrl || r.jobUrl.trim() === "") {
-        console.log(`  Dropped [${i}] "${r.companyName}" — jobUrl is empty`);
-      }
-    });
 
     // Fix 4: Build pipeline lead map — normalizedCompany → array of followUp statuses
     const normalizeName = (s) => (s || "").toLowerCase().trim().replace(/[™®©]/g, "").replace(/[^a-z0-9]/g, "");
@@ -1450,7 +1392,6 @@ Under 5 sentences. Sound like a real person, not a sales pitch. No fluff.`;
       setIndeedEmailDrafts(prev => ({ ...prev, [result.id]: emailText }));
       showToast("Outreach draft ready");
     } catch (err) {
-      console.error("Indeed email draft error:", err);
       showToast("Failed to generate outreach", "error");
     }
     setDraftingIndeedEmail(null);
@@ -1485,7 +1426,6 @@ Keep it under 4 sentences. Direct, confident, no fluff.`;
       setIndeedApplyPitch(prev => ({ ...prev, [r.id]: text }));
       showToast("Pitch ready");
     } catch (err) {
-      console.error("Apply pitch error:", err);
       showToast("Failed to generate pitch", "error");
     }
     setGeneratingApplyPitch(null);
@@ -1561,7 +1501,6 @@ If you genuinely cannot find contact info after searching, respond with:
         showToast("Could not parse contact info", "error");
       }
     } catch (err) {
-      console.error("Find contact error:", err);
       setIndeedContactInfo(prev => ({ ...prev, [r.id]: "not_found" }));
       showToast("Search failed", "error");
     }
@@ -1596,7 +1535,6 @@ Personalize this to ${contact.name || "them"} specifically. Reference the job po
       setIndeedContactDraft(prev => ({ ...prev, [r.id]: text }));
       showToast("Email draft ready");
     } catch (err) {
-      console.error("Contact email error:", err);
       showToast("Failed to generate email", "error");
     }
     setGeneratingContactDraft(null);
@@ -1649,7 +1587,6 @@ Respond with ONLY a JSON object:
         showToast("Failed to generate messages", "error");
       }
     } catch (err) {
-      console.error("LinkedIn msg error:", err);
       showToast("Failed to generate messages", "error");
     }
     setGeneratingLinkedInMsg(null);
@@ -1673,6 +1610,161 @@ Respond with ONLY a JSON object:
         setConfirmAction(null); showToast("App reset complete");
       },
     });
+  };
+
+  // ─── BUILD A LEAD LIST SEARCH (Mode 2B) ──────────────────
+  const handleLeadListSearch = async () => {
+    if (!leadListCity.trim()) { showToast("Enter a city", "error"); return; }
+    if (!leadListNiche.trim()) { showToast("Enter a niche", "error"); return; }
+    setLeadListLoading(true);
+    setLeadListError(null);
+    setLeadListResults([]);
+
+    const prompt = `Search for ${leadListNiche} businesses in ${leadListCity.trim()} that could be ideal outreach targets.
+
+Return ${leadListCount} real local businesses with as much of the following as you can find:
+- Business name
+- Owner name (if findable)
+- Phone number
+- Email
+- Website
+- Physical address
+- Google rating + review count
+- Brief description of the business
+- Why they would be a good sales prospect (1-2 buying signals)
+
+RESPOND WITH A JSON ARRAY ONLY. No markdown, no explanation. Each object must have:
+{
+  "businessName": "...",
+  "ownerName": "...",
+  "phone": "...",
+  "email": "...",
+  "website": "...",
+  "address": "...",
+  "googleRating": 4.2,
+  "reviewCount": 47,
+  "description": "...",
+  "buyingSignals": ["...", "..."]
+}`;
+
+    try {
+      const response = await fetch("/api/anthropic", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 8000,
+          system: "You are a business research assistant. Search the web for real local businesses. Respond with ONLY a raw JSON array. No markdown, no explanation — just [ ... ].",
+          messages: [{ role: "user", content: prompt }],
+          tools: [{ type: "web_search_20250305", name: "web_search" }],
+        }),
+      });
+      const data = await response.json();
+      if (data.error) { setLeadListError(data.error.message || "API error. Please try again."); setLeadListLoading(false); return; }
+
+      const textParts = [];
+      (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
+      const fullText = textParts.join("\n");
+
+      let parsed = null;
+      const fenceMatch = fullText.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
+      if (fenceMatch) { try { parsed = JSON.parse(fenceMatch[1]); } catch {} }
+      if (!parsed) {
+        const greedyMatch = fullText.match(/\[\s*\{[\s\S]*\}\s*\]/);
+        if (greedyMatch) {
+          try { parsed = JSON.parse(greedyMatch[0]); } catch {
+            try { parsed = JSON.parse(greedyMatch[0].replace(/,\s*(?=[}\]])/g, "")); } catch {}
+          }
+        }
+      }
+
+      if (!parsed || !Array.isArray(parsed) || parsed.length === 0) {
+        setLeadListError("No businesses found. Try a larger city or different niche.");
+        setLeadListLoading(false);
+        return;
+      }
+
+      const results = parsed.map((r, i) => ({
+        id: Date.now() + i + Math.random(),
+        businessName: r.businessName || "Unknown Business",
+        ownerName: r.ownerName || "",
+        phone: r.phone || "",
+        email: r.email || "",
+        website: r.website || "",
+        address: r.address || "",
+        googleRating: r.googleRating || 0,
+        reviewCount: r.reviewCount || 0,
+        description: r.description || "",
+        buyingSignals: r.buyingSignals || [],
+        niche: leadListNiche,
+        city: leadListCity,
+      }));
+
+      setLeadListResults(results);
+      showToast(`Found ${results.length} businesses`);
+    } catch {
+      setLeadListError("Search failed — please try again.");
+    }
+    setLeadListLoading(false);
+  };
+
+  // ─── BUILD A LEAD LIST OUTREACH DRAFT ────────────────────
+  const handleLeadListDraftOutreach = async (lead) => {
+    setGeneratingLeadListOutreach(lead.id);
+    try {
+      const prompt = `Write a short, punchy cold outreach message to ${lead.businessName}${lead.ownerName ? ` (owner: ${lead.ownerName})` : ""}, a ${lead.niche} business in ${lead.city}.
+
+${lead.buyingSignals.length > 0 ? `Buying signals: ${lead.buyingSignals.slice(0, 2).join(", ")}` : ""}
+${lead.description ? `Business context: ${lead.description}` : ""}
+
+Framework:
+- Hook: Reference something specific about their business
+- Pain point: connect to a problem they likely have
+- Offer: One concrete thing you can help with
+- CTA: Low-friction ask (quick call or reply)
+
+Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson.`;
+
+      const response = await fetch("/api/anthropic", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 400,
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+      const data = await response.json();
+      const text = (data.content || []).find(b => b.type === "text")?.text || "";
+      setLeadListOutreach(prev => ({ ...prev, [lead.id]: text }));
+      showToast("Outreach drafted");
+    } catch {
+      showToast("Failed to generate outreach", "error");
+    }
+    setGeneratingLeadListOutreach(null);
+  };
+
+  // ─── ADD LEAD LIST RESULT TO PIPELINE ────────────────────
+  const handleAddLeadListToPipeline = (lead) => {
+    const newLead = {
+      id: Date.now() + Math.random(),
+      createdAt: Date.now(),
+      name: lead.ownerName || lead.businessName,
+      company: lead.businessName,
+      email: lead.email || "",
+      phone: lead.phone || "",
+      projectType: "",
+      budget: "",
+      location: lead.address || lead.city,
+      zipCode: "",
+      timeline: "",
+      source: "Build a Lead List",
+      description: (lead.description || lead.buyingSignals.join(". ")).trim(),
+      followUp: "new",
+      result: { qualified: true, score: 1, total: 1, criteria: [] },
+    };
+    setLeads(prev => [newLead, ...prev]);
+    showToast(`${lead.businessName} added to Pipeline`);
   };
 
   // ─── FILTERED & SORTED LEADS ─────────────────────────────
@@ -1963,10 +2055,27 @@ Respond with ONLY a JSON object:
           </div>
         </div>
 
+        {/* Mode Selector */}
+        <div style={{ background: t.bgAlt, borderBottom: `1px solid ${t.borderLight}`, padding: "10px 0" }}>
+          <div style={{ maxWidth: 1240, margin: "0 auto", padding: "0 32px", display: "flex", gap: 8, alignItems: "center", overflowX: "auto" }}>
+            <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: t.textFaint, marginRight: 4, whiteSpace: "nowrap" }}>Mode:</span>
+            {[
+              { tab: "leadlist", label: "🎯 Build a Lead List" },
+              { tab: "indeed",   label: "⚡ Find AI Prospects" },
+              { tab: "prospects", label: "🔍 Find My Clients" },
+            ].map(m => {
+              const active = tab === m.tab;
+              return (
+                <button key={m.tab} onClick={() => setTab(m.tab)} style={{ padding: "7px 16px", background: active ? t.accent : t.bgHover, border: `1px solid ${active ? t.accent : t.borderLight}`, borderRadius: 20, color: active ? "#0c0a09" : t.textMuted, cursor: "pointer", fontSize: 13, fontWeight: active ? 700 : 500, fontFamily: "'DM Sans', sans-serif", transition: "all 0.2s", whiteSpace: "nowrap" }}>{m.label}</button>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Tabs */}
         <div style={{ borderBottom: `1px solid ${t.border}` }}>
           <div style={{ maxWidth: 1240, margin: "0 auto", padding: "0 32px", display: "flex", gap: 2, overflowX: "auto" }} className="tab-bar">
-            {[{ id: "indeed", label: "LeadGen" }, { id: "shiplist", label: "Ship List", count: shipListResults.length || undefined }, { id: "leads", label: "Pipeline", count: leads.length }, { id: "queue", label: "Outreach" }, { id: "dashboard", label: "Dashboard" }].map(tb => (
+            {[{ id: "leadlist", label: "Build a Lead List", count: leadListResults.length || undefined }, { id: "indeed", label: "Find AI Prospects" }, { id: "shiplist", label: "Ship List", count: shipListResults.length || undefined }, { id: "leads", label: "Pipeline", count: leads.length }, { id: "queue", label: "Outreach" }, { id: "dashboard", label: "Dashboard" }].map(tb => (
               <button key={tb.id} onClick={() => setTab(tb.id)} style={{ padding: "12px 20px", background: tab === tb.id ? t.accent : "transparent", color: tab === tb.id ? "#0c0a09" : t.textMuted, border: "none", borderBottom: tab === tb.id ? `3px solid ${t.accent}` : "3px solid transparent", cursor: "pointer", fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: tab === tb.id ? 700 : 500, letterSpacing: "0.02em", transition: "all 0.2s", display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}>
                 {tb.label}
                 {tb.count !== undefined && <span style={{ background: tab === tb.id ? "#00000033" : t.bgHover, color: tab === tb.id ? "#0c0a09" : t.textDim, padding: "1px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700 }}>{tb.count}</span>}
@@ -3306,6 +3415,118 @@ Respond with ONLY a JSON object:
                               </div>
                             )}
                           </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ════════════ BUILD A LEAD LIST (Mode 2B) ════════════ */}
+          {tab === "leadlist" && (
+            <div style={{ animation: "fadeIn 0.3s ease" }}>
+              <div style={{ marginBottom: 24 }}>
+                <h2 style={{ fontSize: 20, fontWeight: 700, fontFamily: "'Outfit', sans-serif", marginBottom: 6 }}>🎯 Build a Lead List</h2>
+                <p style={{ color: t.textDim, fontSize: 14 }}>Enter a city, niche, and how many results you want. AI searches the web for real local businesses with contact info and buying signals.</p>
+              </div>
+
+              {/* Search Form */}
+              <div style={{ ...cardStyle, marginBottom: 24 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto auto", gap: 16, alignItems: "flex-end" }}>
+                  <div>
+                    <label style={labelStyle}>City / Region</label>
+                    <input style={inputStyle} value={leadListCity} onChange={e => setLeadListCity(e.target.value)} placeholder="e.g. Austin, TX" onKeyDown={e => e.key === "Enter" && handleLeadListSearch()} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Niche / Business Type</label>
+                    <input style={inputStyle} value={leadListNiche} onChange={e => setLeadListNiche(e.target.value)} placeholder="e.g. HVAC, Dentist, Roofing" onKeyDown={e => e.key === "Enter" && handleLeadListSearch()} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Results</label>
+                    <select style={{ ...inputStyle, width: 80, cursor: "pointer" }} value={leadListCount} onChange={e => setLeadListCount(Number(e.target.value))}>
+                      {[5, 10, 15, 20].map(n => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <button onClick={handleLeadListSearch} disabled={leadListLoading} style={{ ...btnPrimary, height: 43, whiteSpace: "nowrap" }}>
+                      {leadListLoading ? "Searching…" : "🔍 Find Leads"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {leadListError && (
+                <div style={{ background: t.redBg, border: `1px solid ${t.redBorder}`, borderRadius: 8, padding: "14px 18px", marginBottom: 20, fontSize: 14, color: t.red }}>{leadListError}</div>
+              )}
+
+              {leadListLoading && (
+                <div style={{ textAlign: "center", padding: "60px 20px", color: t.textDim }}>
+                  <div style={{ fontSize: 36, marginBottom: 16, animation: "pulse 1.5s infinite" }}>🔍</div>
+                  <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>Searching for {leadListNiche} businesses in {leadListCity}…</div>
+                  <div style={{ fontSize: 13, color: t.textFaint }}>AI is scanning the web for real businesses with contact info</div>
+                </div>
+              )}
+
+              {!leadListLoading && leadListResults.length === 0 && !leadListError && (
+                <div style={{ textAlign: "center", padding: "60px 20px", color: t.textDim }}>
+                  <div style={{ fontSize: 40, marginBottom: 12 }}>🎯</div>
+                  <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Ready to build your list</div>
+                  <div style={{ fontSize: 13, color: t.textFaint }}>Enter a city and niche above, then hit Find Leads</div>
+                </div>
+              )}
+
+              {leadListResults.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 13, color: t.textDim, marginBottom: 16, fontWeight: 600 }}>
+                    {leadListResults.length} businesses found · {leadListCity} · {leadListNiche}
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                    {leadListResults.map(lead => {
+                      const draft = leadListOutreach[lead.id];
+                      const isGenerating = generatingLeadListOutreach === lead.id;
+                      return (
+                        <div key={lead.id} style={{ ...cardStyle, marginBottom: 0 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
+                            <div style={{ flex: 1, minWidth: 200 }}>
+                              <div style={{ fontWeight: 700, fontSize: 16, fontFamily: "'Outfit', sans-serif", marginBottom: 4 }}>{lead.businessName}</div>
+                              {lead.ownerName && <div style={{ fontSize: 13, color: t.accent, fontWeight: 600, marginBottom: 6 }}>👤 {lead.ownerName}</div>}
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 14, fontSize: 13, color: t.textMuted, marginBottom: 8 }}>
+                                {lead.phone && <span>📞 {lead.phone}</span>}
+                                {lead.email && <span>✉ {lead.email}</span>}
+                                {lead.website && (
+                                  <span>🌐 <a href={lead.website.startsWith("http") ? lead.website : `https://${lead.website}`} target="_blank" rel="noreferrer" style={{ color: t.accent, textDecoration: "none" }}>{lead.website}</a></span>
+                                )}
+                              </div>
+                              {lead.address && <div style={{ fontSize: 12, color: t.textFaint, marginBottom: 6 }}>📍 {lead.address}</div>}
+                              {lead.googleRating > 0 && <div style={{ fontSize: 12, color: t.textFaint, marginBottom: 8 }}>⭐ {lead.googleRating} ({lead.reviewCount} reviews)</div>}
+                              {lead.description && <div style={{ fontSize: 13, color: t.textDim, marginBottom: 10, lineHeight: 1.5 }}>{lead.description}</div>}
+                              {lead.buyingSignals.length > 0 && (
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                                  {lead.buyingSignals.map((s, i) => (
+                                    <span key={i} style={{ background: t.accent + "18", color: t.accent, padding: "3px 10px", borderRadius: 12, fontSize: 12, fontWeight: 600 }}>🔥 {s}</span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                            <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 160 }}>
+                              <button onClick={() => handleAddLeadListToPipeline(lead)} style={{ ...btnSecondary, fontSize: 12, textAlign: "center" }}>+ Add to Pipeline</button>
+                              <button onClick={() => handleLeadListDraftOutreach(lead)} disabled={isGenerating} style={{ ...btnPrimary, fontSize: 12, textAlign: "center" }}>
+                                {isGenerating ? "Writing…" : draft ? "↻ Regenerate" : "✍ Draft Outreach"}
+                              </button>
+                            </div>
+                          </div>
+
+                          {draft && (
+                            <div style={{ marginTop: 16, padding: 16, background: t.bgHover, borderRadius: 8, border: `1px solid ${t.borderLight}` }}>
+                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                                <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: t.textFaint }}>Outreach Draft</span>
+                                <button onClick={() => { navigator.clipboard.writeText(draft); showToast("Copied!"); }} style={{ ...btnSecondary, fontSize: 11, padding: "4px 10px" }}>📋 Copy</button>
+                              </div>
+                              <p style={{ fontSize: 13, lineHeight: 1.7, color: t.text, whiteSpace: "pre-wrap" }}>{draft}</p>
+                            </div>
+                          )}
                         </div>
                       );
                     })}
