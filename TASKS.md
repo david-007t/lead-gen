@@ -13,7 +13,7 @@ Refactor LeadQual into a three-mode lead engine and build Mode 2B (Build a Lead 
 
 ## In progress
 
-- [ ] None. Mode 2B committed and pushed to origin/main. Vercel auto-deploy triggered. Awaiting CEO runtime test.
+- [ ] None. CEO error-diagnostic fix committed and pushed to origin/main on 2026-04-21. Vercel auto-deploy triggered. Awaiting CEO retest.
 
 ---
 
@@ -24,6 +24,9 @@ Refactor LeadQual into a three-mode lead engine and build Mode 2B (Build a Lead 
 
 ## Done this sprint
 
+- [x] Fixed Find My Clients "No businesses found" showing no diagnostic reason — replaced generic message with three specific failure modes (empty API response, parse failure with AI preview, genuine empty list); fixed silent spinner-freeze bug (setFinderError→setProspectError); fixed dead-letter Strategy 2 field check (name→businessName); surfaced actual err.message in catch block. — completed: 2026-04-21 — by: Claude (Session 10)
+  Files changed: `src/LeadQualifier.jsx`
+  Verified: `npm run build` passed 2026-04-21, 3.39s, zero new errors. Pushed to origin/main, Vercel auto-deploy triggered.
 - [x] Refactored LeadQual into a three-mode lead engine (Find AI Prospects, Find My Clients, Build a Lead List) with a mode selector strip and updated tab bar. Built Mode 2B (Build a Lead List) as the first executable slice. — completed: 2026-04-21 — by: Codex
   Files changed: `src/LeadQualifier.jsx`
   Verified: `npm run build` passed on 2026-04-21 — same chunk-size warning as baseline, zero new errors.
@@ -46,6 +49,7 @@ Refactor LeadQual into a three-mode lead engine and build Mode 2B (Build a Lead 
 
 ## Up next
 
+- [ ] CEO: Retest Find My Clients — search "marketing agencies" in "Oakland, CA" — confirm specific error message now shown when no results are found (should explain whether API failed, parsing failed, or list was empty).
 - [ ] CEO: Run existing Indeed (Find AI Prospects) flow — confirm it still works end to end.
 - [ ] CEO: Test Build a Lead List — enter city, niche, result count; confirm results appear with outreach draft and add-to-pipeline.
 - [ ] CEO: Confirm mode selector shows all three modes (Build a Lead List, Find AI Prospects, Find My Clients).
