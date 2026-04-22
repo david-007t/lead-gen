@@ -54,9 +54,25 @@ Note: The AI Lead Finder won't work locally without a separate API server since 
 ## Features
 - 8 industry presets (construction, gov contracting, marketing, IT, real estate, landscaping, cleaning, events)
 - AI-powered lead discovery via web search
+- Natural-language Lead Request Engine that parses lead jobs and generates dynamic sheet columns
 - Customizable qualification criteria
 - Inline editing, CSV import/export
+- Google Sheets append support for generated lead sheets
 - Follow-up status tracking
 - Analytics dashboard
 - Dark/light theme
 - Mobile responsive
+
+## Google Sheets Append
+
+The Lead Request Engine can append generated lead-sheet rows to Google Sheets through `api/google-sheets-append.js`.
+
+Set these server-side Vercel environment variables:
+
+```bash
+GOOGLE_SHEETS_CLIENT_EMAIL=service-account@project.iam.gserviceaccount.com
+GOOGLE_SHEETS_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+GOOGLE_SHEETS_SPREADSHEET_ID=your_google_sheet_id
+```
+
+Share the target Google Sheet with the service account email as an editor. If these env vars are missing, CSV export still works and the app shows a configuration error when append is attempted.

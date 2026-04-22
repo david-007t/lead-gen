@@ -276,6 +276,107 @@ function parseCSV(text) {
   });
 }
 
+const LEAD_REQUEST_EXAMPLE = `Act as freight broker in the US. Identify shippers in Healthcare & Medical Supply, Food & Beverage especially refrigerated, and Construction & Building Materials. Target Transportation Managers, Logistics Managers, and Shipping Supervisors. Companies should be $10M-$100M revenue, regional distributors, overflow freight, after-hours coverage. Include company name, contact person, email, phone, LinkedIn, and high-demand lanes right now. Format as target shipper list and lanes in an Excel/Google Sheet.`;
+
+const FREIGHT_MIN_COLUMNS = [
+  "Industry",
+  "Company Name",
+  "Target Role",
+  "Contact Person",
+  "Email",
+  "Phone",
+  "LinkedIn",
+  "Estimated Revenue",
+  "Company Type",
+  "Region",
+  "High-Demand Lane",
+  "Reason / Buying Signal",
+  "Source URL",
+  "Confidence",
+];
+
+const DEFAULT_LEAD_COLUMNS = [
+  "Company Name",
+  "Target Role",
+  "Contact Person",
+  "Email",
+  "Phone",
+  "LinkedIn",
+  "Region",
+  "Reason / Buying Signal",
+  "Source URL",
+  "Confidence",
+];
+
+function extractJSONValue(fullText) {
+  if (!fullText) return null;
+  const fenced = fullText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+  const candidates = [];
+  if (fenced) candidates.push(fenced[1]);
+  candidates.push(fullText);
+
+  for (const candidate of candidates) {
+    try { return JSON.parse(candidate); } catch {}
+    const objectMatch = candidate.match(/\{\s*"[\s\S]*\}\s*$/);
+    if (objectMatch) {
+      try { return JSON.parse(objectMatch[0]); } catch {
+        try { return JSON.parse(objectMatch[0].replace(/,\s*(?=[}\]])/g, "")); } catch {}
+      }
+    }
+    const arrayMatch = candidate.match(/\[\s*\{[\s\S]*\}\s*\]/);
+    if (arrayMatch) {
+      try { return JSON.parse(arrayMatch[0]); } catch {
+        try { return JSON.parse(arrayMatch[0].replace(/,\s*(?=[}\]])/g, "")); } catch {}
+      }
+    }
+  }
+  return null;
+}
+
+function normalizeColumnName(value) {
+  return String(value || "")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function columnKey(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function getLeadCell(row, column) {
+  const wanted = columnKey(column);
+  const key = Object.keys(row || {}).find(k => columnKey(k) === wanted);
+  const value = key ? row[key] : "";
+  return Array.isArray(value) ? value.join("; ") : value ?? "";
+}
+
+function getFirstLeadCell(row, columns) {
+  for (const column of columns) {
+    const value = getLeadCell(row, column);
+    if (String(value || "").trim()) return value;
+  }
+  return "";
+}
+
+function buildLeadColumns(job, rows, promptText) {
+  const requested = [
+    ...((job?.requiredColumns || job?.columns || []).map(normalizeColumnName)),
+    ...((rows || []).flatMap(row => Object.keys(row || {}).filter(k => !k.startsWith("__")).map(normalizeColumnName))),
+  ].filter(Boolean);
+  const looksFreight = /freight|broker|shipper|lane|refrigerated|logistics/i.test(promptText || "");
+  const base = looksFreight ? FREIGHT_MIN_COLUMNS : DEFAULT_LEAD_COLUMNS;
+  return [...base, ...requested].filter((col, index, list) => (
+    list.findIndex(other => columnKey(other) === columnKey(col)) === index
+  ));
+}
+
+function csvEscape(value) {
+  return `"${String(value ?? "").replace(/"/g, '""')}"`;
+}
+
 // ─── PROSPECT CLASSIFICATION ──────────────────────────────────
 function classifyProspect(prospect) {
   const hasOwner = !!(prospect.ownerName && prospect.ownerName.trim());
@@ -421,9 +522,15 @@ export default function LeadQualifier() {
   const [leadListCity, setLeadListCity] = useState("");
   const [leadListNiche, setLeadListNiche] = useState("");
   const [leadListCount, setLeadListCount] = useState(10);
+  const [leadListRequest, setLeadListRequest] = useState("");
+  const [leadListJob, setLeadListJob] = useState(null);
+  const [leadListColumns, setLeadListColumns] = useState([]);
   const [leadListResults, setLeadListResults] = useState([]);
   const [leadListLoading, setLeadListLoading] = useState(false);
   const [leadListError, setLeadListError] = useState(null);
+  const [leadListProgress, setLeadListProgress] = useState(null);
+  const [leadListSheetLoading, setLeadListSheetLoading] = useState(false);
+  const [leadListSheetStatus, setLeadListSheetStatus] = useState(null);
   const [leadListOutreach, setLeadListOutreach] = useState({});
   const [generatingLeadListOutreach, setGeneratingLeadListOutreach] = useState(null);
 
@@ -1658,56 +1765,93 @@ Respond with ONLY a JSON object:
       title: "Reset Everything",
       message: "This will delete all leads, criteria, and settings. Start fresh?",
       onConfirm: async () => {
-        setLeads([]); setCriteria(getDefaultCriteria("construction")); setCompanyName(""); setIndustry("construction"); setProspects([]); setEmailDrafts({}); setQueueActions({}); setIndeedResults([]); setIndeedEmailDrafts({}); setIndeedQueueActions({}); setSetupComplete(false); setSetupStep(0); setTab("dashboard");
+        setLeads([]); setCriteria(getDefaultCriteria("construction")); setCompanyName(""); setIndustry("construction"); setProspects([]); setEmailDrafts({}); setQueueActions({}); setIndeedResults([]); setIndeedEmailDrafts({}); setIndeedQueueActions({}); setLeadListResults([]); setLeadListJob(null); setLeadListColumns([]); setSetupComplete(false); setSetupStep(0); setTab("dashboard");
         try { localStorage.removeItem(SK.leads); localStorage.removeItem(SK.criteria); localStorage.removeItem(SK.settings); } catch {}
         setConfirmAction(null); showToast("App reset complete");
       },
     });
   };
 
-  // ─── BUILD A LEAD LIST SEARCH (Mode 2B) ──────────────────
+  // ─── LEAD REQUEST ENGINE ─────────────────────────────────
   const handleLeadListSearch = async () => {
-    if (!leadListCity.trim()) { showToast("Enter a city", "error"); return; }
-    if (!leadListNiche.trim()) { showToast("Enter a niche", "error"); return; }
+    const requestText = [
+      leadListRequest.trim(),
+      leadListCity.trim() ? `Geography / region: ${leadListCity.trim()}` : "",
+      leadListNiche.trim() ? `Focus / niche: ${leadListNiche.trim()}` : "",
+    ].filter(Boolean).join("\n\n");
+
+    if (!requestText.trim()) { showToast("Paste a lead request or enter a niche", "error"); return; }
     setLeadListLoading(true);
     setLeadListError(null);
     setLeadListResults([]);
+    setLeadListJob(null);
+    setLeadListColumns([]);
+    setLeadListProgress("Parsing request");
+    setLeadListSheetStatus(null);
 
-    const prompt = `Search for ${leadListNiche} businesses in ${leadListCity.trim()} that could be ideal outreach targets.
+    const prompt = `Build a reusable lead generation job from this natural-language request, then research real leads for it.
 
-Return ${leadListCount} real local businesses with as much of the following as you can find:
-- Business name
-- Owner name (if findable)
-- Phone number
-- Email
-- Website
-- Physical address
-- Google rating + review count
-- Brief description of the business
-- Why they would be a good sales prospect (1-2 buying signals)
+USER REQUEST:
+${requestText}
 
-RESPOND WITH A JSON ARRAY ONLY. No markdown, no explanation. Each object must have:
+RESULT COUNT: Return up to ${leadListCount} rows.
+
+Engine requirements:
+1. Parse the request into a structured job with:
+   - industries
+   - targetRoles
+   - companyFilters
+   - geography
+   - requiredColumns
+   - specialResearchRequirements
+2. Research real companies and contacts using web search.
+3. Do not invent unavailable contact data. If a person, email, phone, LinkedIn, revenue, or lane cannot be verified, use an empty string and lower the confidence.
+4. Every row must include a Source URL when possible and a Confidence value of High, Medium, or Low.
+5. Add dynamic columns requested by the user. If the request is about freight brokers, shippers, logistics, lanes, refrigerated freight, or overflow freight, include at minimum these columns:
+${FREIGHT_MIN_COLUMNS.map(c => `   - ${c}`).join("\n")}
+6. Special research requirements like "high-demand lanes" should become columns and should be supported by a reason / buying signal.
+
+RESPOND WITH ONLY this JSON object:
 {
-  "businessName": "...",
-  "ownerName": "...",
-  "phone": "...",
-  "email": "...",
-  "website": "...",
-  "address": "...",
-  "googleRating": 4.2,
-  "reviewCount": 47,
-  "description": "...",
-  "buyingSignals": ["...", "..."]
+  "job": {
+    "summary": "short description",
+    "industries": ["..."],
+    "targetRoles": ["..."],
+    "companyFilters": ["..."],
+    "geography": "...",
+    "requiredColumns": ["..."],
+    "specialResearchRequirements": ["..."]
+  },
+  "columns": ["Company Name", "..."],
+  "rows": [
+    {
+      "Industry": "...",
+      "Company Name": "...",
+      "Target Role": "...",
+      "Contact Person": "",
+      "Email": "",
+      "Phone": "",
+      "LinkedIn": "",
+      "Estimated Revenue": "...",
+      "Company Type": "...",
+      "Region": "...",
+      "High-Demand Lane": "...",
+      "Reason / Buying Signal": "...",
+      "Source URL": "https://...",
+      "Confidence": "Medium"
+    }
+  ]
 }`;
 
     try {
+      setLeadListProgress("Researching companies");
       const response = await fetch("/api/anthropic", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
-          max_tokens: 8000,
-          system: "You are a business research assistant. Search the web for real local businesses. Respond with ONLY a raw JSON array. No markdown, no explanation — just [ ... ].",
+          max_tokens: 10000,
+          system: "You are the Lead Request Engine for a B2B lead generation app. Parse natural-language lead requests into reusable structured jobs, search the web for real leads, cite source URLs, and return ONLY valid JSON. Accuracy beats volume. Never fabricate contact data.",
           messages: [{ role: "user", content: prompt }],
           tools: [{ type: "web_search_20250305", name: "web_search" }],
         }),
@@ -1716,62 +1860,113 @@ RESPOND WITH A JSON ARRAY ONLY. No markdown, no explanation. Each object must ha
       const _leadListRaw = await response.text();
       let data;
       try { data = JSON.parse(_leadListRaw); } catch { throw new Error(`Search service unavailable (HTTP ${response.status}) — please try again in a moment.`); }
-      if (data.error) { setLeadListError(data.error.message || "API error. Please try again."); setLeadListLoading(false); return; }
-
-      const textParts = [];
-      (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
-      const fullText = textParts.join("\n");
-
-      let parsed = null;
-      const fenceMatch = fullText.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
-      if (fenceMatch) { try { parsed = JSON.parse(fenceMatch[1]); } catch {} }
-      if (!parsed) {
-        const greedyMatch = fullText.match(/\[\s*\{[\s\S]*\}\s*\]/);
-        if (greedyMatch) {
-          try { parsed = JSON.parse(greedyMatch[0]); } catch {
-            try { parsed = JSON.parse(greedyMatch[0].replace(/,\s*(?=[}\]])/g, "")); } catch {}
-          }
-        }
-      }
-
-      if (!parsed || !Array.isArray(parsed) || parsed.length === 0) {
-        setLeadListError("No businesses found. Try a larger city or different niche.");
+      if (data.error) {
+        setLeadListError(data.error.message || "API error. Please try again.");
         setLeadListLoading(false);
+        setLeadListProgress(null);
         return;
       }
 
-      const results = parsed.map((r, i) => ({
+      setLeadListProgress("Structuring sheet");
+      const textParts = [];
+      (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
+      const fullText = textParts.join("\n");
+      const parsed = extractJSONValue(fullText);
+      const parsedRows = Array.isArray(parsed) ? parsed : parsed?.rows;
+
+      if (!parsedRows || !Array.isArray(parsedRows) || parsedRows.length === 0) {
+        setLeadListError("No leads found. Try broadening the request or reducing hard filters.");
+        setLeadListLoading(false);
+        setLeadListProgress(null);
+        return;
+      }
+
+      const job = Array.isArray(parsed) ? {
+        summary: requestText.slice(0, 120),
+        industries: leadListNiche.trim() ? [leadListNiche.trim()] : [],
+        targetRoles: [],
+        companyFilters: [],
+        geography: leadListCity.trim(),
+        requiredColumns: DEFAULT_LEAD_COLUMNS,
+        specialResearchRequirements: [],
+      } : (parsed.job || {});
+      const columns = buildLeadColumns({ ...job, requiredColumns: parsed?.columns || job.requiredColumns }, parsedRows, requestText);
+      const results = parsedRows.map((r, i) => ({
+        ...r,
         id: Date.now() + i + Math.random(),
-        businessName: r.businessName || "Unknown Business",
-        ownerName: r.ownerName || "",
-        phone: r.phone || "",
-        email: r.email || "",
-        website: r.website || "",
-        address: r.address || "",
-        googleRating: r.googleRating || 0,
-        reviewCount: r.reviewCount || 0,
-        description: r.description || "",
-        buyingSignals: r.buyingSignals || [],
-        niche: leadListNiche,
-        city: leadListCity,
+        __columns: columns,
       }));
 
+      setLeadListJob(job);
+      setLeadListColumns(columns);
       setLeadListResults(results);
-      showToast(`Found ${results.length} businesses`);
-    } catch {
-      setLeadListError("Search failed — please try again.");
+      showToast(`Built ${results.length} lead rows`);
+    } catch (err) {
+      setLeadListError(`Search failed — ${err?.message || "please try again."}`);
     }
     setLeadListLoading(false);
+    setLeadListProgress(null);
+  };
+
+  const handleExportLeadListCSV = () => {
+    if (leadListResults.length === 0) return;
+    const columns = leadListColumns.length ? leadListColumns : buildLeadColumns(leadListJob, leadListResults, leadListRequest);
+    const rows = leadListResults.map(row => columns.map(col => csvEscape(getLeadCell(row, col))).join(","));
+    const csv = [columns.map(csvEscape).join(","), ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "lead_request_results.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleAppendLeadListToSheets = async () => {
+    if (leadListResults.length === 0) return;
+    setLeadListSheetLoading(true);
+    setLeadListSheetStatus(null);
+    try {
+      const columns = leadListColumns.length ? leadListColumns : buildLeadColumns(leadListJob, leadListResults, leadListRequest);
+      const response = await fetch("/api/google-sheets-append", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sheetName: "Lead Request Results",
+          columns,
+          rows: leadListResults.map(row => columns.map(col => getLeadCell(row, col))),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || data.error) throw new Error(data.error || "Google Sheets append failed");
+      setLeadListSheetStatus(`Appended ${data.updatedRows || leadListResults.length} rows to Google Sheets.`);
+      showToast("Appended to Google Sheets");
+    } catch (err) {
+      const message = err?.message || "Google Sheets append failed";
+      setLeadListSheetStatus(message);
+      showToast(message, "error");
+    }
+    setLeadListSheetLoading(false);
   };
 
   // ─── BUILD A LEAD LIST OUTREACH DRAFT ────────────────────
   const handleLeadListDraftOutreach = async (lead) => {
     setGeneratingLeadListOutreach(lead.id);
     try {
-      const prompt = `Write a short, punchy cold outreach message to ${lead.businessName}${lead.ownerName ? ` (owner: ${lead.ownerName})` : ""}, a ${lead.niche} business in ${lead.city}.
+      const company = getFirstLeadCell(lead, ["Company Name", "Business Name", "Company"]);
+      const contact = getFirstLeadCell(lead, ["Contact Person", "Owner Name", "Name"]);
+      const role = getFirstLeadCell(lead, ["Target Role", "Title", "Role"]);
+      const signal = getFirstLeadCell(lead, ["Reason / Buying Signal", "Buying Signals", "Description"]);
+      const industryValue = getFirstLeadCell(lead, ["Industry", "Niche", "Company Type"]);
+      const region = getFirstLeadCell(lead, ["Region", "Location", "Address", "City"]);
 
-${lead.buyingSignals.length > 0 ? `Buying signals: ${lead.buyingSignals.slice(0, 2).join(", ")}` : ""}
-${lead.description ? `Business context: ${lead.description}` : ""}
+      const prompt = `Write a short, punchy cold outreach message to ${company || "this lead"}${contact ? ` (contact: ${contact})` : ""}${role ? `, ${role}` : ""}.
+
+Lead request context:
+- Job: ${leadListJob?.summary || leadListRequest || "General B2B lead generation"}
+- Industry/type: ${industryValue || "unknown"}
+- Region: ${region || "unknown"}
+- Buying signal: ${signal || "unknown"}
 
 Framework:
 - Hook: Reference something specific about their business
@@ -1802,25 +1997,33 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
 
   // ─── ADD LEAD LIST RESULT TO PIPELINE ────────────────────
   const handleAddLeadListToPipeline = (lead) => {
+    const company = getFirstLeadCell(lead, ["Company Name", "Business Name", "Company"]);
+    const contact = getFirstLeadCell(lead, ["Contact Person", "Owner Name", "Name"]);
+    const email = getFirstLeadCell(lead, ["Email", "Email Address"]);
+    const phone = getFirstLeadCell(lead, ["Phone", "Phone Number"]);
+    const industryValue = getFirstLeadCell(lead, ["Industry", "Niche", "Company Type"]);
+    const region = getFirstLeadCell(lead, ["Region", "Location", "Address", "City"]);
+    const source = getFirstLeadCell(lead, ["Source URL", "Website", "Source"]);
+    const signal = getFirstLeadCell(lead, ["Reason / Buying Signal", "Buying Signals", "Description", "High-Demand Lane"]);
     const newLead = {
       id: Date.now() + Math.random(),
       createdAt: Date.now(),
-      name: lead.ownerName || lead.businessName,
-      company: lead.businessName,
-      email: lead.email || "",
-      phone: lead.phone || "",
-      projectType: "",
+      name: contact || company,
+      company: company || "Unknown Company",
+      email: email || "",
+      phone: phone || "",
+      projectType: industryValue || "",
       budget: "",
-      location: lead.address || lead.city,
+      location: region || "",
       zipCode: "",
       timeline: "",
-      source: "Build a Lead List",
-      description: (lead.description || lead.buyingSignals.join(". ")).trim(),
+      source: source || "Build a Lead List",
+      description: signal || "",
       followUp: "new",
       result: { qualified: true, score: 1, total: 1, criteria: [] },
     };
     setLeads(prev => [newLead, ...prev]);
-    showToast(`${lead.businessName} added to Pipeline`);
+    showToast(`${company || "Lead"} added to Pipeline`);
   };
 
   // ─── FILTERED & SORTED LEADS ─────────────────────────────
@@ -3511,29 +3714,42 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
             <div style={{ animation: "fadeIn 0.3s ease" }}>
               <div style={{ marginBottom: 24 }}>
                 <h2 style={{ fontSize: 20, fontWeight: 700, fontFamily: "'Outfit', sans-serif", marginBottom: 6 }}>🎯 Build a Lead List</h2>
-                <p style={{ color: t.textDim, fontSize: 14 }}>Enter a city, niche, and how many results you want. AI searches the web for real local businesses with contact info and buying signals.</p>
+                <p style={{ color: t.textDim, fontSize: 14 }}>Paste a natural-language lead request. The engine parses the job, researches real leads, and builds a sheet with the columns your request needs.</p>
               </div>
 
               {/* Search Form */}
               <div style={{ ...cardStyle, marginBottom: 24 }}>
+                <div style={{ marginBottom: 16 }}>
+                  <label style={labelStyle}>Lead Request</label>
+                  <textarea
+                    style={{ ...inputStyle, minHeight: 150, resize: "vertical", lineHeight: 1.5 }}
+                    value={leadListRequest}
+                    onChange={e => setLeadListRequest(e.target.value)}
+                    placeholder={LEAD_REQUEST_EXAMPLE}
+                  />
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginTop: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 12, color: t.textFaint }}>Optional helpers below are folded into the same request, not a separate mode.</span>
+                    <button onClick={() => setLeadListRequest(LEAD_REQUEST_EXAMPLE)} style={{ ...btnSecondary, fontSize: 12, padding: "6px 12px" }}>Use freight example</button>
+                  </div>
+                </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto auto", gap: 16, alignItems: "flex-end" }}>
                   <div>
-                    <label style={labelStyle}>City / Region</label>
+                    <label style={labelStyle}>Geography Hint</label>
                     <input style={inputStyle} value={leadListCity} onChange={e => setLeadListCity(e.target.value)} placeholder="e.g. Austin, TX" onKeyDown={e => e.key === "Enter" && handleLeadListSearch()} />
                   </div>
                   <div>
-                    <label style={labelStyle}>Niche / Business Type</label>
-                    <input style={inputStyle} value={leadListNiche} onChange={e => setLeadListNiche(e.target.value)} placeholder="e.g. HVAC, Dentist, Roofing" onKeyDown={e => e.key === "Enter" && handleLeadListSearch()} />
+                    <label style={labelStyle}>Industry / Niche Hint</label>
+                    <input style={inputStyle} value={leadListNiche} onChange={e => setLeadListNiche(e.target.value)} placeholder="e.g. shippers, HVAC, medical suppliers" onKeyDown={e => e.key === "Enter" && handleLeadListSearch()} />
                   </div>
                   <div>
-                    <label style={labelStyle}>Results</label>
+                    <label style={labelStyle}>Rows</label>
                     <select style={{ ...inputStyle, width: 80, cursor: "pointer" }} value={leadListCount} onChange={e => setLeadListCount(Number(e.target.value))}>
                       {[5, 10, 15, 20].map(n => <option key={n} value={n}>{n}</option>)}
                     </select>
                   </div>
                   <div>
                     <button onClick={handleLeadListSearch} disabled={leadListLoading} style={{ ...btnPrimary, height: 43, whiteSpace: "nowrap" }}>
-                      {leadListLoading ? "Searching…" : "🔍 Find Leads"}
+                      {leadListLoading ? "Building…" : "🔍 Build Sheet"}
                     </button>
                   </div>
                 </div>
@@ -3546,8 +3762,8 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
               {leadListLoading && (
                 <div style={{ textAlign: "center", padding: "60px 20px", color: t.textDim }}>
                   <div style={{ fontSize: 36, marginBottom: 16, animation: "pulse 1.5s infinite" }}>🔍</div>
-                  <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>Searching for {leadListNiche} businesses in {leadListCity}…</div>
-                  <div style={{ fontSize: 13, color: t.textFaint }}>AI is scanning the web for real businesses with contact info</div>
+                  <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>{leadListProgress || "Building lead sheet"}…</div>
+                  <div style={{ fontSize: 13, color: t.textFaint }}>The engine is parsing the request, searching the web, and structuring rows for export</div>
                 </div>
               )}
 
@@ -3555,55 +3771,91 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
                 <div style={{ textAlign: "center", padding: "60px 20px", color: t.textDim }}>
                   <div style={{ fontSize: 40, marginBottom: 12 }}>🎯</div>
                   <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Ready to build your list</div>
-                  <div style={{ fontSize: 13, color: t.textFaint }}>Enter a city and niche above, then hit Find Leads</div>
+                  <div style={{ fontSize: 13, color: t.textFaint }}>Paste a request above, then build a structured lead sheet</div>
                 </div>
               )}
 
               {leadListResults.length > 0 && (
                 <div>
-                  <div style={{ fontSize: 13, color: t.textDim, marginBottom: 16, fontWeight: 600 }}>
-                    {leadListResults.length} businesses found · {leadListCity} · {leadListNiche}
+                  {leadListJob && (
+                    <div style={{ ...cardStyle, marginBottom: 16, padding: 18 }}>
+                      <div style={{ fontSize: 12, color: t.textFaint, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 8 }}>Parsed Lead Job</div>
+                      <div style={{ fontSize: 14, color: t.text, marginBottom: 10, lineHeight: 1.5 }}>{leadListJob.summary || "Structured lead request"}</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, fontSize: 12, color: t.textMuted }}>
+                        <div><strong style={{ color: t.text }}>Industries:</strong> {(leadListJob.industries || []).join(", ") || "Any"}</div>
+                        <div><strong style={{ color: t.text }}>Roles:</strong> {(leadListJob.targetRoles || []).join(", ") || "Any"}</div>
+                        <div><strong style={{ color: t.text }}>Geography:</strong> {leadListJob.geography || "Not specified"}</div>
+                        <div><strong style={{ color: t.text }}>Research:</strong> {(leadListJob.specialResearchRequirements || []).join(", ") || "Standard contact research"}</div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 13, color: t.textDim, fontWeight: 600, flex: 1 }}>{leadListResults.length} rows · {leadListColumns.length} columns</span>
+                    <button onClick={handleExportLeadListCSV} style={btnSecondary}>↓ Export CSV</button>
+                    <button onClick={handleAppendLeadListToSheets} disabled={leadListSheetLoading} style={{ ...btnSecondary, opacity: leadListSheetLoading ? 0.7 : 1 }}>
+                      {leadListSheetLoading ? "Appending…" : "Append to Google Sheets"}
+                    </button>
                   </div>
+
+                  {leadListSheetStatus && (
+                    <div style={{ background: leadListSheetStatus.toLowerCase().includes("failed") || leadListSheetStatus.toLowerCase().includes("configured") ? t.redBg : t.greenBg, border: `1px solid ${leadListSheetStatus.toLowerCase().includes("failed") || leadListSheetStatus.toLowerCase().includes("configured") ? t.redBorder : t.greenBorder}`, borderRadius: 8, padding: "12px 14px", marginBottom: 16, fontSize: 13, color: t.text }}>
+                      {leadListSheetStatus}
+                    </div>
+                  )}
+
+                  <div style={{ overflowX: "auto", border: `1px solid ${t.border}`, borderRadius: 8, background: t.cardBg, marginBottom: 18 }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", minWidth: Math.max(920, (leadListColumns.length || 8) * 150) }}>
+                      <thead>
+                        <tr>
+                          {(leadListColumns.length ? leadListColumns : buildLeadColumns(leadListJob, leadListResults, leadListRequest)).map(col => (
+                            <th key={col} style={{ textAlign: "left", padding: "11px 12px", borderBottom: `1px solid ${t.borderLight}`, color: t.textDim, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", background: t.bgHover, whiteSpace: "nowrap" }}>{col}</th>
+                          ))}
+                          <th style={{ textAlign: "left", padding: "11px 12px", borderBottom: `1px solid ${t.borderLight}`, color: t.textDim, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", background: t.bgHover }}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {leadListResults.map(lead => {
+                          const columns = leadListColumns.length ? leadListColumns : buildLeadColumns(leadListJob, leadListResults, leadListRequest);
+                          const draft = leadListOutreach[lead.id];
+                          const isGenerating = generatingLeadListOutreach === lead.id;
+                          return (
+                            <tr key={lead.id}>
+                              {columns.map(col => {
+                                const value = getLeadCell(lead, col);
+                                const isUrl = /^https?:\/\//i.test(String(value));
+                                return (
+                                  <td key={col} style={{ padding: "11px 12px", borderBottom: `1px solid ${t.border}`, color: t.textMuted, fontSize: 12, verticalAlign: "top", lineHeight: 1.45, maxWidth: 260 }}>
+                                    {isUrl ? <a href={value} target="_blank" rel="noreferrer" style={{ color: t.accent, textDecoration: "none" }}>{value}</a> : (String(value || "").trim() || "—")}
+                                  </td>
+                                );
+                              })}
+                              <td style={{ padding: "11px 12px", borderBottom: `1px solid ${t.border}`, verticalAlign: "top", minWidth: 150 }}>
+                                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                                  <button onClick={() => handleAddLeadListToPipeline(lead)} style={{ ...btnSecondary, fontSize: 12, textAlign: "center" }}>+ Pipeline</button>
+                                  <button onClick={() => handleLeadListDraftOutreach(lead)} disabled={isGenerating} style={{ ...btnPrimary, fontSize: 12, textAlign: "center", padding: "8px 10px" }}>
+                                    {isGenerating ? "Writing…" : draft ? "↻ Outreach" : "✍ Outreach"}
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
                   <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
                     {leadListResults.map(lead => {
                       const draft = leadListOutreach[lead.id];
-                      const isGenerating = generatingLeadListOutreach === lead.id;
+                      const company = getFirstLeadCell(lead, ["Company Name", "Business Name", "Company"]);
+                      const contact = getFirstLeadCell(lead, ["Contact Person", "Owner Name", "Name"]);
                       return (
-                        <div key={lead.id} style={{ ...cardStyle, marginBottom: 0 }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
-                            <div style={{ flex: 1, minWidth: 200 }}>
-                              <div style={{ fontWeight: 700, fontSize: 16, fontFamily: "'Outfit', sans-serif", marginBottom: 4 }}>{lead.businessName}</div>
-                              {lead.ownerName && <div style={{ fontSize: 13, color: t.accent, fontWeight: 600, marginBottom: 6 }}>👤 {lead.ownerName}</div>}
-                              <div style={{ display: "flex", flexWrap: "wrap", gap: 14, fontSize: 13, color: t.textMuted, marginBottom: 8 }}>
-                                {lead.phone && <span>📞 {lead.phone}</span>}
-                                {lead.email && <span>✉ {lead.email}</span>}
-                                {lead.website && (
-                                  <span>🌐 <a href={lead.website.startsWith("http") ? lead.website : `https://${lead.website}`} target="_blank" rel="noreferrer" style={{ color: t.accent, textDecoration: "none" }}>{lead.website}</a></span>
-                                )}
-                              </div>
-                              {lead.address && <div style={{ fontSize: 12, color: t.textFaint, marginBottom: 6 }}>📍 {lead.address}</div>}
-                              {lead.googleRating > 0 && <div style={{ fontSize: 12, color: t.textFaint, marginBottom: 8 }}>⭐ {lead.googleRating} ({lead.reviewCount} reviews)</div>}
-                              {lead.description && <div style={{ fontSize: 13, color: t.textDim, marginBottom: 10, lineHeight: 1.5 }}>{lead.description}</div>}
-                              {lead.buyingSignals.length > 0 && (
-                                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                                  {lead.buyingSignals.map((s, i) => (
-                                    <span key={i} style={{ background: t.accent + "18", color: t.accent, padding: "3px 10px", borderRadius: 12, fontSize: 12, fontWeight: 600 }}>🔥 {s}</span>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                            <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 160 }}>
-                              <button onClick={() => handleAddLeadListToPipeline(lead)} style={{ ...btnSecondary, fontSize: 12, textAlign: "center" }}>+ Add to Pipeline</button>
-                              <button onClick={() => handleLeadListDraftOutreach(lead)} disabled={isGenerating} style={{ ...btnPrimary, fontSize: 12, textAlign: "center" }}>
-                                {isGenerating ? "Writing…" : draft ? "↻ Regenerate" : "✍ Draft Outreach"}
-                              </button>
-                            </div>
-                          </div>
-
+                        <div key={`${lead.id}-draft`} style={{ display: draft ? "block" : "none", ...cardStyle, marginBottom: 0 }}>
                           {draft && (
-                            <div style={{ marginTop: 16, padding: 16, background: t.bgHover, borderRadius: 8, border: `1px solid ${t.borderLight}` }}>
+                            <div>
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                                <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: t.textFaint }}>Outreach Draft</span>
+                                <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", color: t.textFaint }}>Outreach Draft · {company || "Lead"}{contact ? ` · ${contact}` : ""}</span>
                                 <button onClick={() => { navigator.clipboard.writeText(draft); showToast("Copied!"); }} style={{ ...btnSecondary, fontSize: 11, padding: "4px 10px" }}>📋 Copy</button>
                               </div>
                               <p style={{ fontSize: 13, lineHeight: 1.7, color: t.text, whiteSpace: "pre-wrap" }}>{draft}</p>
