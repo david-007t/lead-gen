@@ -566,7 +566,7 @@ export default function LeadQualifier() {
     setProspects([]);
     setProspectProgress({ phase: "discovery", current: 0, total: prospectCount });
 
-    const ENRICH_BATCH_SIZE = 4;
+    const ENRICH_BATCH_SIZE = 2;
 
     // Shared helper: extract JSON array from Claude response text
     const parseProspectJSON = (fullText) => {
@@ -672,22 +672,35 @@ RESPOND WITH A JSON ARRAY ONLY. No markdown, no explanation.
   }
 ]`;
 
-      try {
-        const enrichResp = await fetch("/api/anthropic", {
+      // One retry on timeout/network error — batch 2+ can hit 504 under load
+      const fetchEnrichBatch = async () => {
+        const resp = await fetch("/api/anthropic", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             model: "claude-sonnet-4-20250514",
-            max_tokens: 4000,
+            max_tokens: 2500,
             system: "You are a business research assistant for a digital agency. Search the web thoroughly. Respond with ONLY a raw JSON array. No markdown, no explanation.",
             messages: [{ role: "user", content: enrichPrompt }],
             tools: [{ type: "web_search_20250305", name: "web_search" }],
           }),
         });
-        const enrichRaw = await enrichResp.text();
+        const raw = await resp.text();
+        let data;
+        try { data = JSON.parse(raw); } catch { throw new Error(`Service unavailable (HTTP ${resp.status})`); }
+        if (data.error) throw new Error(data.error.message || "API error");
+        return data;
+      };
+
+      try {
         let enrichData;
-        try { enrichData = JSON.parse(enrichRaw); } catch { throw new Error(`Service unavailable (HTTP ${enrichResp.status})`); }
-        if (enrichData.error) throw new Error(enrichData.error.message || "API error");
+        try {
+          enrichData = await fetchEnrichBatch();
+        } catch (firstErr) {
+          // Wait 4 seconds then retry once before giving up
+          await new Promise(r => setTimeout(r, 4000));
+          enrichData = await fetchEnrichBatch();
+        }
 
         const enrichText = (enrichData.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
         const parsedBatch = parseProspectJSON(enrichText);
