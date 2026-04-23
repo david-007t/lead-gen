@@ -410,9 +410,14 @@ function hasUsableLeadEmail(row) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim());
 }
 
+function hasLeadContactName(row) {
+  const contact = getFirstLeadCell(row, ["Contact Person", "Owner Name", "Decision Maker Name", "Contact Name", "Name"]);
+  return !isMissingLeadValue(contact);
+}
+
 function isContactableLeadRow(row) {
   const company = getFirstLeadCell(row, ["Company Name", "Business Name", "Company"]);
-  return !isMissingLeadValue(company) && (hasUsableLeadPhone(row) || hasUsableLeadEmail(row));
+  return !isMissingLeadValue(company) && hasLeadContactName(row) && (hasUsableLeadPhone(row) || hasUsableLeadEmail(row));
 }
 
 function buildLeadColumns(job, rows, promptText) {
@@ -2384,7 +2389,7 @@ ${exclusionClause}
 USER REQUEST:
 ${requestText}
 
-RESULT COUNT: Return up to ${rowTarget} rows for this batch.
+RESULT COUNT: Return exactly ${rowTarget} rows for this batch unless fewer than ${rowTarget} verified contactable leads exist.
 BATCH: ${batchIndex} of up to ${maxAttempts}. Do not repeat excluded companies.
 
 Engine requirements:
@@ -2401,13 +2406,14 @@ Engine requirements:
    - Pass 3: keep only rows that are actually callable/contactable.
 3. Every returned row MUST include:
    - Company Name
+   - Contact Person
    - Best Phone OR Email
    - Target Role
    - Reason / Buying Signal
    - Source URL
-4. Rows with no Best Phone and no Email MUST be dropped. No exceptions. Do not include company-only rows.
+4. Rows with no Contact Person MUST be dropped. Rows with no Best Phone and no Email MUST be dropped. No exceptions. Do not include company-only rows.
 5. Attempt to find a named contact person for every row. Prefer owner/founder/president/CEO, then the most relevant manager or department leader for the user's request.
-6. If no named contact is public, the row can remain only when it has a useful main/location/department phone number, a strong Target Role, and clear Call Notes telling the caller who to ask for.
+6. If no named contact is public, skip the row and find another company.
 7. Search specifically for:
    - main company phone
    - location/branch phone
@@ -2431,7 +2437,7 @@ Phone and contact field rules:
 - Reachability Score: High if named contact + phone/email, Medium if role/company + phone/email, Low only when contact data is weak but still usable.
 - Call Notes: one short sentence telling a caller who to ask for and why.
 - Do not stop early just because a few high-confidence rows are found. Return as many contactable rows as possible up to the requested count.
-- If exact contact names are not public, leave Contact Person blank and set Contact Status to "Role Only" or "Company Only".
+- If exact contact names are not public, do not return that company.
 - Never set Phone Status to Missing unless Email is present.
 - Never return a row where Reachability Score is Low because there is no phone and no email.
 
@@ -2476,7 +2482,7 @@ RESPOND WITH ONLY this JSON object:
 
     try {
       const batchSize = 5;
-      const maxAttempts = Math.min(5, Math.ceil(leadListCount / batchSize) + 1);
+      const maxAttempts = Math.max(1, Math.ceil(leadListCount / batchSize));
       const collectedRows = [];
       const seenCompanies = new Set();
       let droppedRows = 0;
@@ -2485,7 +2491,7 @@ RESPOND WITH ONLY this JSON object:
       let job = null;
 
       for (let batchIndex = 1; batchIndex <= maxAttempts && collectedRows.length < leadListCount; batchIndex++) {
-        const rowTarget = Math.min(batchSize, leadListCount - collectedRows.length);
+        const rowTarget = Math.min(batchSize, leadListCount - ((batchIndex - 1) * batchSize));
         const collectedCompanies = collectedRows
           .map(row => getFirstLeadCell(row, ["Company Name", "Business Name", "Company"]))
           .filter(Boolean);
@@ -2560,7 +2566,7 @@ RESPOND WITH ONLY this JSON object:
 
       if (collectedRows.length === 0) {
         setLeadListError(candidateRows > 0
-          ? `No contactable leads returned. The engine found ${candidateRows} candidate ${candidateRows === 1 ? "row" : "rows"}, but none had a usable phone or email.`
+          ? `No contactable leads returned. The engine found ${candidateRows} candidate ${candidateRows === 1 ? "row" : "rows"}, but none had both a contact name and a usable phone or email.`
           : "No callable leads returned. Try a narrower geography or a more specific business category.");
         setLeadListLoading(false);
         setLeadListProgress(null);
@@ -2585,7 +2591,7 @@ RESPOND WITH ONLY this JSON object:
       }));
 
       const notices = [];
-      if (droppedRows > 0) notices.push(`Dropped ${droppedRows} company-only ${droppedRows === 1 ? "row" : "rows"} with no usable phone or email.`);
+      if (droppedRows > 0) notices.push(`Dropped ${droppedRows} ${droppedRows === 1 ? "row" : "rows"} missing a contact name, phone, or email.`);
       if (results.length < leadListCount) notices.push(`Returned ${results.length} of ${leadListCount} requested because only contactable rows are kept.`);
       if (failedBatches > 0) notices.push(`${failedBatches} search ${failedBatches === 1 ? "batch" : "batches"} timed out or failed, so these are partial results.`);
       setLeadListQualityNotice(notices.join(" "));
