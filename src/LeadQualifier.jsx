@@ -913,20 +913,18 @@ RESPOND WITH A JSON ARRAY ONLY. No markdown, no explanation.
       const signals = prospect.buyingSignals.slice(0, 2).join(", ");
       const opportunity = prospect.opportunities[0] || "improve their digital presence";
 
-      const prompt = `Write a short, personalized cold email to ${prospect.businessName}${prospect.ownerName ? ` (owner: ${prospect.ownerName})` : ""}, a ${prospect.niche} business in ${prospect.address.split(",").slice(-2).join(",").trim()}.
+      const location = prospect.address ? prospect.address.split(",").slice(-2).join(",").trim() : prospectCity;
+      const prompt = `Write a short cold email pitching a lead list to ${prospect.businessName}${prospect.ownerName ? ` (owner: ${prospect.ownerName})` : ""}, a ${prospect.niche} business in ${location}.
 
-Context:
-- Buying signals: ${signals || "growing business"}
-- Opportunity: ${opportunity}
-- You represent Ascend Solutions, a digital agency offering AI automation, web development, and advertising services.
+You have a curated list of verified ${prospect.niche} leads (business names, owner names, phone numbers, emails) in their area. You are offering 5 leads for free as a sample — no strings attached. If they find the sample useful, the full list is available for purchase.
 
-Framework:
-- Hook: Reference something specific about their business
-- Pain point: Connect it to a problem they likely have
-- Offer: One simple thing you can help with (not a full pitch)
-- CTA: Low-friction ask (quick call or reply)
+Framework (follow this exactly, 4-5 sentences max):
+1. Hook: mention you built a lead list of ${prospect.niche} businesses in their area and that you noticed them operating there
+2. Proof: mention you have verified leads with owner names, phones, and emails
+3. Free offer: offer to send 5 leads for free, just reply to claim them
+4. Soft close: mention the full list is available if the sample is useful — no price, no pressure
 
-Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson.`;
+Tone: real person, not a salesperson. Casual and direct. No fluff, no buzzwords, no "I hope this email finds you well".`;
 
       const response = await fetch("/api/anthropic", {
         method: "POST",
