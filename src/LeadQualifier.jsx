@@ -757,7 +757,7 @@ function buildLeadListOfferEmail(lead, prospects, senderName, stripeLink) {
     ? cleanBusinessObservation(firstLine, `${company} already has real momentum in ${location}`)
     : cleanBusinessObservation(signal, `${company} looks like a strong fit for more consistent outbound prospecting`);
   const sampleLeads = formatSampleLeads(prospects, location, niche, prospect?.id || lead.id);
-  const signature = String(senderName || "").trim() || "[Your name]";
+  const signature = String(senderName || "").trim() || DEFAULT_EMAIL_SIGNATURE;
 
   return `Subject: Found 5 ${location} businesses that need coverage
 
@@ -777,6 +777,10 @@ Interested?
 ${signature}`;
 }
 
+const DEFAULT_EMAIL_SIGNATURE = `David Osei-Tutu
+Founder, SankoTech Systems
+david@sankotechsystems.com`;
+
 function upgradeLegacyDraftEmail(text) {
   const value = String(text || "");
   if (!value) return value;
@@ -790,7 +794,8 @@ function upgradeLegacyDraftEmail(text) {
       "recently opened, underserved, no current provider signals",
       "recently opened, changing ownership, or expanding — businesses that typically fall through the cracks on coverage",
     )
-    .replace(/\n\[STRIPE LINK PLACEHOLDER\]\s*$/m, "");
+    .replace(/\n\[STRIPE LINK PLACEHOLDER\]\s*$/m, "")
+    .replace(/\n\[Your name\]\s*$/m, `\n${DEFAULT_EMAIL_SIGNATURE}`);
 }
 
 function upgradeLegacyLeadDraft(lead) {
@@ -901,7 +906,7 @@ export default function LeadQualifier() {
   const [shipListTierFilter, setShipListTierFilter] = useState("all");
   const [shipListProgress, setShipListProgress] = useState(null);
   const [shipListStripeLink, setShipListStripeLink] = useState("");
-  const [shipListSenderName, setShipListSenderName] = useState("");
+  const [shipListSenderName, setShipListSenderName] = useState(DEFAULT_EMAIL_SIGNATURE);
 
   // Ship List DB state
   const [savedCompanies, setSavedCompanies] = useState([]); // companies saved to Supabase
@@ -1415,7 +1420,7 @@ This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
         `${prospect.businessName || "Your agency"} already has real momentum in ${city}`
       );
       const sampleLeads = formatSampleLeads(prospects, city, niche, prospect.id);
-      const senderName = shipListSenderName.trim() || "[Your name]";
+      const senderName = shipListSenderName.trim() || DEFAULT_EMAIL_SIGNATURE;
       const emailText = `Subject: Found 5 ${city} businesses that need coverage
 
 Hi ${firstName},
