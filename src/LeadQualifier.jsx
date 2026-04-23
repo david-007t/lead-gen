@@ -341,6 +341,8 @@ const LEAD_LIST_LOOKUP_BATCH_SIZE = 1;
 const LEAD_LIST_MAX_GENERATION_PASSES = 8;
 const LEAD_LIST_BUFFER_ROWS = 2;
 const LEAD_LIST_LOOKUP_DELAY_MS = 1200;
+const LEAD_LIST_EMAIL_BATCH_SIZE = 1;
+const LEAD_LIST_EMAIL_DELAY_MS = 350;
 const VERIFIED_PHONE_BADGE = "✓ Verified";
 
 function extractJSONValue(fullText) {
@@ -435,6 +437,40 @@ function getLeadListPhone(row) {
   return getFirstLeadCell(row, ["Best Phone", "Phone", "Phone Number"]);
 }
 
+function getLeadListCompany(row) {
+  return getFirstLeadCell(row, ["Company Name", "Business Name", "Company"]);
+}
+
+function getLeadListContactName(row) {
+  return getFirstLeadCell(row, ["Contact Person", "Decision Maker Name", "Owner Name", "Name"]);
+}
+
+function normalizeLeadDomain(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    return new URL(withProtocol).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return raw
+      .toLowerCase()
+      .replace(/^https?:\/\//i, "")
+      .replace(/^www\./, "")
+      .split("/")[0]
+      .trim();
+  }
+}
+
+function getLeadListDomain(row) {
+  return normalizeLeadDomain(getFirstLeadCell(row, [
+    "Website Domain",
+    "Website",
+    "Domain",
+    "Source URL",
+    "Contact Source URL",
+  ]));
+}
+
 function inferRequestedRowCount(requestText, fallbackCount) {
   const explicitMatch = String(requestText || "").match(/\b(?:find|need|return|build|give me|generate)\s+(\d{1,3})\b/i);
   const explicitCount = explicitMatch ? Number(explicitMatch[1]) : 0;
@@ -443,9 +479,9 @@ function inferRequestedRowCount(requestText, fallbackCount) {
 
 function leadListRowKey(row) {
   return [
-    getFirstLeadCell(row, ["Company Name", "Business Name", "Company"]),
+    getLeadListCompany(row),
     getLeadListPhone(row),
-    getFirstLeadCell(row, ["Contact Person", "Owner Name", "Name"]),
+    getLeadListContactName(row),
     getFirstLeadCell(row, ["Source URL", "Contact Source URL"]),
   ]
     .map(value => String(value || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""))
@@ -2546,6 +2582,65 @@ RESPOND WITH ONLY this JSON object:
         .filter(Boolean);
     };
 
+    const enrichLeadListEmails = async (rows) => {
+      const lookups = rows
+        .map((row, index) => ({
+          row,
+          index,
+          name: getLeadListContactName(row),
+          company: getLeadListCompany(row),
+          domain: getLeadListDomain(row),
+          email: getFirstLeadCell(row, ["Email", "Email Address"]),
+        }))
+        .filter(item => !String(item.email || "").trim() && String(item.name || "").trim() && (String(item.domain || "").trim() || String(item.company || "").trim()));
+
+      if (lookups.length === 0) return rows;
+
+      const enrichedByIndex = new Map();
+      let completed = 0;
+      for (let i = 0; i < lookups.length; i += LEAD_LIST_EMAIL_BATCH_SIZE) {
+        const batch = lookups.slice(i, i + LEAD_LIST_EMAIL_BATCH_SIZE);
+        setLeadListProgress(`Finding emails (${acceptedRows.length}/${desiredCount}) · checked ${completed}/${lookups.length}`);
+        const response = await fetch("/api/hunter-email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            leads: batch.map(item => ({
+              name: item.name,
+              company: item.company,
+              domain: item.domain,
+            })),
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.error) {
+          throw new Error(data.error || "Email lookup failed");
+        }
+        (data.results || []).forEach((result, offset) => {
+          enrichedByIndex.set(batch[offset].index, result);
+        });
+        completed += batch.length;
+        if (i + LEAD_LIST_EMAIL_BATCH_SIZE < lookups.length) {
+          await sleep(LEAD_LIST_EMAIL_DELAY_MS);
+        }
+      }
+
+      return rows.map((row, index) => {
+        const enrichment = enrichedByIndex.get(index);
+        if (!enrichment?.email) return row;
+        const nextRow = {
+          ...row,
+          "Email": enrichment.email,
+          "__emailEnrichment": enrichment,
+        };
+        if (enrichment.confidence) nextRow["Email Confidence"] = enrichment.confidence;
+        if (enrichment.sourceUrl && !String(getFirstLeadCell(row, ["Contact Source URL"]) || "").trim()) {
+          nextRow["Contact Source URL"] = enrichment.sourceUrl;
+        }
+        return nextRow;
+      });
+    };
+
     try {
       const acceptedRows = [];
       const seenRowKeys = new Set();
@@ -2596,25 +2691,31 @@ RESPOND WITH ONLY this JSON object:
         const verifiedRows = await verifyLeadListRows(parsedRows);
         droppedForVerification += Math.max(0, parsedRows.length - verifiedRows.length);
 
-        let addedThisPass = 0;
-        verifiedRows.forEach((row, index) => {
+        const rowsToAdd = [];
+        verifiedRows.forEach((row) => {
           const rowKey = leadListRowKey(row);
-          const company = getFirstLeadCell(row, ["Company Name", "Business Name", "Company"]);
+          const company = getLeadListCompany(row);
           if (!rowKey || seenRowKeys.has(rowKey)) return;
           seenRowKeys.add(rowKey);
           if (company) excludedCompanies.add(company);
           if (acceptedRows.length < desiredCount) {
-            acceptedRows.push({
-              ...row,
-              id: Date.now() + index + Math.random(),
-              __columns: parsedColumns,
-            });
-            addedThisPass += 1;
+            rowsToAdd.push(row);
           }
         });
 
+        const enrichedRows = await enrichLeadListEmails(rowsToAdd);
+        let addedThisPass = 0;
+        enrichedRows.forEach((row, index) => {
+          acceptedRows.push({
+            ...row,
+            id: Date.now() + index + Math.random(),
+            __columns: parsedColumns,
+          });
+          addedThisPass += 1;
+        });
+
         parsedRows.forEach(row => {
-          const company = getFirstLeadCell(row, ["Company Name", "Business Name", "Company"]);
+          const company = getLeadListCompany(row);
           if (company) excludedCompanies.add(company);
         });
 
