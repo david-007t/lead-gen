@@ -26,10 +26,17 @@ async function getAccessToken() {
     }),
   });
 
-  const data = await response.json().catch(() => ({}));
+  const rawText = await response.text();
+  let data = {};
+  try {
+    data = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    data = { raw: rawText };
+  }
+
   if (!response.ok || !data.access_token) {
-    const detail = JSON.stringify(data);
-    throw new Error(data.error_description || data.error || detail || "Failed to get Gmail access token");
+    const detail = rawText || JSON.stringify(data);
+    throw new Error(detail || "Failed to get Gmail access token");
   }
 
   return data.access_token;
