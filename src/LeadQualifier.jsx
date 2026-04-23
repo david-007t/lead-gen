@@ -622,6 +622,40 @@ function buildLeadListPipelineDetails(lead, columns = [], outreachDraft = "") {
   };
 }
 
+function buildProspectLeadResult(prospect) {
+  const hasDecisionMaker = !!String(prospect?.ownerName || "").trim();
+  const confidence = String(prospect?.emailConfidence || "").toUpperCase();
+  const hasStrongEmail = !!String(prospect?.email || "").trim() && ["HIGH", "MEDIUM"].includes(confidence);
+  const hasSourceEvidence = !!String(prospect?.sourceUrl || "").trim() || !!String(prospect?.linkedInUrl || "").trim();
+
+  const criteria = [
+    {
+      name: "Decision Maker",
+      pass: hasDecisionMaker,
+      detail: hasDecisionMaker ? "Named contact found" : "No named decision maker saved",
+    },
+    {
+      name: "Email Quality",
+      pass: hasStrongEmail,
+      detail: hasStrongEmail ? `${confidence} confidence email found` : "No strong email found",
+    },
+    {
+      name: "Source Evidence",
+      pass: hasSourceEvidence,
+      detail: hasSourceEvidence ? "Public source or profile saved" : "No source evidence saved",
+    },
+  ];
+
+  const score = criteria.filter(c => c.pass).length;
+  const total = criteria.length;
+  return {
+    criteria,
+    score,
+    total,
+    qualified: score >= 2,
+  };
+}
+
 function renderPipelineSectionValue(item, t) {
   if (Array.isArray(item.value)) {
     return <div style={{ fontSize: 12, color: t.textMuted, lineHeight: 1.5 }}>{item.value.join(", ")}</div>;
@@ -2555,7 +2589,7 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
         prospect.personalizedFirstLine ? `First line: ${prospect.personalizedFirstLine}` : "",
       ].filter(Boolean).join("\n"),
       followUp: "new",
-      result: { qualified: true, score: 1, total: 1, criteria: [] },
+      result: buildProspectLeadResult(prospect),
       sourceMode: "prospects",
       prospectRaw: prospect,
       savedEmailDraft: savedDraft,
@@ -2593,6 +2627,7 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
             item => item.id === lead.id,
             item => ({
               ...item,
+              result: buildProspectLeadResult(existing),
               pipelineDetails: buildProspectPipelineDetails(existing, item.savedEmailDraft || "", item.searchContext?.city || item.location),
             }),
             { silent: true },
@@ -2661,6 +2696,7 @@ Return:
               ...item,
               name: prospect.ownerName || item.name,
               email: prospect.email || item.email,
+              result: buildProspectLeadResult(prospect),
               prospectRaw: prospect,
               pipelineDetails: buildProspectPipelineDetails(prospect, item.savedEmailDraft || "", city),
             }),
@@ -3699,12 +3735,16 @@ Return:
                                     style={{ ...btnPrimary, fontSize: 12, padding: "6px 14px", opacity: pipelineDraftingId === lead.id ? 0.7 : 1 }}>
                                     {pipelineDraftingId === lead.id ? "Writing..." : lead.savedEmailDraft ? "↻ Personalize Email" : "✍ Personalize Email"}
                                   </button>
-                                  {(!lead.pipelineDetails || !lead.pipelineDetails.sections?.length) && (
+                                  {lead.sourceMode === "prospects" && (
                                     <button
                                       onClick={() => handleRetryPipelineContext(lead)}
                                       disabled={pipelineRetryingId === lead.id}
                                       style={{ ...btnSecondary, fontSize: 12, padding: "6px 14px" }}>
-                                      {pipelineRetryingId === lead.id ? "Rebuilding..." : "↺ Retry Details"}
+                                      {pipelineRetryingId === lead.id
+                                        ? "Rebuilding..."
+                                        : lead.pipelineDetails?.sections?.length
+                                          ? "↺ Refresh Details"
+                                          : "↺ Build Details"}
                                     </button>
                                   )}
                                 </div>
