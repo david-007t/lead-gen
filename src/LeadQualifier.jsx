@@ -668,6 +668,10 @@ Best,
 ${(lead.sourceMode === "prospects" || lead.sourceMode === "leadlist") ? (lead.name && lead.name !== company ? "" : "") : ""}`.trim();
 }
 
+function normalizePipelineContextValue(value) {
+  return String(value || "").toLowerCase().trim().replace(/\s+/g, " ");
+}
+
 function mergePipelineLeads(localLeads, remoteLeads) {
   const byKey = new Map();
   [...(remoteLeads || []), ...(localLeads || [])].forEach(lead => {
@@ -2473,6 +2477,11 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
           ...item,
           savedEmailDraft: text,
           leadListRow: lead,
+          searchContext: {
+            request: leadListRequest || leadListJob?.summary || "",
+            city: leadListCity || getFirstLeadCell(lead, ["Region", "Location", "Address", "City"]) || "",
+            niche: leadListNiche || getFirstLeadCell(lead, ["Industry", "Niche", "Company Type"]) || "",
+          },
           pipelineDetails: buildLeadListPipelineDetails(lead, leadListColumns, text),
         }),
       );
@@ -2511,6 +2520,11 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
       result: { qualified: true, score: 1, total: 1, criteria: [] },
       sourceMode: "leadlist",
       leadListRow: lead,
+      searchContext: {
+        request: leadListRequest || leadListJob?.summary || "",
+        city: leadListCity || region || "",
+        niche: leadListNiche || industryValue || "",
+      },
       pipelineDetails: buildLeadListPipelineDetails(lead, leadListColumns, leadListOutreach[lead.id] || ""),
       savedEmailDraft: leadListOutreach[lead.id] || "",
     };
@@ -2682,10 +2696,41 @@ Return:
     setPipelineRetryingId(null);
   };
 
+  const modeScopedLeads = useMemo(() => {
+    const base = leads.filter(l => (l.sourceMode || "leadlist") === mode);
+
+    if (mode === "prospects") {
+      const activeCity = normalizePipelineContextValue(prospectCity);
+      const activeNiche = normalizePipelineContextValue(prospectNiche);
+      if (!activeCity && !activeNiche) return base;
+      return base.filter(lead => {
+        const leadCity = normalizePipelineContextValue(lead.searchContext?.city || lead.location);
+        const leadNiche = normalizePipelineContextValue(lead.searchContext?.niche || lead.projectType);
+        return (!activeCity || leadCity === activeCity) && (!activeNiche || leadNiche === activeNiche);
+      });
+    }
+
+    if (mode === "leadlist") {
+      const activeRequest = normalizePipelineContextValue(leadListRequest || leadListJob?.summary);
+      const activeCity = normalizePipelineContextValue(leadListCity);
+      const activeNiche = normalizePipelineContextValue(leadListNiche);
+      if (!activeRequest && !activeCity && !activeNiche) return base;
+      return base.filter(lead => {
+        const leadRequest = normalizePipelineContextValue(lead.searchContext?.request);
+        const leadCity = normalizePipelineContextValue(lead.searchContext?.city || lead.location);
+        const leadNiche = normalizePipelineContextValue(lead.searchContext?.niche || lead.projectType);
+        return (!activeRequest || leadRequest === activeRequest)
+          && (!activeCity || leadCity === activeCity)
+          && (!activeNiche || leadNiche === activeNiche);
+      });
+    }
+
+    return base;
+  }, [leads, mode, prospectCity, prospectNiche, leadListRequest, leadListJob, leadListCity, leadListNiche]);
+
   // ─── FILTERED & SORTED LEADS ─────────────────────────────
   const filteredLeads = useMemo(() => {
-    // Filter by mode — untagged legacy leads default to leadlist
-    let result = leads.filter(l => (l.sourceMode || "leadlist") === mode);
+    let result = [...modeScopedLeads];
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       result = result.filter(l =>
@@ -2706,7 +2751,7 @@ Return:
       return sortDir === "desc" ? -cmp : cmp;
     });
     return result;
-  }, [leads, searchQuery, filterStatus, filterFollowUp, sortBy, sortDir]);
+  }, [modeScopedLeads, searchQuery, filterStatus, filterFollowUp, sortBy, sortDir]);
 
   // ─── STYLES ───────────────────────────────────────────────
   const inputStyle = { width: "100%", padding: "10px 14px", background: t.bgAlt, border: `1px solid ${t.borderInput}`, borderRadius: 6, color: t.text, fontFamily: "'DM Sans', sans-serif", fontSize: 14, outline: "none", transition: "border-color 0.2s", boxSizing: "border-box" };
@@ -2858,7 +2903,7 @@ Return:
   }
 
   // ─── MAIN APP ─────────────────────────────────────────────
-  const modeLeads = leads.filter(l => (l.sourceMode || "leadlist") === mode);
+  const modeLeads = modeScopedLeads;
   const qualifiedCount = modeLeads.filter(l => l.result.qualified).length;
   const unqualifiedCount = modeLeads.length - qualifiedCount;
 
@@ -2994,9 +3039,9 @@ Return:
         <div style={{ borderBottom: `1px solid ${t.border}` }}>
           <div style={{ maxWidth: 1240, margin: "0 auto", padding: "0 32px", display: "flex", gap: 2, overflowX: "auto" }} className="tab-bar">
             {({
-              leadlist:  [{ id: "leadlist",  label: "Build a Lead List",   count: leadListResults.length || undefined }, { id: "leads", label: "Pipeline", count: leads.filter(l => (l.sourceMode || "leadlist") === "leadlist").length || undefined }, { id: "dashboard", label: "Dashboard" }],
+              leadlist:  [{ id: "leadlist",  label: "Build a Lead List",   count: leadListResults.length || undefined }, { id: "leads", label: "Pipeline", count: mode === "leadlist" ? modeLeads.length || undefined : leads.filter(l => (l.sourceMode || "leadlist") === "leadlist").length || undefined }, { id: "dashboard", label: "Dashboard" }],
               indeed:    [{ id: "indeed",    label: "Find AI Prospects" }, { id: "queue", label: "Outreach" }, { id: "leads", label: "Pipeline", count: leads.filter(l => l.sourceMode === "indeed").length || undefined }, { id: "dashboard", label: "Dashboard" }],
-              prospects: [{ id: "prospects", label: "Find My Clients" }, { id: "leads", label: "Pipeline", count: leads.filter(l => l.sourceMode === "prospects").length || undefined }, { id: "dashboard", label: "Dashboard" }],
+              prospects: [{ id: "prospects", label: "Find My Clients" }, { id: "leads", label: "Pipeline", count: mode === "prospects" ? modeLeads.length || undefined : leads.filter(l => l.sourceMode === "prospects").length || undefined }, { id: "dashboard", label: "Dashboard" }],
               shiplist:  [{ id: "shiplist",  label: "Ship List",           count: shipListResults.length || undefined }, { id: "leads", label: "Pipeline", count: leads.filter(l => l.sourceMode === "shiplist").length || undefined }, { id: "dashboard", label: "Dashboard" }],
             }[mode] || []).map(tb => (
               <button key={tb.id} onClick={() => setTab(tb.id)} style={{ padding: "12px 20px", background: tab === tb.id ? t.accent : "transparent", color: tab === tb.id ? "#0c0a09" : t.textMuted, border: "none", borderBottom: tab === tb.id ? `3px solid ${t.accent}` : "3px solid transparent", cursor: "pointer", fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: tab === tb.id ? 700 : 500, letterSpacing: "0.02em", transition: "all 0.2s", display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}>
