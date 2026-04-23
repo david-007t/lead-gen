@@ -337,9 +337,10 @@ const DEFAULT_LEAD_COLUMNS = [
   "Confidence",
 ];
 
-const LEAD_LIST_LOOKUP_BATCH_SIZE = 10;
+const LEAD_LIST_LOOKUP_BATCH_SIZE = 1;
 const LEAD_LIST_MAX_GENERATION_PASSES = 8;
-const LEAD_LIST_BUFFER_ROWS = 5;
+const LEAD_LIST_BUFFER_ROWS = 2;
+const LEAD_LIST_LOOKUP_DELAY_MS = 1200;
 const VERIFIED_PHONE_BADGE = "✓ Verified";
 
 function extractJSONValue(fullText) {
@@ -450,6 +451,10 @@ function leadListRowKey(row) {
     .map(value => String(value || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""))
     .filter(Boolean)
     .join("|");
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // ─── PROSPECT CLASSIFICATION ──────────────────────────────────
@@ -2498,8 +2503,10 @@ RESPOND WITH ONLY this JSON object:
       if (lookups.length === 0) return [];
 
       const verifiedByIndex = new Map();
+      let completed = 0;
       for (let i = 0; i < lookups.length; i += LEAD_LIST_LOOKUP_BATCH_SIZE) {
         const batch = lookups.slice(i, i + LEAD_LIST_LOOKUP_BATCH_SIZE);
+        setLeadListProgress(`Verifying phone numbers (${acceptedRows.length}/${desiredCount}) · checked ${completed}/${lookups.length}`);
         const response = await fetch("/api/twilio-lookup", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -2517,6 +2524,10 @@ RESPOND WITH ONLY this JSON object:
         (data.results || []).forEach((result, offset) => {
           verifiedByIndex.set(batch[offset].index, result);
         });
+        completed += batch.length;
+        if (i + LEAD_LIST_LOOKUP_BATCH_SIZE < lookups.length) {
+          await sleep(LEAD_LIST_LOOKUP_DELAY_MS);
+        }
       }
 
       return rows
@@ -2545,7 +2556,7 @@ RESPOND WITH ONLY this JSON object:
 
       for (let pass = 0; pass < LEAD_LIST_MAX_GENERATION_PASSES && acceptedRows.length < desiredCount; pass++) {
         const remaining = desiredCount - acceptedRows.length;
-        const requestBatchSize = Math.max(remaining + LEAD_LIST_BUFFER_ROWS, Math.min(desiredCount, 10));
+        const requestBatchSize = Math.min(Math.max(remaining + LEAD_LIST_BUFFER_ROWS, 3), remaining + LEAD_LIST_BUFFER_ROWS);
         setLeadListProgress(pass === 0
           ? `Researching companies (${acceptedRows.length}/${desiredCount} verified)`
           : `Finding more verified numbers (${acceptedRows.length}/${desiredCount})`);
