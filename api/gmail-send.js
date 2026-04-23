@@ -36,7 +36,6 @@ async function getAccessToken() {
 
 function buildRawMessage({ to, subject, body }) {
   const lines = [
-    "From: David Osei-Tutu <david@sankotechsystems.com>",
     `To: ${to}`,
     `Subject: ${subject}`,
     "Content-Type: text/plain; charset=UTF-8",
