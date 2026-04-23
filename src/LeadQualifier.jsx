@@ -279,7 +279,7 @@ function parseCSV(text) {
 const LEAD_REQUEST_EXAMPLE = `Act as freight broker in the US. Identify shippers in Healthcare & Medical Supply, Food & Beverage especially refrigerated, and Construction & Building Materials. Target Transportation Managers, Logistics Managers, and Shipping Supervisors. Companies should be $10M-$100M revenue, regional distributors, overflow freight, after-hours coverage. Include company name, contact person, email, phone, LinkedIn, and high-demand lanes right now. Format as target shipper list and lanes in an Excel/Google Sheet.`;
 
 const GENERATED_LEADS_SHEET_NAME = "Generated Leads";
-const GENERATED_LEADS_SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1dnMQ1E9AWdZkmGEwX7nB_sk5n49uMzZL/edit";
+const GENERATED_LEADS_SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1N8l7_rJhwmvm4kz6HvjiAP9uI3togYBxSd3th-KMvHc/edit?gid=1737529281#gid=1737529281";
 
 const CALL_FEEDBACK_COLUMNS = [
   "Call Outcome",
