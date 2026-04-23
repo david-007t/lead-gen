@@ -453,6 +453,7 @@ const themes = {
 
 // ─── STORAGE HELPERS ──────────────────────────────────────────
 const SK = { leads: "lq-leads-v2", criteria: "lq-criteria-v2", settings: "lq-settings-v2" };
+const PIPELINE_TABLE = "pipeline_leads";
 
 async function loadData(key) {
   try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : null; }
@@ -460,6 +461,69 @@ async function loadData(key) {
 }
 async function saveData(key, val) {
   try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+}
+
+function pipelineUniqueKey(lead) {
+  return [lead.sourceMode || "leadlist", lead.company || "", lead.email || "", lead.name || ""]
+    .map(value => String(value || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""))
+    .filter(Boolean)
+    .join("|") || String(lead.id || Date.now());
+}
+
+function mergePipelineLeads(localLeads, remoteLeads) {
+  const byKey = new Map();
+  [...(remoteLeads || []), ...(localLeads || [])].forEach(lead => {
+    const key = pipelineUniqueKey(lead);
+    if (!byKey.has(key)) byKey.set(key, lead);
+  });
+  return [...byKey.values()].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+}
+
+function dbPipelineLeadToLead(row) {
+  const raw = row.raw || {};
+  return {
+    ...raw,
+    id: row.id || raw.id || Date.now() + Math.random(),
+    dbId: row.id,
+    createdAt: row.created_at ? new Date(row.created_at).getTime() : raw.createdAt || Date.now(),
+    name: row.name || raw.name || "",
+    company: row.company || raw.company || "",
+    email: row.email || raw.email || "",
+    phone: row.phone || raw.phone || "",
+    projectType: row.project_type || raw.projectType || "",
+    budget: row.budget || raw.budget || "",
+    location: row.location || raw.location || "",
+    zipCode: row.zip_code || raw.zipCode || "",
+    timeline: row.timeline || raw.timeline || "",
+    source: row.source || raw.source || "",
+    description: row.description || raw.description || "",
+    followUp: row.follow_up || raw.followUp || "new",
+    sourceMode: row.source_mode || raw.sourceMode || "leadlist",
+    result: raw.result || { qualified: row.qualified !== false, score: row.score || 1, total: row.total || 1, criteria: [] },
+  };
+}
+
+function leadToDbPipelinePayload(lead) {
+  return {
+    unique_key: pipelineUniqueKey(lead),
+    source_mode: lead.sourceMode || "leadlist",
+    name: lead.name || "",
+    company: lead.company || "",
+    email: lead.email || "",
+    phone: lead.phone || "",
+    project_type: lead.projectType || "",
+    budget: String(lead.budget || ""),
+    location: lead.location || "",
+    zip_code: lead.zipCode || "",
+    timeline: lead.timeline || "",
+    source: lead.source || "",
+    description: lead.description || "",
+    follow_up: lead.followUp || "new",
+    qualified: lead.result?.qualified !== false,
+    score: lead.result?.score || 1,
+    total: lead.result?.total || 1,
+    raw: lead,
+  };
 }
 
 // ─── MAIN COMPONENT ──────────────────────────────────────────
@@ -475,6 +539,7 @@ export default function LeadQualifier() {
   const [mode, setMode] = useState("leadlist");
   const [criteria, setCriteria] = useState(getDefaultCriteria("construction"));
   const [leads, setLeads] = useState([]);
+  const [pipelineDbError, setPipelineDbError] = useState(null);
   const [form, setForm] = useState({ ...EMPTY_LEAD });
   const [expandedLead, setExpandedLead] = useState(null);
   const [editingLead, setEditingLead] = useState(null);
@@ -595,6 +660,7 @@ export default function LeadQualifier() {
       }
       setLoading(false);
       loadSavedCompanies();
+      loadPipelineLeads(savedLeads || []);
     })();
   }, []);
 
@@ -623,21 +689,69 @@ export default function LeadQualifier() {
     setTimeout(() => setToast(null), 3000);
   };
 
+  // ─── PIPELINE DB ───────────────────────────────────────────
+  const loadPipelineLeads = async (localLeads = []) => {
+    const { data, error } = await supabase
+      .from(PIPELINE_TABLE)
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      setPipelineDbError(error.message);
+      return;
+    }
+
+    setPipelineDbError(null);
+    const remoteLeads = (data || []).map(dbPipelineLeadToLead);
+    setLeads(prev => mergePipelineLeads(prev.length ? prev : localLeads, remoteLeads));
+  };
+
+  const savePipelineLead = async (lead, { silent = false } = {}) => {
+    const normalizedLead = {
+      ...lead,
+      id: lead.id || Date.now() + Math.random(),
+      createdAt: lead.createdAt || Date.now(),
+      followUp: lead.followUp || "new",
+      result: lead.result || { qualified: true, score: 1, total: 1, criteria: [] },
+    };
+
+    setLeads(prev => mergePipelineLeads([normalizedLead, ...prev], []));
+
+    const { data, error } = await supabase
+      .from(PIPELINE_TABLE)
+      .upsert(leadToDbPipelinePayload(normalizedLead), { onConflict: "unique_key" })
+      .select()
+      .single();
+
+    if (error) {
+      setPipelineDbError(error.message);
+      if (!silent) showToast(`Saved locally. Pipeline DB not ready: ${error.message}`, "error");
+      return normalizedLead;
+    }
+
+    setPipelineDbError(null);
+    const dbLead = dbPipelineLeadToLead(data);
+    setLeads(prev => mergePipelineLeads([dbLead], prev.filter(l => pipelineUniqueKey(l) !== pipelineUniqueKey(dbLead))));
+    if (!silent) showToast(`${normalizedLead.company || normalizedLead.name || "Lead"} added to Pipeline`);
+    return dbLead;
+  };
+
   // ─── LEAD OPERATIONS ─────────────────────────────────────
   const handleAddLead = () => {
     if (!form.name.trim()) { showToast("Lead name is required", "error"); return; }
     const result = qualifyLead(form, criteria, ind.typeName);
     const newLead = { ...form, id: Date.now() + Math.random(), createdAt: Date.now(), result, sourceMode: mode };
-    setLeads(prev => [newLead, ...prev]);
+    savePipelineLead(newLead);
     setForm({ ...EMPTY_LEAD });
-    showToast(`Lead "${form.name}" added & qualified`);
   };
 
   const handleDeleteLead = (id) => {
     setConfirmAction({
       title: "Delete Lead",
       message: "Are you sure? This can't be undone.",
-      onConfirm: () => {
+      onConfirm: async () => {
+        const lead = leads.find(l => l.id === id);
+        if (lead?.dbId) await supabase.from(PIPELINE_TABLE).delete().eq("id", lead.dbId);
         setLeads(prev => prev.filter(l => l.id !== id));
         if (expandedLead === id) setExpandedLead(null);
         if (editingLead === id) { setEditingLead(null); setEditForm(null); }
@@ -649,13 +763,18 @@ export default function LeadQualifier() {
 
   const handleSaveEdit = (id) => {
     if (!editForm) return;
-    setLeads(prev => prev.map(l => l.id === id ? { ...l, ...editForm, result: qualifyLead(editForm, criteria, ind.typeName) } : l));
+    const updatedLead = { ...editForm, result: qualifyLead(editForm, criteria, ind.typeName) };
+    setLeads(prev => prev.map(l => l.id === id ? updatedLead : l));
+    savePipelineLead(updatedLead, { silent: true });
     setEditingLead(null); setEditForm(null);
     showToast("Lead updated");
   };
 
   const handleFollowUpChange = (id, status) => {
+    const lead = leads.find(l => l.id === id);
+    const updatedLead = lead ? { ...lead, followUp: status } : null;
     setLeads(prev => prev.map(l => l.id === id ? { ...l, followUp: status } : l));
+    if (updatedLead) savePipelineLead(updatedLead, { silent: true });
   };
 
   const handleInlineSave = () => {
@@ -664,7 +783,9 @@ export default function LeadQualifier() {
     setLeads(prev => prev.map(l => {
       if (l.id !== id) return l;
       const updated = { ...l, [field]: value };
-      return { ...updated, result: qualifyLead(updated, criteria, ind.typeName) };
+      const requalified = { ...updated, result: qualifyLead(updated, criteria, ind.typeName) };
+      savePipelineLead(requalified, { silent: true });
+      return requalified;
     }));
     setInlineEdit(null);
   };
@@ -1605,8 +1726,7 @@ Return fewer results if needed. Quality over quantity.`;
       result: { qualified: true, score: 1, total: 1, criteria: [] },
       sourceMode: "indeed",
     };
-    setLeads(prev => [newLead, ...prev]);
-    showToast(`Added ${r.companyName} to Pipeline`);
+    savePipelineLead(newLead);
   };
 
   // ─── INDEED EMAIL DRAFT ───────────────────────────────────
@@ -2164,8 +2284,37 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
       result: { qualified: true, score: 1, total: 1, criteria: [] },
       sourceMode: "leadlist",
     };
-    setLeads(prev => [newLead, ...prev]);
-    showToast(`${company || "Lead"} added to Pipeline`);
+    savePipelineLead(newLead);
+  };
+
+  // ─── ADD FIND MY CLIENTS RESULT TO PIPELINE ───────────────
+  const handleAddProspectToPipeline = (prospect) => {
+    const newLead = {
+      id: Date.now() + Math.random(),
+      createdAt: Date.now(),
+      name: prospect.ownerName || prospect.businessName,
+      company: prospect.businessName || "Unknown Company",
+      email: prospect.email || "",
+      phone: prospect.phone || "",
+      projectType: prospect.niche || prospect.title || "",
+      budget: "",
+      location: prospectCity || "",
+      zipCode: "",
+      timeline: "",
+      source: prospect.sourceUrl || "Find My Clients",
+      description: [
+        prospect.title ? `Title: ${prospect.title}` : "",
+        prospect.emailConfidence ? `Email confidence: ${prospect.emailConfidence}` : "",
+        prospect.linkedInUrl ? `LinkedIn: ${prospect.linkedInUrl}` : "",
+        prospect.buyingSignal || "",
+        prospect.personalizedFirstLine ? `First line: ${prospect.personalizedFirstLine}` : "",
+      ].filter(Boolean).join("\n"),
+      followUp: "new",
+      result: { qualified: true, score: 1, total: 1, criteria: [] },
+      sourceMode: "prospects",
+      prospectRaw: prospect,
+    };
+    savePipelineLead(newLead);
   };
 
   // ─── FILTERED & SORTED LEADS ─────────────────────────────
@@ -2987,7 +3136,12 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
                 </div>
               ) : (
                 <>
-                  {/* Toolbar */}
+	                  {/* Toolbar */}
+                  {pipelineDbError && (
+                    <div style={{ background: t.redBg, border: `1px solid ${t.redBorder}`, color: t.text, borderRadius: 8, padding: "10px 12px", marginBottom: 12, fontSize: 12 }}>
+                      Pipeline is saving locally only. Create the Supabase <strong>pipeline_leads</strong> table to enable backend persistence. Error: {pipelineDbError}
+                    </div>
+                  )}
                   <div className="toolbar-row" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 12 }}>
                     <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                       <input style={{ ...inputStyle, width: 200, padding: "8px 14px", fontSize: 13 }} placeholder="Search leads…" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
@@ -3223,7 +3377,14 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
                       : `Found ${prospects.length} prospects`}
                   </div>
                   <div style={{ display: "grid", gap: 16 }}>
-                    {prospects.map(p => (
+                    {prospects.map(p => {
+                      const inPipeline = leads.some(l => pipelineUniqueKey(l) === pipelineUniqueKey({
+                        sourceMode: "prospects",
+                        company: p.businessName,
+                        email: p.email,
+                        name: p.ownerName || p.businessName,
+                      }));
+                      return (
                       <div key={p.id} style={{ ...cardStyle, borderLeft: `4px solid ${p.classification.color}` }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: 12 }}>
                           <div>
@@ -3260,6 +3421,12 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
                         </div>
 
                         <div style={{ display: "flex", gap: 8, marginTop: 12, paddingTop: 12, borderTop: `1px solid ${t.border}` }}>
+                          <button
+                            onClick={() => !inPipeline && handleAddProspectToPipeline(p)}
+                            disabled={inPipeline}
+                            style={{ ...btnPrimary, fontSize: 12, padding: "8px 16px", opacity: inPipeline ? 0.75 : 1, cursor: inPipeline ? "default" : "pointer" }}>
+                            {inPipeline ? "✓ In Pipeline" : "+ Add to Pipeline"}
+                          </button>
                           <button onClick={() => handleDraftEmail(p)} disabled={draftingEmail === p.id} style={{ ...btnSecondary, fontSize: 12 }}>
                             {draftingEmail === p.id ? "Drafting..." : emailDrafts[p.id] ? "Re-draft Email" : "Draft Email"}
                           </button>
@@ -3275,7 +3442,7 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
                           </div>
                         )}
                       </div>
-                    ))}
+                    );})}
                   </div>
                 </div>
               )}
