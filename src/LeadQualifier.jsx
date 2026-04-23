@@ -2512,7 +2512,7 @@ RESPOND WITH ONLY this JSON object:
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || data.error) {
-          throw new Error(data.error || "Twilio Lookup verification failed");
+          throw new Error(data.error || "Phone verification failed");
         }
         (data.results || []).forEach((result, offset) => {
           verifiedByIndex.set(batch[offset].index, result);

@@ -18,20 +18,17 @@ function normalizePhoneInput(phone) {
   return raw;
 }
 
-function parseLookupVerification(data) {
+function parseTwilioVerification(data) {
   const lineStatus = String(data?.line_status?.status || data?.lineStatus?.status || '').toLowerCase();
+  const lineStatusError = data?.line_status?.error_code ?? data?.lineStatus?.errorCode ?? null;
   const lineType = String(data?.line_type_intelligence?.type || data?.lineTypeIntelligence?.type || '').toLowerCase();
   const lineTypeError = data?.line_type_intelligence?.error_code ?? data?.lineTypeIntelligence?.errorCode ?? null;
-  const verified = Boolean(
-    data?.valid === true &&
-    lineStatus === 'active' &&
-    lineType &&
-    VERIFIED_LINE_TYPES.has(lineType) &&
-    lineTypeError == null
-  );
+  const twilioActive = data?.valid === true && lineStatus === 'active' && lineType && VERIFIED_LINE_TYPES.has(lineType) && lineTypeError == null;
+  const fallbackValid = data?.valid === true && lineType && VERIFIED_LINE_TYPES.has(lineType) && lineStatusError != null && lineTypeError == null;
 
   return {
-    verified,
+    verified: Boolean(twilioActive || fallbackValid),
+    validationMode: twilioActive ? 'twilio_active' : fallbackValid ? 'twilio_fallback' : 'twilio_failed',
     valid: Boolean(data?.valid),
     lineStatus: lineStatus || null,
     lineType: lineType || null,
@@ -42,7 +39,93 @@ function parseLookupVerification(data) {
   };
 }
 
-async function lookupPhoneNumber({ phone, countryCode }, authHeader) {
+function parseAbstractVerification(data) {
+  const phoneValidation = data?.phone_validation || {};
+  const lineStatus = String(phoneValidation?.line_status || '').toLowerCase();
+  const lineType = String(phoneValidation?.type || data?.carrier || '').toLowerCase();
+  const verified = Boolean(
+    phoneValidation?.is_valid === true &&
+    lineStatus === 'active' &&
+    lineType &&
+    VERIFIED_LINE_TYPES.has(lineType)
+  );
+
+  return {
+    verified,
+    validationMode: verified ? 'abstract_verified' : 'abstract_failed',
+    valid: Boolean(phoneValidation?.is_valid),
+    lineStatus: lineStatus || null,
+    lineType: lineType || null,
+    phoneNumber: data?.phone || null,
+    nationalFormat: data?.format?.international || data?.phone || null,
+    carrierName: data?.carrier || null,
+    raw: data,
+  };
+}
+
+async function lookupWithAbstract({ phone, countryCode }, apiKey) {
+  const normalizedPhone = normalizePhoneInput(phone);
+  if (!normalizedPhone) {
+    return {
+      phone,
+      verified: false,
+      error: 'missing_phone',
+      reason: 'Phone number missing or invalid',
+    };
+  }
+
+  const params = new URLSearchParams({
+    api_key: apiKey,
+    phone: normalizedPhone,
+  });
+  if (countryCode) params.set('country', String(countryCode).trim().toUpperCase());
+
+  const response = await fetch(`https://phonevalidation.abstractapi.com/v1/?${params.toString()}`, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+    },
+  });
+
+  const rawText = await response.text();
+  let data;
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    return {
+      phone,
+      normalizedPhone,
+      provider: 'abstract',
+      verified: false,
+      error: 'upstream_parse_error',
+      reason: `Abstract returned a non-JSON response (HTTP ${response.status})`,
+      httpStatus: response.status,
+    };
+  }
+
+  if (!response.ok) {
+    return {
+      phone,
+      normalizedPhone,
+      provider: 'abstract',
+      verified: false,
+      error: data?.error?.code || data?.code || 'lookup_failed',
+      reason: data?.error?.message || data?.message || `Abstract lookup failed (HTTP ${response.status})`,
+      httpStatus: response.status,
+      raw: data,
+    };
+  }
+
+  return {
+    phone,
+    normalizedPhone,
+    provider: 'abstract',
+    httpStatus: response.status,
+    ...parseAbstractVerification(data),
+  };
+}
+
+async function lookupWithTwilio({ phone, countryCode }, authHeader) {
   const normalizedPhone = normalizePhoneInput(phone);
   if (!normalizedPhone) {
     return {
@@ -76,6 +159,7 @@ async function lookupPhoneNumber({ phone, countryCode }, authHeader) {
     return {
       phone,
       normalizedPhone,
+      provider: 'twilio',
       verified: false,
       error: 'upstream_parse_error',
       reason: `Twilio returned a non-JSON response (HTTP ${response.status})`,
@@ -87,6 +171,7 @@ async function lookupPhoneNumber({ phone, countryCode }, authHeader) {
     return {
       phone,
       normalizedPhone,
+      provider: 'twilio',
       verified: false,
       error: data?.code || data?.error_code || 'lookup_failed',
       reason: data?.message || `Twilio lookup failed (HTTP ${response.status})`,
@@ -95,12 +180,30 @@ async function lookupPhoneNumber({ phone, countryCode }, authHeader) {
     };
   }
 
-  const parsed = parseLookupVerification(data);
   return {
     phone,
     normalizedPhone,
+    provider: 'twilio',
     httpStatus: response.status,
-    ...parsed,
+    ...parseTwilioVerification(data),
+  };
+}
+
+async function verifyPhone(entry, abstractApiKey, twilioAuthHeader) {
+  if (abstractApiKey) {
+    const abstractResult = await lookupWithAbstract(entry, abstractApiKey);
+    if (abstractResult.verified || !twilioAuthHeader) return abstractResult;
+  }
+
+  if (twilioAuthHeader) {
+    return lookupWithTwilio(entry, twilioAuthHeader);
+  }
+
+  return {
+    phone: entry?.phone || '',
+    verified: false,
+    error: 'provider_not_configured',
+    reason: 'No phone verification provider is configured.',
   };
 }
 
@@ -109,10 +212,15 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  const abstractApiKey = process.env.ABSTRACT_API_KEY;
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken = process.env.TWILIO_AUTH_TOKEN;
-  if (!accountSid || !authToken) {
-    return res.status(500).json({ error: 'Twilio Lookup is not configured. Set TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN.' });
+  const twilioAuthHeader = accountSid && authToken
+    ? `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString('base64')}`
+    : null;
+
+  if (!abstractApiKey && !twilioAuthHeader) {
+    return res.status(500).json({ error: 'Phone verification is not configured. Set ABSTRACT_API_KEY and/or Twilio credentials.' });
   }
 
   const body = req.body || {};
@@ -121,18 +229,16 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'numbers[] is required' });
   }
 
-  const authHeader = `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString('base64')}`;
-
   try {
     const results = [];
     for (const entry of numbers) {
-      const result = await lookupPhoneNumber(entry || {}, authHeader);
+      const result = await verifyPhone(entry || {}, abstractApiKey, twilioAuthHeader);
       results.push(result);
     }
     return res.status(200).json({ results });
   } catch (error) {
     return res.status(500).json({
-      error: error?.message || 'Failed to reach Twilio Lookup.',
+      error: error?.message || 'Failed to reach a phone verification provider.',
     });
   }
 }
