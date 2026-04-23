@@ -419,17 +419,14 @@ function getParsedRows(parsed) {
 
 // ─── PROSPECT CLASSIFICATION ──────────────────────────────────
 function classifyProspect(prospect) {
-  const hasOwner = !!(prospect.ownerName && prospect.ownerName.trim());
-  const hasDirectContact = !!(prospect.email && prospect.email.trim()) || !!(prospect.phone && prospect.phone.trim());
-  const signalCount = (prospect.buyingSignals || []).length;
+  const blank = (s) => !s || !s.trim() || /not found|n\/a|unknown/i.test(s.trim());
+  const hasOwner = !blank(prospect.ownerName);
+  const hasPhone = !blank(prospect.phone);
+  const hasEmail = !blank(prospect.email);
 
-  if (hasOwner && hasDirectContact && signalCount >= 2) {
-    return { tier: "WARM", emoji: "🟢", color: "#34d399" };
-  } else if (hasDirectContact && signalCount >= 1) {
-    return { tier: "COOL", emoji: "🟡", color: "#f59e0b" };
-  } else {
-    return { tier: "COLD", emoji: "🔴", color: "#f87171" };
-  }
+  if (hasOwner && hasPhone && hasEmail) return { tier: "WARM", emoji: "🟢", color: "#34d399" };
+  if (hasPhone || hasEmail) return { tier: "COOL", emoji: "🟡", color: "#f59e0b" };
+  return { tier: "COLD", emoji: "🔴", color: "#f87171" };
 }
 
 // ─── THEME DEFINITIONS ────────────────────────────────────────
@@ -704,18 +701,15 @@ export default function LeadQualifier() {
     setSettingsEdited(false);
   };
 
-  // ─── PROSPECT SEARCH (Batched: discover then enrich) ─────
+  // ─── PROSPECT SEARCH (single call — contact info only) ───
   const handleProspectSearch = async () => {
     if (!prospectCity.trim()) { showToast("Enter a city or region", "error"); return; }
     if (!prospectNiche.trim()) { showToast("Enter a business niche", "error"); return; }
     setProspectLoading(true);
     setProspectError(null);
     setProspects([]);
-    setProspectProgress({ phase: "discovery", current: 0, total: prospectCount });
+    setProspectProgress({ phase: "searching" });
 
-    const ENRICH_BATCH_SIZE = 2;
-
-    // Shared helper: extract JSON array from Claude response text
     const parseProspectJSON = (fullText) => {
       let parsed = null;
       const fenceMatch = fullText.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
@@ -737,169 +731,65 @@ export default function LeadQualifier() {
       return parsed;
     };
 
-    const filterList = [];
-    if (prospectFilters.hiringOnIndeed) filterList.push("Hiring on Indeed");
-    if (prospectFilters.badWebsite) filterList.push("No/bad website");
-    if (prospectFilters.lowReviews) filterList.push("Low Google reviews");
-    if (prospectFilters.noSocial) filterList.push("No social media");
-    if (prospectFilters.runningAds) filterList.push("Running ads");
-    if (prospectFilters.recentlyStarted) filterList.push("Recently started");
-
-    // ── PHASE 1: Quick discovery — get basic business list ───
-    let basicList = [];
     try {
-      const discResp = await fetch("/api/anthropic", {
+      const resp = await fetch("/api/anthropic", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
-          max_tokens: 2500,
-          system: "You are a business research assistant. Search the web for real local businesses. Return ONLY a raw JSON array — no markdown, no explanation.",
-          messages: [{ role: "user", content: `Find ${prospectCount} real ${prospectNiche} businesses in ${prospectCity.trim()}. Return a JSON array with basic info only:\n[{"businessName":"...","address":"...","phone":"...","website":"..."}]` }],
+          max_tokens: 2000,
+          system: "You are a business research assistant. Search the web for real local businesses and their contact details. Return ONLY a raw JSON array — no markdown, no explanation.",
+          messages: [{
+            role: "user",
+            content: `Find ${prospectCount} real ${prospectNiche} businesses in ${prospectCity.trim()}. For each, search for the owner name, direct phone number, and direct email address.
+
+Return ONLY a JSON array:
+[{"businessName":"...","ownerName":"...","phone":"...","email":"...","address":"..."}]
+
+If a field cannot be found, use an empty string. Do not use placeholder text like "Not found".`,
+          }],
           tools: [{ type: "web_search_20250305", name: "web_search" }],
         }),
       });
-      const discRaw = await discResp.text();
-      let discData;
-      try { discData = JSON.parse(discRaw); } catch { throw new Error(`Search service unavailable (HTTP ${discResp.status}) — please try again in a moment.`); }
-      if (discData.error) {
-        setProspectError("API error: " + (discData.error.message || "Unknown error from the AI service."));
+
+      const raw = await resp.text();
+      let data;
+      try { data = JSON.parse(raw); } catch { throw new Error(`Service unavailable (HTTP ${resp.status})`); }
+      if (data.error) {
+        setProspectError("API error: " + (data.error.message || "Unknown error from the AI service."));
         setProspectLoading(false); setProspectProgress(null); return;
       }
-      const discText = (discData.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
-      basicList = parseProspectJSON(discText) || [];
-      if (basicList.length === 0) {
-        const preview = discText.slice(0, 200).replace(/\n/g, " ");
+
+      const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
+      const parsed = parseProspectJSON(text) || [];
+
+      if (parsed.length === 0) {
+        const preview = text.slice(0, 200).replace(/\n/g, " ");
         setProspectError(preview
-          ? `No ${prospectNiche} businesses found in ${prospectCity.trim()}. AI response preview: "${preview}…" — try a broader city name or different niche.`
-          : `No ${prospectNiche} businesses found in ${prospectCity.trim()}. Try a broader city name or a different niche.`);
+          ? `No ${prospectNiche} businesses found in ${prospectCity.trim()}. Preview: "${preview}…" — try a broader city or different niche.`
+          : `No ${prospectNiche} businesses found in ${prospectCity.trim()}. Try a broader city or different niche.`);
         setProspectLoading(false); setProspectProgress(null); return;
       }
+
+      const results = parsed.map((r, i) => {
+        const p = {
+          id: Date.now() + i + Math.random(),
+          businessName: r.businessName || "Unknown Business",
+          ownerName: r.ownerName || "",
+          phone: r.phone || "",
+          email: r.email || "",
+          address: r.address || "",
+          niche: prospectNiche,
+          classification: null,
+        };
+        p.classification = classifyProspect(p);
+        return p;
+      });
+
+      setProspects(results);
+      showToast(`Found ${results.length} prospects`);
     } catch (err) {
-      setProspectError("Discovery failed — " + (err?.message || "unexpected error. Please try again."));
-      setProspectLoading(false); setProspectProgress(null); return;
-    }
-
-    // ── PHASE 2: Enrich in batches of ENRICH_BATCH_SIZE ──────
-    const totalBatches = Math.ceil(basicList.length / ENRICH_BATCH_SIZE);
-    let enrichedCount = 0;
-
-    for (let batchIdx = 0; batchIdx < totalBatches; batchIdx++) {
-      const batchSlice = basicList.slice(batchIdx * ENRICH_BATCH_SIZE, (batchIdx + 1) * ENRICH_BATCH_SIZE);
-      setProspectProgress({ phase: "enriching", current: enrichedCount, total: basicList.length, batchIndex: batchIdx + 1, totalBatches });
-
-      const businessList = batchSlice.map(b => `- ${b.businessName}${b.address ? ` (${b.address})` : ""}${b.website ? ` — ${b.website}` : ""}`).join("\n");
-
-      const enrichPrompt = `Enrich these ${batchSlice.length} ${prospectNiche} businesses in ${prospectCity.trim()} with deep research.
-
-Businesses to research:
-${businessList}
-
-For each, search for: Google reviews (rating + count), Facebook/Instagram/LinkedIn presence, Indeed job postings, website quality, estimated revenue, year established, owner name, and buying signals relevant to: ${filterList.length ? filterList.join(", ") : "digital agency services (web dev, AI automation, advertising)"}.
-
-RESPOND WITH A JSON ARRAY ONLY. No markdown, no explanation.
-[
-  {
-    "businessName": "...",
-    "ownerName": "...",
-    "phone": "...",
-    "email": "...",
-    "website": "...",
-    "websiteQuality": "...",
-    "address": "...",
-    "googleReviews": { "rating": 4.2, "count": 47 },
-    "socialMedia": { "facebook": "active", "instagram": "none", "linkedin": "none" },
-    "indeedHiring": ["Role 1"],
-    "estimatedRevenue": "$500K-1M",
-    "yearEstablished": "2019",
-    "niche": "${prospectNiche}",
-    "buyingSignals": ["signal 1"],
-    "opportunities": ["opportunity 1"],
-    "sourceUrls": ["https://..."]
-  }
-]`;
-
-      // One retry on timeout/network error — batch 2+ can hit 504 under load
-      const fetchEnrichBatch = async () => {
-        const resp = await fetch("/api/anthropic", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 2500,
-            system: "You are a business research assistant for a digital agency. Search the web thoroughly. Respond with ONLY a raw JSON array. No markdown, no explanation.",
-            messages: [{ role: "user", content: enrichPrompt }],
-            tools: [{ type: "web_search_20250305", name: "web_search" }],
-          }),
-        });
-        const raw = await resp.text();
-        let data;
-        try { data = JSON.parse(raw); } catch { throw new Error(`Service unavailable (HTTP ${resp.status})`); }
-        if (data.error) throw new Error(data.error.message || "API error");
-        return data;
-      };
-
-      try {
-        let enrichData;
-        try {
-          enrichData = await fetchEnrichBatch();
-        } catch (firstErr) {
-          // Wait 4 seconds then retry once before giving up
-          await new Promise(r => setTimeout(r, 4000));
-          enrichData = await fetchEnrichBatch();
-        }
-
-        const enrichText = (enrichData.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
-        const parsedBatch = parseProspectJSON(enrichText);
-
-        // Build results — fall back to Phase 1 basic data if enrichment parse failed
-        const sourceBatch = (parsedBatch && Array.isArray(parsedBatch) && parsedBatch.length > 0)
-          ? parsedBatch
-          : batchSlice.map(b => ({ ...b, niche: prospectNiche }));
-
-        const batchResults = sourceBatch.map((r, i) => {
-          const fallback = batchSlice[i] || {};
-          const p = {
-            id: Date.now() + batchIdx * 100 + i + Math.random(),
-            businessName: r.businessName || fallback.businessName || "Unknown Business",
-            ownerName: r.ownerName || "",
-            phone: r.phone || fallback.phone || "",
-            email: r.email || "",
-            website: r.website || fallback.website || "",
-            websiteQuality: r.websiteQuality || "",
-            address: r.address || fallback.address || "",
-            googleReviews: r.googleReviews || { rating: 0, count: 0 },
-            socialMedia: r.socialMedia || { facebook: "none", instagram: "none", linkedin: "none" },
-            indeedHiring: r.indeedHiring || [],
-            estimatedRevenue: r.estimatedRevenue || "",
-            yearEstablished: r.yearEstablished || "",
-            niche: r.niche || prospectNiche,
-            buyingSignals: r.buyingSignals || [],
-            opportunities: r.opportunities || [],
-            sourceUrls: r.sourceUrls || [],
-            classification: null,
-          };
-          p.classification = classifyProspect(p);
-          return p;
-        });
-
-        enrichedCount += batchResults.length;
-        setProspects(prev => [...prev, ...batchResults]);
-        if (batchIdx === totalBatches - 1) showToast(`Found ${enrichedCount} prospects`);
-      } catch (err) {
-        // Stop cleanly — surface partial results with an inline warning
-        if (enrichedCount > 0) {
-          setProspectError(`Loaded ${enrichedCount} of ${basicList.length} prospects — search stopped early (batch ${batchIdx + 1} failed: ${err?.message || "network error"}). Results above are complete.`);
-        } else {
-          setProspectError("Enrichment failed — " + (err?.message || "unexpected error. Please try again."));
-        }
-        break;
-      }
-
-      // Brief pause between batches to avoid rate limits
-      if (batchIdx < totalBatches - 1) {
-        await new Promise(r => setTimeout(r, 2000));
-      }
+      setProspectError("Search failed — " + (err?.message || "unexpected error. Please try again."));
     }
 
     setProspectProgress(null);
@@ -3137,28 +3027,8 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
               {prospectLoading && (
                 <div style={{ ...cardStyle, textAlign: "center", padding: "48px 24px" }}>
                   <div style={{ fontSize: 36, marginBottom: 16, animation: "pulse 1.2s infinite" }}>🔍</div>
-                  {prospectProgress?.phase === "discovery" && (
-                    <>
-                      <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Finding {prospectNiche} businesses in {prospectCity}...</div>
-                      <div style={{ fontSize: 13, color: t.textDim }}>Step 1 of 2 — building business list</div>
-                    </>
-                  )}
-                  {prospectProgress?.phase === "enriching" && (
-                    <>
-                      <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>
-                        Enriching batch {prospectProgress.batchIndex} of {prospectProgress.totalBatches}...
-                      </div>
-                      <div style={{ fontSize: 13, color: t.textDim, marginBottom: 12 }}>
-                        {prospectProgress.current} of {prospectProgress.total} prospects loaded — results appear below as each batch completes
-                      </div>
-                      <div style={{ maxWidth: 300, margin: "0 auto", height: 6, background: t.bgHover, borderRadius: 4, overflow: "hidden" }}>
-                        <div style={{ height: "100%", width: `${Math.round((prospectProgress.current / prospectProgress.total) * 100)}%`, background: t.accent, borderRadius: 4, transition: "width 0.4s ease" }} />
-                      </div>
-                    </>
-                  )}
-                  {!prospectProgress && (
-                    <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Searching...</div>
-                  )}
+                  <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Finding {prospectNiche} businesses in {prospectCity}...</div>
+                  <div style={{ fontSize: 13, color: t.textDim }}>Searching for contact info — this takes about 15–30 seconds</div>
                 </div>
               )}
 
@@ -3191,69 +3061,13 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
                           </div>
                         </div>
 
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 12 }}>
-                          <div>
-                            <div style={{ fontSize: 11, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Contact Info</div>
-                            {p.phone && <div style={{ fontSize: 13, marginBottom: 4 }}>☎ {p.phone}</div>}
-                            {p.email && <div style={{ fontSize: 13, marginBottom: 4 }}>✉ {p.email}</div>}
-                            {p.website && <div style={{ fontSize: 13, marginBottom: 4 }}>🌐 {p.website}</div>}
-                            {p.address && <div style={{ fontSize: 13, color: t.textMuted }}>📍 {p.address}</div>}
-                          </div>
-                          <div>
-                            <div style={{ fontSize: 11, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Business Info</div>
-                            {p.googleReviews.count > 0 && <div style={{ fontSize: 13, marginBottom: 4 }}>⭐ {p.googleReviews.rating} ({p.googleReviews.count} reviews)</div>}
-                            {p.estimatedRevenue && <div style={{ fontSize: 13, marginBottom: 4 }}>💰 {p.estimatedRevenue}</div>}
-                            {p.yearEstablished && <div style={{ fontSize: 13, marginBottom: 4 }}>📅 Est. {p.yearEstablished}</div>}
-                            {p.websiteQuality && <div style={{ fontSize: 13, color: t.textMuted }}>🌐 {p.websiteQuality}</div>}
-                          </div>
+                        <div style={{ marginBottom: 12 }}>
+                          {p.phone && <div style={{ fontSize: 13, marginBottom: 4 }}>☎ {p.phone}</div>}
+                          {p.email && <div style={{ fontSize: 13, marginBottom: 4 }}>✉ {p.email}</div>}
+                          {p.address && <div style={{ fontSize: 13, color: t.textMuted }}>📍 {p.address}</div>}
                         </div>
 
-                        {p.socialMedia && (
-                          <div style={{ marginBottom: 12 }}>
-                            <div style={{ fontSize: 11, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Social Media</div>
-                            <div style={{ display: "flex", gap: 12, fontSize: 12 }}>
-                              <span>FB: {p.socialMedia.facebook === "active" ? "✓" : "✗"}</span>
-                              <span>IG: {p.socialMedia.instagram === "active" ? "✓" : "✗"}</span>
-                              <span>LI: {p.socialMedia.linkedin === "active" ? "✓" : "✗"}</span>
-                            </div>
-                          </div>
-                        )}
-
-                        {p.indeedHiring && p.indeedHiring.length > 0 && (
-                          <div style={{ marginBottom: 12 }}>
-                            <div style={{ fontSize: 11, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Hiring on Indeed</div>
-                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                              {p.indeedHiring.map((job, i) => (
-                                <span key={i} style={{ padding: "4px 10px", background: t.greenBg, color: t.green, borderRadius: 12, fontSize: 11 }}>{job}</span>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {p.buyingSignals && p.buyingSignals.length > 0 && (
-                          <div style={{ marginBottom: 12 }}>
-                            <div style={{ fontSize: 11, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>🔥 Buying Signals</div>
-                            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                              {p.buyingSignals.map((sig, i) => (
-                                <div key={i} style={{ padding: "6px 10px", background: t.accent + "11", borderLeft: `3px solid ${t.accent}`, borderRadius: 4, fontSize: 12 }}>{sig}</div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {p.opportunities && p.opportunities.length > 0 && (
-                          <div style={{ marginBottom: 12 }}>
-                            <div style={{ fontSize: 11, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>💡 Opportunities</div>
-                            <ul style={{ margin: 0, paddingLeft: 20, fontSize: 12, color: t.textMuted }}>
-                              {p.opportunities.map((opp, i) => <li key={i} style={{ marginBottom: 2 }}>{opp}</li>)}
-                            </ul>
-                          </div>
-                        )}
-
                         <div style={{ display: "flex", gap: 8, marginTop: 12, paddingTop: 12, borderTop: `1px solid ${t.border}` }}>
-                          <button onClick={() => expandedProspect === p.id ? setExpandedProspect(null) : setExpandedProspect(p.id)} style={{ ...btnSecondary, fontSize: 12 }}>
-                            {expandedProspect === p.id ? "Hide Details" : "Show Details"}
-                          </button>
                           <button onClick={() => handleDraftEmail(p)} disabled={draftingEmail === p.id} style={{ ...btnSecondary, fontSize: 12 }}>
                             {draftingEmail === p.id ? "Drafting..." : emailDrafts[p.id] ? "Re-draft Email" : "Draft Email"}
                           </button>
@@ -3266,15 +3080,6 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
                             <button onClick={() => { navigator.clipboard.writeText(emailDrafts[p.id]); showToast("Email copied to clipboard"); }} style={{ ...btnPrimary, fontSize: 12, padding: "6px 16px" }}>
                               Copy to Clipboard
                             </button>
-                          </div>
-                        )}
-
-                        {expandedProspect === p.id && p.sourceUrls && p.sourceUrls.length > 0 && (
-                          <div style={{ marginTop: 12, padding: 12, background: t.bgHover, borderRadius: 6 }}>
-                            <div style={{ fontSize: 11, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>Sources</div>
-                            {p.sourceUrls.map((url, i) => (
-                              <div key={i} style={{ fontSize: 11, color: t.accent, marginBottom: 2 }}>{url}</div>
-                            ))}
                           </div>
                         )}
                       </div>
