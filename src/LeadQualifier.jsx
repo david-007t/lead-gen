@@ -276,6 +276,10 @@ function parseCSV(text) {
   });
 }
 
+function csvValue(value) {
+  return `"${String(value || "").replace(/"/g, '""')}"`;
+}
+
 const LEAD_REQUEST_EXAMPLE = `Act as freight broker in the US. Identify shippers in Healthcare & Medical Supply, Food & Beverage especially refrigerated, and Construction & Building Materials. Target Transportation Managers, Logistics Managers, and Shipping Supervisors. Companies should be $10M-$100M revenue, regional distributors, overflow freight, after-hours coverage. Include company name, contact person, email, phone, LinkedIn, and high-demand lanes right now. Format as target shipper list and lanes in an Excel/Google Sheet.`;
 
 const GENERATED_LEADS_SHEET_NAME = "Generated Leads";
@@ -2820,6 +2824,45 @@ Return:
     return result;
   }, [modeScopedLeads, searchQuery, filterStatus, filterFollowUp, sortBy, sortDir]);
 
+  const handleExportPipelineCSV = () => {
+    const columns = [
+      "Company Name",
+      "Decision Maker Name",
+      "Title",
+      "Email",
+      "Email Confidence",
+      "LinkedIn URL",
+      "Phone Number",
+      "Buying Signal",
+      "Personalized First Line",
+      "Draft Email",
+    ];
+    const rows = modeScopedLeads.map(lead => {
+      const detailMap = getPipelineDetailMap(lead);
+      const prospect = lead.sourceMode === "prospects" ? prospectFromPipelineLead(lead) : null;
+      return [
+        prospect?.businessName || detailMap.get("Company Name") || lead.company || "",
+        prospect?.ownerName || detailMap.get("Decision Maker Name") || detailMap.get("Contact Person") || lead.name || "",
+        prospect?.title || detailMap.get("Title") || detailMap.get("Target Role") || "",
+        prospect?.email || detailMap.get("Email") || lead.email || "",
+        prospect?.emailConfidence || detailMap.get("Email Confidence") || "",
+        prospect?.linkedInUrl || detailMap.get("LinkedIn URL") || detailMap.get("LinkedIn") || "",
+        prospect?.phone || detailMap.get("Phone") || detailMap.get("Phone Number") || lead.phone || "",
+        prospect?.buyingSignal || detailMap.get("Buying Signal") || detailMap.get("Reason / Buying Signal") || lead.description || "",
+        prospect?.personalizedFirstLine || detailMap.get("Personalized First Line") || "",
+        lead.savedEmailDraft || "",
+      ];
+    });
+    const csv = [columns.map(csvValue).join(","), ...rows.map(row => row.map(csvValue).join(","))].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "pipeline_leads.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   // ─── STYLES ───────────────────────────────────────────────
   const inputStyle = { width: "100%", padding: "10px 14px", background: t.bgAlt, border: `1px solid ${t.borderInput}`, borderRadius: 6, color: t.text, fontFamily: "'DM Sans', sans-serif", fontSize: 14, outline: "none", transition: "border-color 0.2s", boxSizing: "border-box" };
   const labelStyle = { display: "block", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: t.textDim, marginBottom: 6 };
@@ -3643,15 +3686,11 @@ Return:
                           {s === "all" ? `All (${modeLeads.length})` : s === "qualified" ? `Qualified (${qualifiedCount})` : `Unqualified (${unqualifiedCount})`}
                         </button>
                       ))}
-                    </div>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <button onClick={() => {
-                        const csv = ["Name,Company,Email,Phone,Project Type,Budget,Location,ZIP,Timeline,Source,Status,Follow Up,Score", ...modeLeads.map(l => `"${l.name}","${l.company}","${l.email}","${l.phone}","${l.projectType}","${l.budget}","${l.location}","${l.zipCode}","${l.timeline}","${l.source}","${l.result.qualified ? "Qualified" : "Unqualified"}","${l.followUp}","${l.result.score}/${l.result.total}"`)].join("\n");
-                        const blob = new Blob([csv], { type: "text/csv" }); const url = URL.createObjectURL(blob);
-                        const a = document.createElement("a"); a.href = url; a.download = "qualified_leads.csv"; a.click();
-                      }} style={btnSecondary}>↓ Export</button>
-                      <button onClick={handleClearAll} style={{ ...btnSecondary, color: t.red, borderColor: t.redBorder }}>Clear All</button>
-                    </div>
+	                    </div>
+	                    <div style={{ display: "flex", gap: 8 }}>
+	                      <button onClick={handleExportPipelineCSV} style={btnSecondary}>Export CSV</button>
+	                      <button onClick={handleClearAll} style={{ ...btnSecondary, color: t.red, borderColor: t.redBorder }}>Clear All</button>
+	                    </div>
                   </div>
 
                   {/* Follow-up filter */}
