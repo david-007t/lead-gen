@@ -390,6 +390,31 @@ function getFirstLeadCell(row, columns) {
   return "";
 }
 
+function isMissingLeadValue(value) {
+  const text = String(value ?? "")
+    .replace(/<cite[^>]*>[\s\S]*?<\/cite>|<cite[^>]*\/>/g, "")
+    .replace(/<[^>]+>/g, "")
+    .trim();
+  return !text || /^(n\/a|na|none|unknown|not found|not public|unavailable|missing|no public.*|not available|-|—)$/i.test(text);
+}
+
+function hasUsableLeadPhone(row) {
+  const phone = getFirstLeadCell(row, ["Best Phone", "Phone", "Phone Number", "Main Phone", "Company Phone", "Location Phone", "Direct Phone"]);
+  if (isMissingLeadValue(phone)) return false;
+  return String(phone).replace(/\D/g, "").length >= 7;
+}
+
+function hasUsableLeadEmail(row) {
+  const email = getFirstLeadCell(row, ["Email", "Email Address", "Contact Email", "Decision Maker Email"]);
+  if (isMissingLeadValue(email)) return false;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim());
+}
+
+function isContactableLeadRow(row) {
+  const company = getFirstLeadCell(row, ["Company Name", "Business Name", "Company"]);
+  return !isMissingLeadValue(company) && (hasUsableLeadPhone(row) || hasUsableLeadEmail(row));
+}
+
 function buildLeadColumns(job, rows, promptText) {
   const requested = [
     ...((job?.requiredColumns || job?.columns || []).map(normalizeColumnName)),
@@ -901,6 +926,7 @@ export default function LeadQualifier() {
   const [leadListResults, setLeadListResults] = useState([]);
   const [leadListLoading, setLeadListLoading] = useState(false);
   const [leadListError, setLeadListError] = useState(null);
+  const [leadListQualityNotice, setLeadListQualityNotice] = useState(null);
   const [leadListProgress, setLeadListProgress] = useState(null);
   const [leadListSheetLoading, setLeadListSheetLoading] = useState(false);
   const [leadListSheetStatus, setLeadListSheetStatus] = useState(null);
@@ -2322,7 +2348,7 @@ Respond with ONLY a JSON object:
       title: "Reset Everything",
       message: "This will delete all leads, criteria, and settings. Start fresh?",
       onConfirm: async () => {
-        setLeads([]); setCriteria(getDefaultCriteria("construction")); setCompanyName(""); setIndustry("construction"); setProspects([]); setEmailDrafts({}); setQueueActions({}); setIndeedResults([]); setIndeedEmailDrafts({}); setIndeedQueueActions({}); setLeadListResults([]); setLeadListJob(null); setLeadListColumns([]); setSetupComplete(false); setSetupStep(0); setTab("dashboard");
+        setLeads([]); setCriteria(getDefaultCriteria("construction")); setCompanyName(""); setIndustry("construction"); setProspects([]); setEmailDrafts({}); setQueueActions({}); setIndeedResults([]); setIndeedEmailDrafts({}); setIndeedQueueActions({}); setLeadListResults([]); setLeadListJob(null); setLeadListColumns([]); setLeadListQualityNotice(null); setSetupComplete(false); setSetupStep(0); setTab("dashboard");
         try { localStorage.removeItem(SK.leads); localStorage.removeItem(SK.criteria); localStorage.removeItem(SK.settings); } catch {}
         setConfirmAction(null); showToast("App reset complete");
       },
@@ -2343,6 +2369,7 @@ Respond with ONLY a JSON object:
     setLeadListResults([]);
     setLeadListJob(null);
     setLeadListColumns([]);
+    setLeadListQualityNotice(null);
     setLeadListProgress("Parsing request");
     setLeadListSheetStatus(null);
 
@@ -2366,32 +2393,45 @@ Engine requirements:
    - geography
    - requiredColumns
    - specialResearchRequirements
-2. Research enough real companies and contacts using web search to fill the requested row count.
-3. Prioritize callable leads. A public company/location phone number is enough to include a lead.
-4. Prefer named decision makers, but do NOT reject a company just because no named person is public. If no named person is public, use the best call target role and the main/location phone.
-5. Search specifically for:
+2. Use a contact-first enrichment workflow:
+   - Pass 1: find a larger pool of real candidate companies that match the request.
+   - Pass 2: for each candidate, search its website/contact/team/about/location pages and reputable public sources for contact data.
+   - Pass 3: keep only rows that are actually callable/contactable.
+3. Every returned row MUST include:
+   - Company Name
+   - Best Phone OR Email
+   - Target Role
+   - Reason / Buying Signal
+   - Source URL
+4. Rows with no Best Phone and no Email MUST be dropped. No exceptions. Do not include company-only rows.
+5. Attempt to find a named contact person for every row. Prefer owner/founder/president/CEO, then the most relevant manager or department leader for the user's request.
+6. If no named contact is public, the row can remain only when it has a useful main/location/department phone number, a strong Target Role, and clear Call Notes telling the caller who to ask for.
+7. Search specifically for:
    - main company phone
    - location/branch phone
    - dispatch, logistics, shipping, warehouse, operations, or distribution department phone
    - named decision maker
+   - direct or role-based email
    - contact source URL that verifies the phone/name when possible
-6. If a company has no phone number after research, skip it unless it is an exceptional fit.
-7. For freight/shipper searches, include shippers, distributors, manufacturers, and wholesalers. Exclude carriers, brokers, 3PLs, couriers, and job boards. Directory pages are allowed only as fallback evidence when they point to a real company and show a phone number.
-8. Do not invent unavailable contact data. If a person, email, LinkedIn, revenue, lane, or direct phone cannot be verified, use an empty string and lower the confidence.
-9. Every row must include a Source URL when possible and a Confidence value of High, Medium, or Low.
-10. Add dynamic columns requested by the user. If the request is about freight brokers, shippers, logistics, lanes, refrigerated freight, or overflow freight, include at minimum these columns:
+8. For freight/shipper searches, include shippers, distributors, manufacturers, and wholesalers. Exclude carriers, brokers, 3PLs, couriers, and job boards. Directory pages are allowed only as fallback evidence when they point to a real company and show a phone number.
+9. Do not invent unavailable contact data. If a person, email, LinkedIn, revenue, lane, or direct phone cannot be verified, use an empty string and lower the confidence.
+10. Every row must include a Source URL when possible and a Confidence value of High, Medium, or Low.
+11. Return fewer than ${leadListCount} rows if needed. Quality beats count. If you cannot find enough contactable rows, return only the contactable rows you verified.
+12. Add dynamic columns requested by the user. If the request is about freight brokers, shippers, logistics, lanes, refrigerated freight, or overflow freight, include at minimum these columns:
 ${FREIGHT_MIN_COLUMNS.map(c => `   - ${c}`).join("\n")}
-11. Special research requirements like "high-demand lanes" should become columns and should be supported by a reason / buying signal.
+13. Special research requirements like "high-demand lanes" should become columns and should be supported by a reason / buying signal.
 
 Phone and contact field rules:
 - Best Phone: the most useful number to call.
 - Phone Type: Direct, Department, Location/Main Line, or Missing.
 - Phone Status: Direct, Main Line, or Missing.
 - Contact Status: Named Contact, Role Only, or Company Only.
-- Reachability Score: High if named contact + phone, Medium if role/company + phone, Low if no phone.
+- Reachability Score: High if named contact + phone/email, Medium if role/company + phone/email, Low only when contact data is weak but still usable.
 - Call Notes: one short sentence telling a caller who to ask for and why.
-- Do not stop early just because a few high-confidence rows are found. A public main-line phone is enough for inclusion when a company matches the request. Return as many callable rows as possible up to the requested count.
+- Do not stop early just because a few high-confidence rows are found. Return as many contactable rows as possible up to the requested count.
 - If exact contact names are not public, leave Contact Person blank and set Contact Status to "Role Only" or "Company Only".
+- Never set Phone Status to Missing unless Email is present.
+- Never return a row where Reachability Score is Low because there is no phone and no email.
 
 RESPOND WITH ONLY this JSON object:
 {
@@ -2472,17 +2512,32 @@ RESPOND WITH ONLY this JSON object:
         requiredColumns: DEFAULT_LEAD_COLUMNS,
         specialResearchRequirements: [],
       } : (parsed.job || {});
-      const columns = buildLeadColumns({ ...job, requiredColumns: parsed?.columns || job.requiredColumns }, parsedRows, requestText);
-      const results = parsedRows.map((r, i) => ({
+      const contactableRows = parsedRows.filter(isContactableLeadRow);
+      const droppedRows = parsedRows.length - contactableRows.length;
+
+      if (contactableRows.length === 0) {
+        setLeadListError(`No contactable leads returned. The engine found ${parsedRows.length} candidate ${parsedRows.length === 1 ? "row" : "rows"}, but none had a usable phone or email.`);
+        setLeadListLoading(false);
+        setLeadListProgress(null);
+        return;
+      }
+
+      const columns = buildLeadColumns({ ...job, requiredColumns: parsed?.columns || job.requiredColumns }, contactableRows, requestText);
+      const results = contactableRows.map((r, i) => ({
         ...r,
         id: Date.now() + i + Math.random(),
         __columns: columns,
       }));
 
+      const notices = [];
+      if (droppedRows > 0) notices.push(`Dropped ${droppedRows} company-only ${droppedRows === 1 ? "row" : "rows"} with no usable phone or email.`);
+      if (results.length < leadListCount) notices.push(`Returned ${results.length} of ${leadListCount} requested because only contactable rows are kept.`);
+      setLeadListQualityNotice(notices.join(" "));
+
       setLeadListJob(job);
       setLeadListColumns(columns);
       setLeadListResults(results);
-      showToast(`Built ${results.length} lead rows`);
+      showToast(`Built ${results.length} contactable lead rows`);
     } catch (err) {
       setLeadListError(`Search failed — ${err?.message || "please try again."}`);
     }
@@ -4776,6 +4831,12 @@ Return:
 
               {leadListError && (
                 <div style={{ background: t.redBg, border: `1px solid ${t.redBorder}`, borderRadius: 8, padding: "14px 18px", marginBottom: 20, fontSize: 14, color: t.red }}>{leadListError}</div>
+              )}
+
+              {leadListQualityNotice && (
+                <div style={{ background: t.accent + "14", border: `1px solid ${t.accent}55`, borderRadius: 8, padding: "12px 14px", marginBottom: 16, fontSize: 13, color: t.text }}>
+                  {leadListQualityNotice}
+                </div>
               )}
 
               {leadListLoading && (
