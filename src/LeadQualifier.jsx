@@ -530,7 +530,7 @@ const themes = {
 };
 
 // ─── STORAGE HELPERS ──────────────────────────────────────────
-const SK = { leads: "lq-leads-v2", criteria: "lq-criteria-v2", settings: "lq-settings-v2", costEvents: "lq-cost-events-v1" };
+const SK = { leads: "lq-leads-v2", criteria: "lq-criteria-v2", settings: "lq-settings-v2", costEvents: "lq-cost-events-v1", prospectSendStatus: "lq-prospect-send-status-v1" };
 
 const MODEL_PRICING_PER_MTOK = {
   sonnet: { input: 3, output: 15, cacheWrite5m: 3.75, cacheRead: 0.3 },
@@ -589,6 +589,97 @@ function pipelineUniqueKey(lead) {
 
 function getFirstName(name) {
   return String(name || "").trim().split(/\s+/)[0] || "there";
+}
+
+function normalizeCityValue(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/,\s*[a-z]{2}\b/g, "")
+    .replace(/\bcalifornia\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function prospectSendKey(prospect, city) {
+  return [
+    prospect?.businessName || "",
+    prospect?.ownerName || "",
+    prospect?.email || "",
+    city || "",
+  ]
+    .map(value => String(value || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""))
+    .filter(Boolean)
+    .join("|");
+}
+
+function buildSampleLeadLines(sourceLeads = []) {
+  return sourceLeads.map(lead => {
+    const company = lead.company || getFirstLeadCell(lead.leadListRow || {}, ["Company Name", "Business Name", "Company"]) || "Unknown Company";
+    const phone = lead.phone || getFirstLeadCell(lead.leadListRow || {}, ["Best Phone", "Phone", "Phone Number"]);
+    const signal = lead.description || getFirstLeadCell(lead.leadListRow || {}, ["Reason / Buying Signal", "Call Notes", "Buying Signal"]);
+    const parts = [company, phone].filter(Boolean).join(" — ");
+    return `- ${parts}${signal ? ` — ${signal}` : ""}`;
+  }).join("\n");
+}
+
+function getRecentVerifiedLeadSamples(allLeads, city, currentLeadListResults = [], currentLeadListCity = "") {
+  const targetCity = normalizeCityValue(city);
+  const pipelineLeadList = (allLeads || [])
+    .filter(lead => lead.sourceMode === "leadlist" && lead.verified)
+    .filter(lead => normalizeCityValue(lead.searchContext?.city || lead.location) === targetCity)
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+  const currentLeadList = normalizeCityValue(currentLeadListCity) === targetCity
+    ? (currentLeadListResults || [])
+        .filter(row => row?.verified)
+        .map((row, index) => ({
+          id: row.id || `current-${index}`,
+          createdAt: Date.now() - index,
+          company: getLeadListCompany(row),
+          phone: getLeadListPhone(row),
+          description: getFirstLeadCell(row, ["Reason / Buying Signal", "Call Notes", "Buying Signal"]),
+          leadListRow: row,
+          verified: true,
+          sourceMode: "leadlist",
+          searchContext: { city: currentLeadListCity },
+        }))
+    : [];
+
+  const merged = mergePipelineLeads(currentLeadList, pipelineLeadList).slice(0, 5);
+  return merged;
+}
+
+function buildProspectSendEmail(prospect, city, sampleLeads) {
+  const firstName = getFirstName(prospect?.ownerName);
+  const safeCity = city || "your area";
+  const personalizedFirstLine = cleanBusinessObservation(
+    prospect?.personalizedFirstLine || prospect?.buyingSignal,
+    `${prospect?.businessName || "Your business"} looks like a strong fit for independent insurance support in ${safeCity}.`
+  );
+  const sampleBlock = sampleLeads.length
+    ? buildSampleLeadLines(sampleLeads)
+    : "- I can share 5 businesses from your area that match this coverage profile.";
+
+  return {
+    subject: `Found 5 ${safeCity} businesses that need coverage`,
+    body: `Hi ${firstName},
+
+${personalizedFirstLine}
+
+I built a tool that finds small businesses in your area actively signaling they need independent insurance services — recently opened, changing ownership, or expanding — businesses that typically fall through the cracks on coverage.
+
+Here are 5 from your area as a sample:
+
+${sampleBlock}
+
+The full list of 50 is $200. Delivered within 24 hours.
+
+Interested?
+
+David Osei-Tutu
+Founder, SankoTech Systems
+david@sankotechsystems.com`,
+  };
 }
 
 function cleanBusinessObservation(text, fallback) {
@@ -943,6 +1034,8 @@ export default function LeadQualifier() {
   const [expandedProspect, setExpandedProspect] = useState(null);
   const [draftingEmail, setDraftingEmail] = useState(null);
   const [emailDrafts, setEmailDrafts] = useState({});
+  const [prospectSendStatus, setProspectSendStatus] = useState({});
+  const [sendingProspectId, setSendingProspectId] = useState(null);
 
   // Joe's Queue state
   const [queueActions, setQueueActions] = useState({});
@@ -1018,9 +1111,11 @@ export default function LeadQualifier() {
         loadData(SK.leads), loadData(SK.criteria), loadData(SK.settings),
       ]);
       const savedCostEvents = await loadData(SK.costEvents);
+      const savedProspectSendStatus = await loadData(SK.prospectSendStatus);
       if (savedLeads) setLeads(savedLeads.map(upgradeLegacyLeadDraft));
       if (savedCriteria) setCriteria(savedCriteria);
       if (savedCostEvents) setCostEvents(savedCostEvents);
+      if (savedProspectSendStatus) setProspectSendStatus(savedProspectSendStatus);
       if (savedSettings) {
         if (savedSettings.companyName) setCompanyName(savedSettings.companyName);
         if (savedSettings.theme) setTheme(savedSettings.theme);
@@ -1040,6 +1135,7 @@ export default function LeadQualifier() {
   useEffect(() => { if (!loading) saveData(SK.leads, leads); }, [leads, loading]);
   useEffect(() => { if (!loading) saveData(SK.criteria, criteria); }, [criteria, loading]);
   useEffect(() => { if (!loading) saveData(SK.costEvents, costEvents.slice(0, 100)); }, [costEvents, loading]);
+  useEffect(() => { if (!loading) saveData(SK.prospectSendStatus, prospectSendStatus); }, [prospectSendStatus, loading]);
   useEffect(() => { if (!loading) saveData(SK.settings, { companyName, theme, industry, setupComplete, shipListStripeLink, shipListSenderName }); }, [companyName, theme, industry, setupComplete, shipListStripeLink, shipListSenderName, loading]);
   useEffect(() => { localStorage.setItem('lq-theme', theme); }, [theme]);
 
@@ -1616,6 +1712,49 @@ ${senderName}`;
       showToast("Failed to generate email", "error");
     }
     setDraftingEmail(null);
+  };
+
+  const handleSendProspectEmail = async (prospect) => {
+    const to = String(prospect?.email || "").trim();
+    if (!to) {
+      showToast("This prospect does not have an email yet", "error");
+      return;
+    }
+
+    const city = prospectCity || "";
+    const sendKey = prospectSendKey(prospect, city);
+    if (prospectSendStatus[sendKey]?.sent) return;
+
+    const sampleLeads = getRecentVerifiedLeadSamples(leads, city, leadListResults, leadListCity);
+    const { subject, body } = buildProspectSendEmail(prospect, city, sampleLeads);
+
+    setSendingProspectId(prospect.id);
+    try {
+      const response = await fetch("/api/gmail-send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to, subject, body }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.error) {
+        throw new Error(data.error || "Failed to send email");
+      }
+
+      setProspectSendStatus(prev => ({
+        ...prev,
+        [sendKey]: {
+          sent: true,
+          sentAt: Date.now(),
+          to,
+          subject,
+          messageId: data.id || "",
+        },
+      }));
+      showToast(`Sent email to ${prospect.ownerName || prospect.businessName}`);
+    } catch (error) {
+      showToast(error?.message || "Failed to send email", "error");
+    }
+    setSendingProspectId(null);
   };
 
   // ─── SHIP LIST SEARCH ────────────────────────────────────
@@ -2505,7 +2644,7 @@ Respond with ONLY a JSON object:
       message: "This will delete all leads, criteria, and settings. Start fresh?",
       onConfirm: async () => {
         setLeads([]); setCriteria(getDefaultCriteria("construction")); setCompanyName(""); setIndustry("construction"); setProspects([]); setEmailDrafts({}); setQueueActions({}); setIndeedResults([]); setIndeedEmailDrafts({}); setIndeedQueueActions({}); setLeadListResults([]); setLeadListJob(null); setLeadListColumns([]); setSetupComplete(false); setSetupStep(0); setTab("dashboard");
-        try { localStorage.removeItem(SK.leads); localStorage.removeItem(SK.criteria); localStorage.removeItem(SK.settings); } catch {}
+        try { localStorage.removeItem(SK.leads); localStorage.removeItem(SK.criteria); localStorage.removeItem(SK.settings); localStorage.removeItem(SK.prospectSendStatus); } catch {}
         setConfirmAction(null); showToast("App reset complete");
       },
     });
@@ -4509,7 +4648,12 @@ Return:
                         email: p.email,
                         name: p.ownerName || p.businessName,
                       }));
-                      return (
+                    return (
+                      (() => {
+                        const sendKey = prospectSendKey(p, prospectCity);
+                        const sent = Boolean(prospectSendStatus[sendKey]?.sent);
+                        const canSend = Boolean(String(p.email || "").trim()) && !sent;
+                        return (
                       <div key={p.id} style={{ ...cardStyle, borderLeft: `4px solid ${p.classification.color}` }}>
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: 12 }}>
                           <div>
@@ -4555,6 +4699,12 @@ Return:
                           <button onClick={() => handleDraftEmail(p)} disabled={draftingEmail === p.id} style={{ ...btnSecondary, fontSize: 12 }}>
                             {draftingEmail === p.id ? "Drafting..." : emailDrafts[p.id] ? "Re-draft Email" : "Draft Email"}
                           </button>
+                          <button
+                            onClick={() => handleSendProspectEmail(p)}
+                            disabled={!canSend || sendingProspectId === p.id}
+                            style={{ ...btnSecondary, fontSize: 12, opacity: !canSend && sendingProspectId !== p.id ? 0.6 : 1 }}>
+                            {sent ? "✓ Sent" : sendingProspectId === p.id ? "Sending..." : "Send"}
+                          </button>
                         </div>
 
                         {emailDrafts[p.id] && (
@@ -4567,6 +4717,8 @@ Return:
                           </div>
                         )}
                       </div>
+                        );
+                      })()
                     );})}
                   </div>
                 </div>
@@ -4664,6 +4816,12 @@ Return:
                     <div style={{ display: "grid", gap: 16 }}>
                       {warmProspects.map(p => (
                         <div key={p.id} style={{ ...cardStyle, borderLeft: `4px solid ${t.green}`, opacity: queueActions[p.id] === "dismissed" ? 0.4 : 1 }}>
+                          {(() => {
+                            const sendKey = prospectSendKey(p, prospectCity);
+                            const sent = Boolean(prospectSendStatus[sendKey]?.sent);
+                            const canSend = Boolean(String(p.email || "").trim()) && !sent;
+                            return (
+                              <>
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: 12 }}>
                             <div>
                               <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>{p.businessName}</h3>
@@ -4703,6 +4861,9 @@ Return:
                                 Copy Email
                               </button>
                             )}
+                            <button onClick={() => handleSendProspectEmail(p)} disabled={!canSend || sendingProspectId === p.id} style={{ ...btnSecondary, fontSize: 12, padding: "8px 16px", opacity: !canSend && sendingProspectId !== p.id ? 0.6 : 1 }}>
+                              {sent ? "✓ Sent" : sendingProspectId === p.id ? "Sending..." : "Send"}
+                            </button>
                             <button onClick={() => setQueueActions(prev => ({ ...prev, [p.id]: "contacted" }))} disabled={queueActions[p.id] === "contacted"} style={{ ...btnSecondary, fontSize: 12, padding: "8px 16px", background: queueActions[p.id] === "contacted" ? t.accent + "22" : t.bgHover }}>
                               {queueActions[p.id] === "contacted" ? "✓ Contacted" : "Mark Contacted"}
                             </button>
@@ -4713,6 +4874,9 @@ Return:
                               Dismiss
                             </button>
                           </div>
+                              </>
+                            );
+                          })()}
                         </div>
                       ))}
                     </div>
