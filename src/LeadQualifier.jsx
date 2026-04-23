@@ -280,6 +280,16 @@ const LEAD_REQUEST_EXAMPLE = `Act as freight broker in the US. Identify shippers
 
 const GENERATED_LEADS_SHEET_NAME = "Generated Leads";
 
+const CALL_FEEDBACK_COLUMNS = [
+  "Call Outcome",
+  "Number Verified",
+  "Connected To Right Company",
+  "Reached Decision Maker",
+  "Bad Number Reason",
+  "Caller Notes",
+  "Follow-Up Needed",
+];
+
 const FREIGHT_MIN_COLUMNS = [
   "Company Name",
   "Contact Person",
@@ -383,6 +393,12 @@ function buildLeadColumns(job, rows, promptText) {
   const looksFreight = /freight|broker|shipper|lane|refrigerated|logistics|distributor|wholesale|foodservice/i.test(promptText || "");
   const base = looksFreight ? FREIGHT_MIN_COLUMNS : DEFAULT_LEAD_COLUMNS;
   return [...base, ...requested].filter((col, index, list) => (
+    list.findIndex(other => columnKey(other) === columnKey(col)) === index
+  ));
+}
+
+function withCallFeedbackColumns(columns) {
+  return [...(columns || []), ...CALL_FEEDBACK_COLUMNS].filter((col, index, list) => (
     list.findIndex(other => columnKey(other) === columnKey(col)) === index
   ));
 }
@@ -1959,7 +1975,7 @@ RESPOND WITH ONLY this JSON object:
 
   const handleExportLeadListCSV = () => {
     if (leadListResults.length === 0) return;
-    const columns = leadListColumns.length ? leadListColumns : buildLeadColumns(leadListJob, leadListResults, leadListRequest);
+    const columns = withCallFeedbackColumns(leadListColumns.length ? leadListColumns : buildLeadColumns(leadListJob, leadListResults, leadListRequest));
     const rows = leadListResults.map(row => columns.map(col => csvEscape(getLeadCell(row, col))).join(","));
     const csv = [columns.map(csvEscape).join(","), ...rows].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
@@ -1976,7 +1992,7 @@ RESPOND WITH ONLY this JSON object:
     setLeadListSheetLoading(true);
     setLeadListSheetStatus(null);
     try {
-      const columns = leadListColumns.length ? leadListColumns : buildLeadColumns(leadListJob, leadListResults, leadListRequest);
+      const columns = withCallFeedbackColumns(leadListColumns.length ? leadListColumns : buildLeadColumns(leadListJob, leadListResults, leadListRequest));
       const response = await fetch("/api/google-sheets-append", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1988,7 +2004,7 @@ RESPOND WITH ONLY this JSON object:
       });
       const data = await response.json();
       if (!response.ok || data.error) throw new Error(data.error || "Google Sheets append failed");
-      setLeadListSheetStatus(`Appended ${data.updatedRows || leadListResults.length} rows to ${GENERATED_LEADS_SHEET_NAME}.`);
+      setLeadListSheetStatus(`Ready to call: appended ${leadListResults.length} leads to ${GENERATED_LEADS_SHEET_NAME} with caller feedback columns.`);
       showToast("Appended to Google Sheets");
     } catch (err) {
       const message = err?.message || "Google Sheets append failed";
@@ -3843,7 +3859,7 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
                     <span style={{ fontSize: 13, color: t.textDim, fontWeight: 600, flex: 1 }}>{leadListResults.length} rows · {leadListColumns.length} columns</span>
                     <button onClick={handleExportLeadListCSV} style={btnSecondary}>↓ Export CSV</button>
                     <button onClick={handleAppendLeadListToSheets} disabled={leadListSheetLoading} style={{ ...btnSecondary, opacity: leadListSheetLoading ? 0.7 : 1 }}>
-                      {leadListSheetLoading ? "Appending…" : "Append to Google Sheets"}
+                      {leadListSheetLoading ? "Sending…" : "Send to Call Sheet"}
                     </button>
                   </div>
 
