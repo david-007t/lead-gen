@@ -42,7 +42,7 @@ function parseTwilioVerification(data) {
 function parseAbstractVerification(data) {
   const phoneValidation = data?.phone_validation || {};
   const lineStatus = String(phoneValidation?.line_status || '').toLowerCase();
-  const lineType = String(phoneValidation?.type || data?.carrier || '').toLowerCase();
+  const lineType = String(data?.phone_carrier?.line_type || '').toLowerCase().replace(/_/g, '');
   const verified = Boolean(
     phoneValidation?.is_valid === true &&
     lineStatus === 'active' &&
@@ -56,9 +56,9 @@ function parseAbstractVerification(data) {
     valid: Boolean(phoneValidation?.is_valid),
     lineStatus: lineStatus || null,
     lineType: lineType || null,
-    phoneNumber: data?.phone || null,
-    nationalFormat: data?.format?.international || data?.phone || null,
-    carrierName: data?.carrier || null,
+    phoneNumber: data?.phone_number || null,
+    nationalFormat: data?.phone_format?.national || data?.phone_number || null,
+    carrierName: data?.phone_carrier?.name || null,
     raw: data,
   };
 }
@@ -80,7 +80,7 @@ async function lookupWithAbstract({ phone, countryCode }, apiKey) {
   });
   if (countryCode) params.set('country', String(countryCode).trim().toUpperCase());
 
-  const response = await fetch(`https://phonevalidation.abstractapi.com/v1/?${params.toString()}`, {
+  const response = await fetch(`https://phoneintelligence.abstractapi.com/v1/?${params.toString()}`, {
     method: 'GET',
     headers: {
       Accept: 'application/json',
