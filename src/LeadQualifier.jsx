@@ -1993,14 +1993,30 @@ RESPOND WITH ONLY this JSON object:
     setLeadListSheetLoading(true);
     setLeadListSheetStatus(null);
     try {
-      const columns = withCallFeedbackColumns(leadListColumns.length ? leadListColumns : buildLeadColumns(leadListJob, leadListResults, leadListRequest));
+      const SHEET_COLUMN_MAP = [
+        { header: "Industry",          field: "Industry" },
+        { header: "Company Name",      field: "Company Name" },
+        { header: "Target Role",       field: "Target Role" },
+        { header: "Contact Person",    field: "Contact Person" },
+        { header: "Email",             field: "Email" },
+        { header: "Phone",             field: "Best Phone" },
+        { header: "LinkedIn",          field: "LinkedIn" },
+        { header: "Annual Revenue",    field: "Estimated Revenue" },
+        { header: "Problem Solved",    field: "Reason / Buying Signal" },
+        { header: "High-Demand Lanes", field: "High-Demand Lane" },
+      ];
+      const stripCitations = v => String(v ?? "").replace(/<cite[^>]*>[\s\S]*?<\/cite>|<cite[^>]*\/>/g, "").replace(/<[^>]+>/g, "").trim();
+      const headers = SHEET_COLUMN_MAP.map(c => c.header);
+      const dataRows = leadListResults.map(row =>
+        SHEET_COLUMN_MAP.map(c => stripCitations(getLeadCell(row, c.field)))
+      );
       const response = await fetch("/api/google-sheets-append", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           sheetName: GENERATED_LEADS_SHEET_NAME,
-          columns,
-          rows: leadListResults.map(row => columns.map(col => getLeadCell(row, col))),
+          columns: headers,
+          rows: dataRows,
         }),
       });
       const data = await response.json();

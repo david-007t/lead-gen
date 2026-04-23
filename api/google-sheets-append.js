@@ -135,6 +135,7 @@ export default async function handler(req, res) {
     // Auto-create the sheet tab if it doesn't exist
     const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(targetSpreadsheetId)}?fields=sheets.properties.title`;
     const metaResponse = await fetch(metaUrl, { headers: { Authorization: `Bearer ${token}` } });
+    let tabIsNew = false;
     if (metaResponse.ok) {
       const meta = await metaResponse.json();
       const tabExists = (meta.sheets || []).some(s => s.properties?.title === sheetName);
@@ -144,8 +145,21 @@ export default async function handler(req, res) {
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ requests: [{ addSheet: { properties: { title: sheetName } } }] }),
         });
+        tabIsNew = true;
       }
     }
+
+    // Only include the header row if the sheet is empty (newly created or blank)
+    let sheetIsEmpty = tabIsNew;
+    if (!tabIsNew) {
+      const checkUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(targetSpreadsheetId)}/values/${encodeURIComponent(sheetName + '!A1')}`;
+      const checkRes = await fetch(checkUrl, { headers: { Authorization: `Bearer ${token}` } });
+      if (checkRes.ok) {
+        const checkData = await checkRes.json();
+        sheetIsEmpty = (checkData.values || []).length === 0;
+      }
+    }
+    const valuesToAppend = sheetIsEmpty ? values : values.slice(1);
 
     const appendRange = range || `${sheetName}!A1`;
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(targetSpreadsheetId)}/values/${encodeURIComponent(appendRange)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
@@ -156,7 +170,7 @@ export default async function handler(req, res) {
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ values }),
+      body: JSON.stringify({ values: valuesToAppend }),
     });
 
     const data = await appendResponse.json();
