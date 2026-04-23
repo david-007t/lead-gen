@@ -495,6 +495,133 @@ function formatSampleLeads(prospects, city, niche, currentId) {
   return `- Five ${niche || "local"} prospects in ${city || "your area"} will be inserted here.`;
 }
 
+function toDetailItems(entries) {
+  return entries.filter(([, value]) => {
+    if (Array.isArray(value)) return value.length > 0;
+    return !!String(value || "").trim();
+  }).map(([label, value]) => ({ label, value }));
+}
+
+function buildProspectPipelineDetails(prospect, emailDraft = "", cityHint = "") {
+  return {
+    sourceLabel: "Find My Clients",
+    sections: [
+      {
+        title: "Decision Maker Snapshot",
+        items: toDetailItems([
+          ["Company Name", prospect.businessName],
+          ["Decision Maker Name", prospect.ownerName],
+          ["Title", prospect.title],
+          ["Email", prospect.email],
+          ["Email Confidence", prospect.emailConfidence],
+          ["Phone", prospect.phone],
+          ["LinkedIn URL", prospect.linkedInUrl],
+          ["Source URL", prospect.sourceUrl],
+          ["Region", cityHint || prospect.address],
+        ]),
+      },
+      {
+        title: "Sales Context",
+        items: toDetailItems([
+          ["Buying Signal", prospect.buyingSignal],
+          ["Personalized First Line", prospect.personalizedFirstLine],
+          ["Niche", prospect.niche],
+        ]),
+      },
+      ...(emailDraft ? [{
+        title: "Saved Email Draft",
+        items: [{ label: "Draft", value: emailDraft }],
+      }] : []),
+    ],
+  };
+}
+
+function buildIndeedPipelineDetails(result, extras = {}) {
+  const contact = extras.contactInfo && extras.contactInfo !== "not_found" ? extras.contactInfo : null;
+  const linkedInMsg = extras.linkedInMsg || null;
+  return {
+    sourceLabel: "Find AI Prospects",
+    sections: [
+      {
+        title: "Job Listing",
+        items: toDetailItems([
+          ["Company", result.companyName],
+          ["Industry", result.industry],
+          ["Location", result.location],
+          ["Job Title", result.jobTitle],
+          ["Pay Rate", result.jobPayRate],
+          ["Annual Cost", result.annualCost],
+          ["Job URL", result.jobUrl],
+          ["Website", result.website],
+        ]),
+      },
+      {
+        title: "Business Context",
+        items: toDetailItems([
+          ["Phone", result.phone],
+          ["Email", result.email],
+          ["Company Size", result.companySize],
+          ["Automation Angle", result.automationAngle],
+          ["Automation Use Case", result.automationUseCase],
+          ["Pitch Hook", result.pitchHook],
+          ["Buying Signals", result.buyingSignals || []],
+          ["Opportunities", result.opportunities || []],
+        ]),
+      },
+      ...(contact ? [{
+        title: "Found Contact",
+        items: toDetailItems([
+          ["Name", contact.name],
+          ["Title", contact.title],
+          ["Email", contact.email],
+          ["Phone", contact.phone],
+          ["Website", contact.website],
+          ["Confidence", contact.confidence],
+          ["Notes", contact.notes],
+        ]),
+      }] : []),
+      ...(extras.outreachDraft ? [{
+        title: "Outreach Draft",
+        items: [{ label: "Draft", value: extras.outreachDraft }],
+      }] : []),
+      ...(extras.applyPitch ? [{
+        title: "Apply Pitch",
+        items: [{ label: "Pitch", value: extras.applyPitch }],
+      }] : []),
+      ...(extras.contactDraft ? [{
+        title: "Contact Email",
+        items: [{ label: "Draft", value: extras.contactDraft }],
+      }] : []),
+      ...(linkedInMsg ? [{
+        title: "LinkedIn Messages",
+        items: toDetailItems([
+          ["Connection Note", linkedInMsg.connectionNote],
+          ["Follow-up DM", linkedInMsg.followUpDm],
+        ]),
+      }] : []),
+    ],
+  };
+}
+
+function buildLeadListPipelineDetails(lead, columns = [], outreachDraft = "") {
+  const cols = (columns || []).length ? columns : Object.keys(lead || {}).filter(k => !["id", "_raw"].includes(k));
+  return {
+    sourceLabel: "Build a Lead List",
+    sections: [
+      {
+        title: "Generated Lead Data",
+        items: cols
+          .map(col => ({ label: col, value: getLeadCell(lead, col) }))
+          .filter(item => String(item.value || "").trim()),
+      },
+      ...(outreachDraft ? [{
+        title: "Outreach Draft",
+        items: [{ label: "Draft", value: outreachDraft }],
+      }] : []),
+    ],
+  };
+}
+
 function mergePipelineLeads(localLeads, remoteLeads) {
   const byKey = new Map();
   [...(remoteLeads || []), ...(localLeads || [])].forEach(lead => {
@@ -521,6 +648,8 @@ export default function LeadQualifier() {
   const [expandedLead, setExpandedLead] = useState(null);
   const [editingLead, setEditingLead] = useState(null);
   const [editForm, setEditForm] = useState(null);
+  const [pipelineDraftingId, setPipelineDraftingId] = useState(null);
+  const [pipelineRetryingId, setPipelineRetryingId] = useState(null);
   const [showUpload, setShowUpload] = useState(false);
   const [toast, setToast] = useState(null);
   const [settingsEdited, setSettingsEdited] = useState(false);
@@ -682,6 +811,15 @@ export default function LeadQualifier() {
     setLeads(prev => mergePipelineLeads([normalizedLead, ...prev], []));
     if (!silent) showToast(`${normalizedLead.company || normalizedLead.name || "Lead"} added to Pipeline`);
     return normalizedLead;
+  };
+
+  const updatePipelineLead = (matcher, updater, { silent = true } = {}) => {
+    const existing = leads.find(matcher);
+    if (!existing) return null;
+    const updatedLead = updater(existing);
+    setLeads(prev => prev.map(lead => (matcher(lead) ? updatedLead : lead)));
+    savePipelineLead(updatedLead, { silent });
+    return updatedLead;
   };
 
   // ─── LEAD OPERATIONS ─────────────────────────────────────
@@ -1059,6 +1197,20 @@ Interested?
 ${senderName}
 ${stripeLink}`;
       setEmailDrafts(prev => ({ ...prev, [prospect.id]: emailText }));
+      updatePipelineLead(
+        lead => pipelineUniqueKey(lead) === pipelineUniqueKey({
+          sourceMode: "prospects",
+          company: prospect.businessName,
+          email: prospect.email,
+          name: prospect.ownerName || prospect.businessName,
+        }),
+        lead => ({
+          ...lead,
+          savedEmailDraft: emailText,
+          prospectRaw: prospect,
+          pipelineDetails: buildProspectPipelineDetails(prospect, emailText, prospectCity),
+        }),
+      );
       showToast("Email draft generated");
     } catch (err) {
       showToast("Failed to generate email", "error");
@@ -1646,6 +1798,7 @@ Return fewer results if needed. Quality over quantity.`;
 
   // ─── ADD INDEED LISTING TO PIPELINE ───────────────────────
   const handleAddIndeedToPipeline = (r) => {
+    const savedDraft = indeedEmailDrafts[r.id] || indeedContactDraft[r.id] || "";
     const newLead = {
       id: Date.now() + Math.random(),
       createdAt: Date.now(),
@@ -1663,6 +1816,15 @@ Return fewer results if needed. Quality over quantity.`;
       followUp: "new",
       result: { qualified: true, score: 1, total: 1, criteria: [] },
       sourceMode: "indeed",
+      indeedRaw: r,
+      savedEmailDraft: savedDraft,
+      pipelineDetails: buildIndeedPipelineDetails(r, {
+        outreachDraft: indeedEmailDrafts[r.id],
+        contactInfo: indeedContactInfo[r.id],
+        applyPitch: indeedApplyPitch[r.id],
+        contactDraft: indeedContactDraft[r.id],
+        linkedInMsg: indeedLinkedInMsg[r.id],
+      }),
     };
     savePipelineLead(newLead);
   };
@@ -1702,6 +1864,21 @@ Under 5 sentences. Sound like a real person, not a sales pitch. No fluff.`;
       if (data.error) { showToast("Failed to generate outreach", "error"); setDraftingIndeedEmail(null); return; }
       const emailText = (data.content || []).find(b => b.type === "text")?.text || "";
       setIndeedEmailDrafts(prev => ({ ...prev, [result.id]: emailText }));
+      updatePipelineLead(
+        lead => lead.sourceMode === "indeed" && (lead.indeedRaw?.id === result.id || (lead.company || "").toLowerCase() === (result.companyName || "").toLowerCase()),
+        lead => ({
+          ...lead,
+          savedEmailDraft: emailText,
+          indeedRaw: result,
+          pipelineDetails: buildIndeedPipelineDetails(result, {
+            outreachDraft: emailText,
+            contactInfo: indeedContactInfo[result.id],
+            applyPitch: indeedApplyPitch[result.id],
+            contactDraft: indeedContactDraft[result.id],
+            linkedInMsg: indeedLinkedInMsg[result.id],
+          }),
+        }),
+      );
       showToast("Outreach draft ready");
     } catch (err) {
       showToast("Failed to generate outreach", "error");
@@ -1736,6 +1913,20 @@ Keep it under 4 sentences. Direct, confident, no fluff.`;
       const data = await response.json();
       const text = (data.content || []).find(b => b.type === "text")?.text || "";
       setIndeedApplyPitch(prev => ({ ...prev, [r.id]: text }));
+      updatePipelineLead(
+        lead => lead.sourceMode === "indeed" && (lead.indeedRaw?.id === r.id || (lead.company || "").toLowerCase() === (r.companyName || "").toLowerCase()),
+        lead => ({
+          ...lead,
+          indeedRaw: r,
+          pipelineDetails: buildIndeedPipelineDetails(r, {
+            outreachDraft: lead.savedEmailDraft,
+            contactInfo: indeedContactInfo[r.id],
+            applyPitch: text,
+            contactDraft: indeedContactDraft[r.id],
+            linkedInMsg: indeedLinkedInMsg[r.id],
+          }),
+        }),
+      );
       showToast("Pitch ready");
     } catch (err) {
       showToast("Failed to generate pitch", "error");
@@ -1807,6 +1998,20 @@ If you genuinely cannot find contact info after searching, respond with:
         showToast("No contact info found");
       } else if (parsed) {
         setIndeedContactInfo(prev => ({ ...prev, [r.id]: parsed }));
+        updatePipelineLead(
+          lead => lead.sourceMode === "indeed" && (lead.indeedRaw?.id === r.id || (lead.company || "").toLowerCase() === (r.companyName || "").toLowerCase()),
+          lead => ({
+            ...lead,
+            indeedRaw: r,
+            pipelineDetails: buildIndeedPipelineDetails(r, {
+              outreachDraft: lead.savedEmailDraft,
+              contactInfo: parsed,
+              applyPitch: indeedApplyPitch[r.id],
+              contactDraft: indeedContactDraft[r.id],
+              linkedInMsg: indeedLinkedInMsg[r.id],
+            }),
+          }),
+        );
         showToast("Contact found!");
       } else {
         setIndeedContactInfo(prev => ({ ...prev, [r.id]: "not_found" }));
@@ -1845,6 +2050,21 @@ Personalize this to ${contact.name || "them"} specifically. Reference the job po
       const data = await response.json();
       const text = (data.content || []).find(b => b.type === "text")?.text || "";
       setIndeedContactDraft(prev => ({ ...prev, [r.id]: text }));
+      updatePipelineLead(
+        lead => lead.sourceMode === "indeed" && (lead.indeedRaw?.id === r.id || (lead.company || "").toLowerCase() === (r.companyName || "").toLowerCase()),
+        lead => ({
+          ...lead,
+          indeedRaw: r,
+          savedEmailDraft: text,
+          pipelineDetails: buildIndeedPipelineDetails(r, {
+            outreachDraft: lead.savedEmailDraft,
+            contactInfo: contact,
+            applyPitch: indeedApplyPitch[r.id],
+            contactDraft: text,
+            linkedInMsg: indeedLinkedInMsg[r.id],
+          }),
+        }),
+      );
       showToast("Email draft ready");
     } catch (err) {
       showToast("Failed to generate email", "error");
@@ -1894,6 +2114,20 @@ Respond with ONLY a JSON object:
       }
       if (parsed?.connectionNote) {
         setIndeedLinkedInMsg(prev => ({ ...prev, [r.id]: parsed }));
+        updatePipelineLead(
+          lead => lead.sourceMode === "indeed" && (lead.indeedRaw?.id === r.id || (lead.company || "").toLowerCase() === (r.companyName || "").toLowerCase()),
+          lead => ({
+            ...lead,
+            indeedRaw: r,
+            pipelineDetails: buildIndeedPipelineDetails(r, {
+              outreachDraft: lead.savedEmailDraft,
+              contactInfo: indeedContactInfo[r.id],
+              applyPitch: indeedApplyPitch[r.id],
+              contactDraft: indeedContactDraft[r.id],
+              linkedInMsg: parsed,
+            }),
+          }),
+        );
         showToast("LinkedIn messages ready");
       } else {
         showToast("Failed to generate messages", "error");
@@ -2187,6 +2421,15 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
       const data = await response.json();
       const text = (data.content || []).find(b => b.type === "text")?.text || "";
       setLeadListOutreach(prev => ({ ...prev, [lead.id]: text }));
+      updatePipelineLead(
+        item => item.sourceMode === "leadlist" && ((item.leadListRow && JSON.stringify(item.leadListRow) === JSON.stringify(lead)) || (item.company || "").toLowerCase() === String(getFirstLeadCell(lead, ["Company Name", "Business Name", "Company"]) || "").toLowerCase()),
+        item => ({
+          ...item,
+          savedEmailDraft: text,
+          leadListRow: lead,
+          pipelineDetails: buildLeadListPipelineDetails(lead, leadListColumns, text),
+        }),
+      );
       showToast("Outreach drafted");
     } catch {
       showToast("Failed to generate outreach", "error");
@@ -2221,12 +2464,16 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
       followUp: "new",
       result: { qualified: true, score: 1, total: 1, criteria: [] },
       sourceMode: "leadlist",
+      leadListRow: lead,
+      pipelineDetails: buildLeadListPipelineDetails(lead, leadListColumns, leadListOutreach[lead.id] || ""),
+      savedEmailDraft: leadListOutreach[lead.id] || "",
     };
     savePipelineLead(newLead);
   };
 
   // ─── ADD FIND MY CLIENTS RESULT TO PIPELINE ───────────────
   const handleAddProspectToPipeline = (prospect) => {
+    const savedDraft = emailDrafts[prospect.id] || "";
     const newLead = {
       id: Date.now() + Math.random(),
       createdAt: Date.now(),
@@ -2251,8 +2498,179 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
       result: { qualified: true, score: 1, total: 1, criteria: [] },
       sourceMode: "prospects",
       prospectRaw: prospect,
+      savedEmailDraft: savedDraft,
+      searchContext: { city: prospectCity, niche: prospectNiche },
+      pipelineDetails: buildProspectPipelineDetails(prospect, savedDraft, prospectCity),
     };
     savePipelineLead(newLead);
+  };
+
+  const handlePipelinePersonalizeEmail = async (lead) => {
+    setPipelineDraftingId(lead.id);
+    try {
+      const details = lead.pipelineDetails?.sections || [];
+      const detailText = details
+        .flatMap(section => (section.items || []).map(item => `${item.label}: ${Array.isArray(item.value) ? item.value.join("; ") : item.value}`))
+        .slice(0, 20)
+        .join("\n");
+      const prompt = `Write a personalized outreach email for this saved pipeline lead.
+
+Rules:
+- Use the saved lead context only.
+- Be specific and grounded in the company details.
+- Keep it concise and natural.
+- If there is a named contact, address them directly.
+- Include a short subject line.
+
+Lead context:
+Company: ${lead.company || ""}
+Contact: ${lead.name || ""}
+Email: ${lead.email || ""}
+Phone: ${lead.phone || ""}
+Project Type / Niche: ${lead.projectType || ""}
+Location: ${lead.location || ""}
+Description: ${lead.description || ""}
+Source Mode: ${lead.sourceMode || ""}
+${detailText}
+
+Return only the email text.`;
+
+      const response = await fetch("/api/anthropic", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 600,
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+
+      const data = await response.json();
+      const draft = (data.content || []).find(b => b.type === "text")?.text || "";
+      if (!draft.trim()) throw new Error("No draft returned");
+      updatePipelineLead(
+        item => item.id === lead.id,
+        item => ({ ...item, savedEmailDraft: draft }),
+        { silent: true },
+      );
+      showToast("Personalized email ready");
+    } catch {
+      showToast("Failed to personalize email", "error");
+    }
+    setPipelineDraftingId(null);
+  };
+
+  const handleRetryPipelineContext = async (lead) => {
+    setPipelineRetryingId(lead.id);
+    try {
+      if (lead.sourceMode === "prospects") {
+        const existing = lead.prospectRaw;
+        if (existing) {
+          updatePipelineLead(
+            item => item.id === lead.id,
+            item => ({
+              ...item,
+              pipelineDetails: buildProspectPipelineDetails(existing, item.savedEmailDraft || "", item.searchContext?.city || item.location),
+            }),
+            { silent: true },
+          );
+          showToast("Prospect details restored");
+        } else {
+          const city = lead.searchContext?.city || lead.location || "";
+          const niche = lead.searchContext?.niche || lead.projectType || "";
+          const prompt = `Find one public decision-maker record for this company and return only JSON.
+
+Company: ${lead.company}
+City/Region: ${city}
+Niche: ${niche}
+Existing contact hint: ${lead.name || ""}
+
+Return:
+{
+  "Company Name": "",
+  "Decision Maker Name": "",
+  "Title": "",
+  "Email": "",
+  "Email Confidence": "",
+  "LinkedIn URL": "",
+  "Source URL": "",
+  "Buying Signal": "",
+  "Personalized First Line": ""
+}`;
+
+          const response = await fetch("/api/anthropic", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: "claude-sonnet-4-20250514",
+              max_tokens: 1200,
+              system: "You are a B2B decision-maker researcher. Search the web and return only one raw JSON object.",
+              messages: [{ role: "user", content: prompt }],
+              tools: [{ type: "web_search_20250305", name: "web_search" }],
+            }),
+          });
+          const data = await response.json();
+          const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
+          const match = text.match(/\{[\s\S]*\}/);
+          const parsed = match ? JSON.parse(match[0]) : null;
+          if (!parsed) throw new Error("No details found");
+          const prospect = {
+            id: Date.now() + Math.random(),
+            businessName: parsed["Company Name"] || lead.company,
+            ownerName: parsed["Decision Maker Name"] || lead.name,
+            title: parsed["Title"] || "",
+            email: parsed["Email"] || lead.email || "",
+            emailConfidence: parsed["Email Confidence"] || "",
+            linkedInUrl: parsed["LinkedIn URL"] || "",
+            sourceUrl: parsed["Source URL"] || lead.source || "",
+            buyingSignal: parsed["Buying Signal"] || "",
+            personalizedFirstLine: parsed["Personalized First Line"] || "",
+            niche,
+            phone: lead.phone || "",
+            address: city,
+            buyingSignals: parsed["Buying Signal"] ? [parsed["Buying Signal"]] : [],
+            opportunities: parsed["Personalized First Line"] ? [parsed["Personalized First Line"]] : [],
+            classification: { tier: "WARM", emoji: "🟢", color: t.green },
+          };
+          updatePipelineLead(
+            item => item.id === lead.id,
+            item => ({
+              ...item,
+              name: prospect.ownerName || item.name,
+              email: prospect.email || item.email,
+              prospectRaw: prospect,
+              pipelineDetails: buildProspectPipelineDetails(prospect, item.savedEmailDraft || "", city),
+            }),
+            { silent: true },
+          );
+          showToast("Prospect details rebuilt");
+        }
+      } else if (lead.sourceMode === "leadlist" && lead.leadListRow) {
+        updatePipelineLead(
+          item => item.id === lead.id,
+          item => ({ ...item, pipelineDetails: buildLeadListPipelineDetails(item.leadListRow, leadListColumns, item.savedEmailDraft || "") }),
+          { silent: true },
+        );
+        showToast("Lead list details restored");
+      } else if (lead.sourceMode === "indeed" && lead.indeedRaw) {
+        updatePipelineLead(
+          item => item.id === lead.id,
+          item => ({
+            ...item,
+            pipelineDetails: buildIndeedPipelineDetails(item.indeedRaw, {
+              outreachDraft: item.savedEmailDraft,
+            }),
+          }),
+          { silent: true },
+        );
+        showToast("Indeed details restored");
+      } else {
+        showToast("This older row does not have enough saved context to rebuild. New rows will.", "error");
+      }
+    } catch {
+      showToast("Failed to rebuild saved context", "error");
+    }
+    setPipelineRetryingId(null);
   };
 
   // ─── FILTERED & SORTED LEADS ─────────────────────────────
@@ -3218,6 +3636,37 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
                                   <button onClick={() => { setEditingLead(lead.id); setEditForm({ ...lead }); }} style={{ ...btnSecondary, fontSize: 12, padding: "6px 14px" }}>✏ Edit</button>
                                   <button onClick={() => handleDeleteLead(lead.id)} style={{ ...btnSecondary, fontSize: 12, padding: "6px 14px", color: t.red, borderColor: t.redBorder, background: "transparent" }}>🗑 Delete</button>
                                 </div>
+                                <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                  <button
+                                    onClick={() => handlePipelinePersonalizeEmail(lead)}
+                                    disabled={pipelineDraftingId === lead.id}
+                                    style={{ ...btnPrimary, fontSize: 12, padding: "6px 14px", opacity: pipelineDraftingId === lead.id ? 0.7 : 1 }}>
+                                    {pipelineDraftingId === lead.id ? "Writing..." : lead.savedEmailDraft ? "↻ Personalize Email" : "✍ Personalize Email"}
+                                  </button>
+                                  {(!lead.pipelineDetails || !lead.pipelineDetails.sections?.length) && (
+                                    <button
+                                      onClick={() => handleRetryPipelineContext(lead)}
+                                      disabled={pipelineRetryingId === lead.id}
+                                      style={{ ...btnSecondary, fontSize: 12, padding: "6px 14px" }}>
+                                      {pipelineRetryingId === lead.id ? "Rebuilding..." : "↺ Retry Details"}
+                                    </button>
+                                  )}
+                                </div>
+                                {lead.savedEmailDraft && (
+                                  <div style={{ marginTop: 14 }}>
+                                    <h4 style={{ fontSize: 12, fontWeight: 700, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Saved Email</h4>
+                                    <textarea
+                                      value={lead.savedEmailDraft}
+                                      onChange={e => updatePipelineLead(item => item.id === lead.id, item => ({ ...item, savedEmailDraft: e.target.value }), { silent: true })}
+                                      style={{ width: "100%", minHeight: 140, background: t.bgHover, border: `1px solid ${t.borderLight}`, borderRadius: 8, padding: "10px 12px", color: t.text, fontSize: 12, fontFamily: "inherit", resize: "vertical", boxSizing: "border-box" }}
+                                    />
+                                    <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+                                      <button onClick={() => { navigator.clipboard.writeText(lead.savedEmailDraft); showToast("Email copied to clipboard"); }} style={{ ...btnPrimary, fontSize: 12, padding: "6px 14px" }}>
+                                        Copy Email
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                               <div style={{ flex: "1 1 300px" }}>
                                 <h4 style={{ fontSize: 12, fontWeight: 700, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>Qualification Breakdown</h4>
@@ -3234,6 +3683,34 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
                                   <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 18, fontWeight: 700, color: lead.result.qualified ? t.green : t.red }}>{lead.result.score}/{lead.result.total}</span>
                                 </div>
                               </div>
+                              {lead.pipelineDetails?.sections?.length > 0 && (
+                                <div style={{ flex: "1 1 100%", marginTop: 8 }}>
+                                  <h4 style={{ fontSize: 12, fontWeight: 700, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>
+                                    {lead.pipelineDetails.sourceLabel || "Saved Context"}
+                                  </h4>
+                                  <div style={{ display: "grid", gap: 12 }}>
+                                    {lead.pipelineDetails.sections.map((section, index) => (
+                                      <div key={`${section.title}-${index}`} style={{ background: t.bgHover, border: `1px solid ${t.border}`, borderRadius: 8, padding: "12px 14px" }}>
+                                        <div style={{ fontSize: 11, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 10 }}>{section.title}</div>
+                                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+                                          {(section.items || []).map((item, itemIndex) => (
+                                            <div key={`${item.label}-${itemIndex}`} style={{ minWidth: 0 }}>
+                                              <div style={{ fontSize: 10, color: t.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{item.label}</div>
+                                              {Array.isArray(item.value) ? (
+                                                <div style={{ fontSize: 12, color: t.textMuted, lineHeight: 1.5 }}>{item.value.join(", ")}</div>
+                                              ) : /^https?:\/\//i.test(String(item.value || "")) ? (
+                                                <a href={item.value} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: t.accent, overflowWrap: "anywhere" }}>{item.value}</a>
+                                              ) : (
+                                                <div style={{ fontSize: 12, color: t.textMuted, lineHeight: 1.5, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{item.value}</div>
+                                              )}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
