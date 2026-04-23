@@ -472,6 +472,7 @@ export default function LeadQualifier() {
   const [setupStep, setSetupStep] = useState(0);
 
   const [tab, setTab] = useState("dashboard");
+  const [mode, setMode] = useState("leadlist");
   const [criteria, setCriteria] = useState(getDefaultCriteria("construction"));
   const [leads, setLeads] = useState([]);
   const [form, setForm] = useState({ ...EMPTY_LEAD });
@@ -626,7 +627,7 @@ export default function LeadQualifier() {
   const handleAddLead = () => {
     if (!form.name.trim()) { showToast("Lead name is required", "error"); return; }
     const result = qualifyLead(form, criteria, ind.typeName);
-    const newLead = { ...form, id: Date.now() + Math.random(), createdAt: Date.now(), result };
+    const newLead = { ...form, id: Date.now() + Math.random(), createdAt: Date.now(), result, sourceMode: mode };
     setLeads(prev => [newLead, ...prev]);
     setForm({ ...EMPTY_LEAD });
     showToast(`Lead "${form.name}" added & qualified`);
@@ -1438,6 +1439,7 @@ Return fewer results if needed. Quality over quantity.`;
       description: `${r.jobTitle}${r.jobPayRate ? ` — ${r.jobPayRate}` : ""}. ${r.automationAngle || ""}`.trim().replace(/\.$/, ""),
       followUp: "new",
       result: { qualified: true, score: 1, total: 1, criteria: [] },
+      sourceMode: "indeed",
     };
     setLeads(prev => [newLead, ...prev]);
     showToast(`Added ${r.companyName} to Pipeline`);
@@ -1996,6 +1998,7 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
       description: signal || "",
       followUp: "new",
       result: { qualified: true, score: 1, total: 1, criteria: [] },
+      sourceMode: "leadlist",
     };
     setLeads(prev => [newLead, ...prev]);
     showToast(`${company || "Lead"} added to Pipeline`);
@@ -2003,7 +2006,8 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
 
   // ─── FILTERED & SORTED LEADS ─────────────────────────────
   const filteredLeads = useMemo(() => {
-    let result = [...leads];
+    // Filter by mode — untagged legacy leads default to leadlist
+    let result = leads.filter(l => (l.sourceMode || "leadlist") === mode);
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       result = result.filter(l =>
@@ -2176,8 +2180,9 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
   }
 
   // ─── MAIN APP ─────────────────────────────────────────────
-  const qualifiedCount = leads.filter(l => l.result.qualified).length;
-  const unqualifiedCount = leads.length - qualifiedCount;
+  const modeLeads = leads.filter(l => (l.sourceMode || "leadlist") === mode);
+  const qualifiedCount = modeLeads.filter(l => l.result.qualified).length;
+  const unqualifiedCount = modeLeads.length - qualifiedCount;
 
   return (
     <>
@@ -2294,23 +2299,28 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
           <div style={{ maxWidth: 1240, margin: "0 auto", padding: "0 32px", display: "flex", gap: 8, alignItems: "center", overflowX: "auto" }}>
             <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: t.textFaint, marginRight: 4, whiteSpace: "nowrap" }}>Mode:</span>
             {[
-              { tab: "leadlist", label: "🎯 Build a Lead List" },
-              { tab: "indeed",   label: "⚡ Find AI Prospects" },
-              { tab: "prospects", label: "🔍 Find My Clients" },
-              { tab: "shiplist", label: "📋 Ship List" },
+              { id: "leadlist",  tab: "leadlist",  label: "🎯 Build a Lead List" },
+              { id: "indeed",    tab: "indeed",    label: "⚡ Find AI Prospects" },
+              { id: "prospects", tab: "prospects", label: "🔍 Find My Clients" },
+              { id: "shiplist",  tab: "shiplist",  label: "📋 Ship List" },
             ].map(m => {
-              const active = tab === m.tab;
+              const active = mode === m.id;
               return (
-                <button key={m.tab} onClick={() => setTab(m.tab)} style={{ padding: "7px 16px", background: active ? t.accent : t.bgHover, border: `1px solid ${active ? t.accent : t.borderLight}`, borderRadius: 20, color: active ? "#0c0a09" : t.textMuted, cursor: "pointer", fontSize: 13, fontWeight: active ? 700 : 500, fontFamily: "'DM Sans', sans-serif", transition: "all 0.2s", whiteSpace: "nowrap" }}>{m.label}</button>
+                <button key={m.id} onClick={() => { setMode(m.id); setTab(m.tab); }} style={{ padding: "7px 16px", background: active ? t.accent : t.bgHover, border: `1px solid ${active ? t.accent : t.borderLight}`, borderRadius: 20, color: active ? "#0c0a09" : t.textMuted, cursor: "pointer", fontSize: 13, fontWeight: active ? 700 : 500, fontFamily: "'DM Sans', sans-serif", transition: "all 0.2s", whiteSpace: "nowrap" }}>{m.label}</button>
               );
             })}
           </div>
         </div>
 
-        {/* Tabs */}
+        {/* Tabs — context-sensitive per mode */}
         <div style={{ borderBottom: `1px solid ${t.border}` }}>
           <div style={{ maxWidth: 1240, margin: "0 auto", padding: "0 32px", display: "flex", gap: 2, overflowX: "auto" }} className="tab-bar">
-            {[{ id: "leadlist", label: "Build a Lead List", count: leadListResults.length || undefined }, { id: "indeed", label: "Find AI Prospects" }, { id: "shiplist", label: "Ship List", count: shipListResults.length || undefined }, { id: "leads", label: "Pipeline", count: leads.length }, { id: "queue", label: "Outreach" }, { id: "dashboard", label: "Dashboard" }].map(tb => (
+            {({
+              leadlist:  [{ id: "leadlist",  label: "Build a Lead List",   count: leadListResults.length || undefined }, { id: "leads", label: "Pipeline", count: leads.filter(l => (l.sourceMode || "leadlist") === "leadlist").length || undefined }, { id: "dashboard", label: "Dashboard" }],
+              indeed:    [{ id: "indeed",    label: "Find AI Prospects" }, { id: "queue", label: "Outreach" }, { id: "leads", label: "Pipeline", count: leads.filter(l => l.sourceMode === "indeed").length || undefined }, { id: "dashboard", label: "Dashboard" }],
+              prospects: [{ id: "prospects", label: "Find My Clients" }, { id: "leads", label: "Pipeline", count: leads.filter(l => l.sourceMode === "prospects").length || undefined }, { id: "dashboard", label: "Dashboard" }],
+              shiplist:  [{ id: "shiplist",  label: "Ship List",           count: shipListResults.length || undefined }, { id: "leads", label: "Pipeline", count: leads.filter(l => l.sourceMode === "shiplist").length || undefined }, { id: "dashboard", label: "Dashboard" }],
+            }[mode] || []).map(tb => (
               <button key={tb.id} onClick={() => setTab(tb.id)} style={{ padding: "12px 20px", background: tab === tb.id ? t.accent : "transparent", color: tab === tb.id ? "#0c0a09" : t.textMuted, border: "none", borderBottom: tab === tb.id ? `3px solid ${t.accent}` : "3px solid transparent", cursor: "pointer", fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: tab === tb.id ? 700 : 500, letterSpacing: "0.02em", transition: "all 0.2s", display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}>
                 {tb.label}
                 {tb.count !== undefined && <span style={{ background: tab === tb.id ? "#00000033" : t.bgHover, color: tab === tb.id ? "#0c0a09" : t.textDim, padding: "1px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700 }}>{tb.count}</span>}
@@ -2800,7 +2810,7 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
           {/* ════════════ LEADS ════════════ */}
           {tab === "leads" && (
             <div style={{ animation: "fadeIn 0.3s ease" }}>
-              {leads.length === 0 ? (
+              {filteredLeads.length === 0 ? (
                 <div style={{ textAlign: "center", padding: "80px 20px" }}>
                   <div style={{ fontSize: 48, marginBottom: 16, opacity: 0.3 }}>🏗</div>
                   <h3 style={{ fontSize: 18, fontWeight: 600, color: t.textMuted, marginBottom: 8 }}>No leads yet</h3>
@@ -2819,13 +2829,13 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
                       <input style={{ ...inputStyle, width: 200, padding: "8px 14px", fontSize: 13 }} placeholder="Search leads…" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
                       {["all", "qualified", "unqualified"].map(s => (
                         <button key={s} onClick={() => setFilterStatus(s)} style={{ padding: "6px 14px", borderRadius: 20, border: `1px solid ${filterStatus === s ? t.accent : t.borderLight}`, background: filterStatus === s ? t.accent : "transparent", color: filterStatus === s ? "#0c0a09" : t.textMuted, cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "'DM Sans',sans-serif", textTransform: "capitalize", transition: "all 0.15s" }}>
-                          {s === "all" ? `All (${leads.length})` : s === "qualified" ? `Qualified (${qualifiedCount})` : `Unqualified (${unqualifiedCount})`}
+                          {s === "all" ? `All (${modeLeads.length})` : s === "qualified" ? `Qualified (${qualifiedCount})` : `Unqualified (${unqualifiedCount})`}
                         </button>
                       ))}
                     </div>
                     <div style={{ display: "flex", gap: 8 }}>
                       <button onClick={() => {
-                        const csv = ["Name,Company,Email,Phone,Project Type,Budget,Location,ZIP,Timeline,Source,Status,Follow Up,Score", ...leads.map(l => `"${l.name}","${l.company}","${l.email}","${l.phone}","${l.projectType}","${l.budget}","${l.location}","${l.zipCode}","${l.timeline}","${l.source}","${l.result.qualified ? "Qualified" : "Unqualified"}","${l.followUp}","${l.result.score}/${l.result.total}"`)].join("\n");
+                        const csv = ["Name,Company,Email,Phone,Project Type,Budget,Location,ZIP,Timeline,Source,Status,Follow Up,Score", ...modeLeads.map(l => `"${l.name}","${l.company}","${l.email}","${l.phone}","${l.projectType}","${l.budget}","${l.location}","${l.zipCode}","${l.timeline}","${l.source}","${l.result.qualified ? "Qualified" : "Unqualified"}","${l.followUp}","${l.result.score}/${l.result.total}"`)].join("\n");
                         const blob = new Blob([csv], { type: "text/csv" }); const url = URL.createObjectURL(blob);
                         const a = document.createElement("a"); a.href = url; a.download = "qualified_leads.csv"; a.click();
                       }} style={btnSecondary}>↓ Export</button>
