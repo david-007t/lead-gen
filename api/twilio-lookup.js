@@ -42,7 +42,14 @@ function parseTwilioVerification(data) {
 function parseAbstractVerification(data) {
   const phoneValidation = data?.phone_validation || {};
   const lineStatus = String(phoneValidation?.line_status || '').toLowerCase();
-  const lineType = String(data?.phone_carrier?.line_type || '').toLowerCase().replace(/_/g, '');
+  const abstractLineType = String(data?.phone_carrier?.line_type || '').toLowerCase().replace(/[\s_-]+/g, '');
+  const lineType = ({
+    wireless: 'mobile',
+    mobile: 'mobile',
+    landline: 'landline',
+    voip: 'fixedvoip',
+    tollfree: 'tollfree',
+  })[abstractLineType] || abstractLineType;
   const verified = Boolean(
     phoneValidation?.is_valid === true &&
     lineStatus === 'active' &&
@@ -192,7 +199,8 @@ async function lookupWithTwilio({ phone, countryCode }, authHeader) {
 async function verifyPhone(entry, abstractApiKey, twilioAuthHeader) {
   if (abstractApiKey) {
     const abstractResult = await lookupWithAbstract(entry, abstractApiKey);
-    if (abstractResult.verified || !twilioAuthHeader) return abstractResult;
+    if (!abstractResult.error) return abstractResult;
+    if (!twilioAuthHeader) return abstractResult;
   }
 
   if (twilioAuthHeader) {
