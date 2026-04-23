@@ -343,6 +343,8 @@ const LEAD_LIST_BUFFER_ROWS = 2;
 const LEAD_LIST_LOOKUP_DELAY_MS = 1200;
 const LEAD_LIST_EMAIL_BATCH_SIZE = 1;
 const LEAD_LIST_EMAIL_DELAY_MS = 350;
+const PROSPECT_EMAIL_BATCH_SIZE = 1;
+const PROSPECT_EMAIL_DELAY_MS = 350;
 const VERIFIED_PHONE_BADGE = "✓ Verified";
 
 function extractJSONValue(fullText) {
@@ -1390,6 +1392,85 @@ This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
       }));
     };
 
+    const enrichProspectEmails = async (rows, companies, progressMeta = {}) => {
+      const companyMap = new Map(
+        (companies || []).map(company => [
+          columnKey(clean(company["Company Name"] || company.companyName || company.businessName)),
+          company,
+        ])
+      );
+
+      const lookups = rows
+        .map((row, index) => {
+          const matchedCompany = companyMap.get(columnKey(row.businessName));
+          return {
+            index,
+            name: row.ownerName,
+            company: row.businessName,
+            domain: normalizeLeadDomain(
+              clean(
+                matchedCompany?.["Website Domain"] ||
+                matchedCompany?.websiteDomain ||
+                matchedCompany?.domain ||
+                row.sourceUrl
+              )
+            ),
+            email: row.email,
+          };
+        })
+        .filter(item => !String(item.email || "").trim() && String(item.name || "").trim() && (String(item.domain || "").trim() || String(item.company || "").trim()));
+
+      if (lookups.length === 0) return rows;
+
+      const enrichedByIndex = new Map();
+      let completed = 0;
+      for (let i = 0; i < lookups.length; i += PROSPECT_EMAIL_BATCH_SIZE) {
+        const batch = lookups.slice(i, i + PROSPECT_EMAIL_BATCH_SIZE);
+        setProspectProgress({
+          phase: "enriching",
+          current: progressMeta.current ?? 0,
+          total: progressMeta.total ?? rows.length,
+          batchIndex: progressMeta.batchIndex ?? 1,
+          totalBatches: progressMeta.totalBatches ?? 1,
+          detail: `Finding emails ${completed}/${lookups.length}`,
+        });
+
+        const response = await fetch("/api/hunter-email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            leads: batch.map(item => ({
+              name: item.name,
+              company: item.company,
+              domain: item.domain,
+            })),
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.error) {
+          throw new Error(data.error || "Prospect email enrichment failed");
+        }
+        (data.results || []).forEach((result, offset) => {
+          enrichedByIndex.set(batch[offset].index, result);
+        });
+        completed += batch.length;
+        if (i + PROSPECT_EMAIL_BATCH_SIZE < lookups.length) {
+          await sleep(PROSPECT_EMAIL_DELAY_MS);
+        }
+      }
+
+      return rows.map((row, index) => {
+        const enrichment = enrichedByIndex.get(index);
+        if (!enrichment?.email) return row;
+        return {
+          ...row,
+          email: enrichment.email,
+          emailConfidence: enrichment.confidence || row.emailConfidence,
+          sourceUrl: row.sourceUrl || enrichment.sourceUrl || "",
+        };
+      });
+    };
+
     try {
       const targetCount = prospectCount;
       const minimumRows = Math.max(1, Math.ceil(targetCount * 0.67));
@@ -1452,6 +1533,12 @@ This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
               batchResults = retryResults;
             }
           }
+          batchResults = await enrichProspectEmails(batchResults, batches[batchIndex], {
+            current: results.length,
+            total: Math.min(targetCount, companies.length),
+            batchIndex: batchIndex + 1,
+            totalBatches: batches.length,
+          });
         } catch (err) {
           if (results.length === 0) throw err;
           setProspectError(`Loaded ${results.length} decision makers so far. One enrichment batch timed out, so partial results are shown.`);
