@@ -2347,11 +2347,34 @@ Respond with ONLY a JSON object:
     setLeadListSheetStatus(null);
 
     const pipelineExclusions = leads.map(l => l.company).filter(Boolean);
-    const buildSearchPrompt = (rowCount, exclusions = [], batchIndex = 1, totalBatches = 1) => {
+    const buildSearchPrompt = (rowCount, exclusions = [], batchIndex = 1, totalBatches = 1, compact = false) => {
       const allExclusions = [...new Set([...pipelineExclusions, ...exclusions].filter(Boolean))];
       const exclusionClause = allExclusions.length > 0
         ? `\nEXCLUSION LIST — do NOT return any of these companies (already returned or already in pipeline): ${allExclusions.join(", ")}\n`
         : "";
+      if (compact) {
+        return `Research ${rowCount} real matching leads for this request. This is batch ${batchIndex} of ${totalBatches}.
+${exclusionClause}
+USER REQUEST:
+${requestText}
+
+Rules:
+- Return exactly ${rowCount} rows if possible.
+- A public main/location phone is enough to include a matching company.
+- Do not spend time proving the business lacks coverage; use a short, plausible buying-signal sentence based on business type, recency, underserved positioning, or operational risk.
+- Do not invent names, emails, LinkedIn URLs, or phone numbers. Use empty strings for unavailable optional fields.
+- Return ONLY valid JSON that JSON.parse can parse.
+
+JSON shape:
+{
+  "job": { "summary": "short description", "industries": [], "targetRoles": [], "companyFilters": [], "geography": "", "requiredColumns": [], "specialResearchRequirements": [] },
+  "columns": ["Company Name", "Contact Person", "Target Role", "Best Phone", "Email", "LinkedIn", "Region", "Reason / Buying Signal", "Source URL", "Confidence"],
+  "rows": [
+    { "Company Name": "", "Contact Person": "", "Target Role": "", "Best Phone": "", "Email": "", "LinkedIn": "", "Region": "", "Reason / Buying Signal": "", "Source URL": "", "Confidence": "Medium" }
+  ]
+}`;
+      }
+
       return `Build a reusable lead generation job from this natural-language request, then research real leads for it.
 ${exclusionClause}
 USER REQUEST:
@@ -2435,24 +2458,29 @@ RESPOND WITH ONLY this JSON object. It must be valid JSON that JSON.parse can pa
 
     try {
       const targetRows = leadListCount;
-      const BATCH_SIZE = targetRows > 10 ? 5 : targetRows;
+      const BATCH_SIZE = targetRows > 10 ? 3 : targetRows;
       const totalBatches = Math.ceil(targetRows / BATCH_SIZE);
       let combinedRows = [];
       let combinedJob = null;
       let combinedColumns = [];
+      const runLeadListBatch = async ({ rowCount, batchIndex, previousCompanies, compact = false }) => callAnthropic("Build Lead List Search", {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: compact ? 3500 : 4500,
+        system: "You are the Lead Request Engine for a B2B sales app. Return real call-ready rows quickly. Phone numbers and reachable contacts are the priority. Never fabricate contact data. Return ONLY valid JSON.",
+        messages: [{ role: "user", content: buildSearchPrompt(rowCount, previousCompanies, batchIndex + 1, totalBatches, compact) }],
+        tools: [{ type: "web_search_20250305", name: "web_search", max_uses: compact ? 3 : Math.min(4, Math.max(3, rowCount + 1)) }],
+      });
 
       for (let batchIndex = 0; batchIndex < totalBatches && combinedRows.length < targetRows; batchIndex++) {
         const remaining = targetRows - combinedRows.length;
         const rowCount = Math.min(BATCH_SIZE, remaining);
         setLeadListProgress(`Researching companies ${batchIndex + 1}/${totalBatches}`);
         const previousCompanies = combinedRows.map(row => getFirstLeadCell(row, ["Company Name", "Business Name", "Company"])).filter(Boolean);
-        const { response, data } = await callAnthropic("Build Lead List Search", {
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 7000,
-          system: "You are the Lead Request Engine for a B2B sales app. Parse natural-language requests into reusable lead jobs, search the web for real leads, and return call-ready rows. Phone numbers and reachable contacts are the priority. Accuracy beats volume. Never fabricate contact data. Return ONLY valid JSON.",
-          messages: [{ role: "user", content: buildSearchPrompt(rowCount, previousCompanies, batchIndex + 1, totalBatches) }],
-          tools: [{ type: "web_search_20250305", name: "web_search", max_uses: Math.min(10, Math.max(5, rowCount + 2)) }],
-        });
+        let { response, data } = await runLeadListBatch({ rowCount, batchIndex, previousCompanies });
+        if (!data || data.error?.type === "upstream_parse_error") {
+          setLeadListProgress(`Retrying smaller batch ${batchIndex + 1}/${totalBatches}`);
+          ({ response, data } = await runLeadListBatch({ rowCount: Math.min(2, rowCount), batchIndex, previousCompanies, compact: true }));
+        }
         if (!data || data.error?.type === "upstream_parse_error") throw new Error(`Search service unavailable (HTTP ${response.status}) — please try again in a moment.`);
         if (data.error) {
           if (combinedRows.length > 0) break;
