@@ -3684,7 +3684,9 @@ Return:
                                   {lead.phone && <div>☎ {lead.phone}</div>}
                                   {lead.location && <div>📍 {lead.location} {lead.zipCode && `(${lead.zipCode})`}</div>}
                                   {lead.source && <div>🔗 Source: {lead.source}</div>}
-                                  {lead.description && <div style={{ marginTop: 8, padding: 12, background: t.bgHover, borderRadius: 6, lineHeight: 1.5 }}>{lead.description}</div>}
+                                  {lead.description && lead.sourceMode !== "prospects" && !lead.pipelineDetails?.sections?.length && (
+                                    <div style={{ marginTop: 8, padding: 12, background: t.bgHover, borderRadius: 6, lineHeight: 1.5 }}>{lead.description}</div>
+                                  )}
                                 </div>
                                 <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
                                   <button onClick={() => { setEditingLead(lead.id); setEditForm({ ...lead }); }} style={{ ...btnSecondary, fontSize: 12, padding: "6px 14px" }}>✏ Edit</button>
