@@ -95,10 +95,19 @@ export default async function handler(req, res) {
           error: data.error || rawText || 'Google Sheets webhook append failed',
         });
       }
+      console.log('google-sheets-append webhook success', {
+        sheetName,
+        rowCount: rows.length,
+        columnCount: columns.length,
+        updatedRows: data.updatedRows || values.length,
+        updatedRange: data.updatedRange || '',
+      });
       return res.status(200).json({
         success: true,
         updatedRows: data.updatedRows || values.length,
         updatedRange: data.updatedRange || '',
+        sheetName,
+        rowCount: rows.length,
       });
     }
 
@@ -129,10 +138,19 @@ export default async function handler(req, res) {
       });
     }
 
+    console.log('google-sheets-append api success', {
+      sheetName,
+      rowCount: rows.length,
+      columnCount: columns.length,
+      updatedRows: data?.updates?.updatedRows,
+      updatedRange: data?.updates?.updatedRange,
+    });
     return res.status(200).json({
       success: true,
       updatedRows: data?.updates?.updatedRows,
       updatedRange: data?.updates?.updatedRange,
+      sheetName,
+      rowCount: rows.length,
     });
   } catch (error) {
     return res.status(500).json({ error: error?.message || 'Google Sheets append failed' });
