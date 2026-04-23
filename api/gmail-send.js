@@ -28,7 +28,8 @@ async function getAccessToken() {
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.access_token) {
-    throw new Error(data.error_description || data.error || "Failed to get Gmail access token");
+    const detail = JSON.stringify(data);
+    throw new Error(data.error_description || data.error || detail || "Failed to get Gmail access token");
   }
 
   return data.access_token;
