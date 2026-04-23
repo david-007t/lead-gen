@@ -390,36 +390,6 @@ function getFirstLeadCell(row, columns) {
   return "";
 }
 
-function isMissingLeadValue(value) {
-  const text = String(value ?? "")
-    .replace(/<cite[^>]*>[\s\S]*?<\/cite>|<cite[^>]*\/>/g, "")
-    .replace(/<[^>]+>/g, "")
-    .trim();
-  return !text || /^(n\/a|na|none|unknown|not found|not public|unavailable|missing|no public.*|not available|-|—)$/i.test(text);
-}
-
-function hasUsableLeadPhone(row) {
-  const phone = getFirstLeadCell(row, ["Best Phone", "Phone", "Phone Number", "Main Phone", "Company Phone", "Location Phone", "Direct Phone"]);
-  if (isMissingLeadValue(phone)) return false;
-  return String(phone).replace(/\D/g, "").length >= 7;
-}
-
-function hasUsableLeadEmail(row) {
-  const email = getFirstLeadCell(row, ["Email", "Email Address", "Contact Email", "Decision Maker Email"]);
-  if (isMissingLeadValue(email)) return false;
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email).trim());
-}
-
-function hasLeadContactName(row) {
-  const contact = getFirstLeadCell(row, ["Contact Person", "Owner Name", "Decision Maker Name", "Contact Name", "Name"]);
-  return !isMissingLeadValue(contact);
-}
-
-function isContactableLeadRow(row) {
-  const company = getFirstLeadCell(row, ["Company Name", "Business Name", "Company"]);
-  return !isMissingLeadValue(company) && hasLeadContactName(row) && (hasUsableLeadPhone(row) || hasUsableLeadEmail(row));
-}
-
 function buildLeadColumns(job, rows, promptText) {
   const requested = [
     ...((job?.requiredColumns || job?.columns || []).map(normalizeColumnName)),
@@ -931,7 +901,6 @@ export default function LeadQualifier() {
   const [leadListResults, setLeadListResults] = useState([]);
   const [leadListLoading, setLeadListLoading] = useState(false);
   const [leadListError, setLeadListError] = useState(null);
-  const [leadListQualityNotice, setLeadListQualityNotice] = useState(null);
   const [leadListProgress, setLeadListProgress] = useState(null);
   const [leadListSheetLoading, setLeadListSheetLoading] = useState(false);
   const [leadListSheetStatus, setLeadListSheetStatus] = useState(null);
@@ -2353,7 +2322,7 @@ Respond with ONLY a JSON object:
       title: "Reset Everything",
       message: "This will delete all leads, criteria, and settings. Start fresh?",
       onConfirm: async () => {
-        setLeads([]); setCriteria(getDefaultCriteria("construction")); setCompanyName(""); setIndustry("construction"); setProspects([]); setEmailDrafts({}); setQueueActions({}); setIndeedResults([]); setIndeedEmailDrafts({}); setIndeedQueueActions({}); setLeadListResults([]); setLeadListJob(null); setLeadListColumns([]); setLeadListQualityNotice(null); setSetupComplete(false); setSetupStep(0); setTab("dashboard");
+        setLeads([]); setCriteria(getDefaultCriteria("construction")); setCompanyName(""); setIndustry("construction"); setProspects([]); setEmailDrafts({}); setQueueActions({}); setIndeedResults([]); setIndeedEmailDrafts({}); setIndeedQueueActions({}); setLeadListResults([]); setLeadListJob(null); setLeadListColumns([]); setSetupComplete(false); setSetupStep(0); setTab("dashboard");
         try { localStorage.removeItem(SK.leads); localStorage.removeItem(SK.criteria); localStorage.removeItem(SK.settings); } catch {}
         setConfirmAction(null); showToast("App reset complete");
       },
@@ -2374,23 +2343,20 @@ Respond with ONLY a JSON object:
     setLeadListResults([]);
     setLeadListJob(null);
     setLeadListColumns([]);
-    setLeadListQualityNotice(null);
     setLeadListProgress("Parsing request");
     setLeadListSheetStatus(null);
 
     const pipelineExclusions = leads.map(l => l.company).filter(Boolean);
-    const makeLeadListPrompt = ({ rowTarget, exclusions, batchIndex, maxAttempts }) => {
-      const exclusionClause = exclusions.length > 0
-        ? `\nEXCLUSION LIST — do NOT return any of these companies: ${exclusions.join(", ")}\n`
-        : "";
+    const exclusionClause = pipelineExclusions.length > 0
+      ? `\nEXCLUSION LIST — do NOT return any of these companies (already in pipeline): ${pipelineExclusions.join(", ")}\n`
+      : "";
 
-      return `Build a reusable lead generation job from this natural-language request, then research real leads for it.
+    const prompt = `Build a reusable lead generation job from this natural-language request, then research real leads for it.
 ${exclusionClause}
 USER REQUEST:
 ${requestText}
 
-RESULT COUNT: Return exactly ${rowTarget} rows for this batch unless fewer than ${rowTarget} verified contactable leads exist.
-BATCH: ${batchIndex} of up to ${maxAttempts}. Do not repeat excluded companies.
+RESULT COUNT: Return up to ${leadListCount} rows.
 
 Engine requirements:
 1. Parse the request into a structured job with:
@@ -2400,46 +2366,32 @@ Engine requirements:
    - geography
    - requiredColumns
    - specialResearchRequirements
-2. Use a contact-first enrichment workflow:
-   - Pass 1: find a larger pool of real candidate companies that match the request.
-   - Pass 2: for each candidate, search its website/contact/team/about/location pages and reputable public sources for contact data.
-   - Pass 3: keep only rows that are actually callable/contactable.
-3. Every returned row MUST include:
-   - Company Name
-   - Contact Person
-   - Best Phone OR Email
-   - Target Role
-   - Reason / Buying Signal
-   - Source URL
-4. Rows with no Contact Person MUST be dropped. Rows with no Best Phone and no Email MUST be dropped. No exceptions. Do not include company-only rows.
-5. Attempt to find a named contact person for every row. Prefer owner/founder/president/CEO, then the most relevant manager or department leader for the user's request.
-6. If no named contact is public, skip the row and find another company.
-7. Search specifically for:
+2. Research enough real companies and contacts using web search to fill the requested row count.
+3. Prioritize callable leads. A public company/location phone number is enough to include a lead.
+4. Prefer named decision makers, but do NOT reject a company just because no named person is public. If no named person is public, use the best call target role and the main/location phone.
+5. Search specifically for:
    - main company phone
    - location/branch phone
    - dispatch, logistics, shipping, warehouse, operations, or distribution department phone
    - named decision maker
-   - direct or role-based email
    - contact source URL that verifies the phone/name when possible
-8. For freight/shipper searches, include shippers, distributors, manufacturers, and wholesalers. Exclude carriers, brokers, 3PLs, couriers, and job boards. Directory pages are allowed only as fallback evidence when they point to a real company and show a phone number.
-9. Do not invent unavailable contact data. If a person, email, LinkedIn, revenue, lane, or direct phone cannot be verified, use an empty string and lower the confidence.
-10. Every row must include a Source URL when possible and a Confidence value of High, Medium, or Low.
-11. Return fewer than ${rowTarget} rows if needed. Quality beats count. If you cannot find enough contactable rows, return only the contactable rows you verified.
-12. Add dynamic columns requested by the user. If the request is about freight brokers, shippers, logistics, lanes, refrigerated freight, or overflow freight, include at minimum these columns:
+6. If a company has no phone number after research, skip it unless it is an exceptional fit.
+7. For freight/shipper searches, include shippers, distributors, manufacturers, and wholesalers. Exclude carriers, brokers, 3PLs, couriers, and job boards. Directory pages are allowed only as fallback evidence when they point to a real company and show a phone number.
+8. Do not invent unavailable contact data. If a person, email, LinkedIn, revenue, lane, or direct phone cannot be verified, use an empty string and lower the confidence.
+9. Every row must include a Source URL when possible and a Confidence value of High, Medium, or Low.
+10. Add dynamic columns requested by the user. If the request is about freight brokers, shippers, logistics, lanes, refrigerated freight, or overflow freight, include at minimum these columns:
 ${FREIGHT_MIN_COLUMNS.map(c => `   - ${c}`).join("\n")}
-13. Special research requirements like "high-demand lanes" should become columns and should be supported by a reason / buying signal.
+11. Special research requirements like "high-demand lanes" should become columns and should be supported by a reason / buying signal.
 
 Phone and contact field rules:
 - Best Phone: the most useful number to call.
 - Phone Type: Direct, Department, Location/Main Line, or Missing.
 - Phone Status: Direct, Main Line, or Missing.
 - Contact Status: Named Contact, Role Only, or Company Only.
-- Reachability Score: High if named contact + phone/email, Medium if role/company + phone/email, Low only when contact data is weak but still usable.
+- Reachability Score: High if named contact + phone, Medium if role/company + phone, Low if no phone.
 - Call Notes: one short sentence telling a caller who to ask for and why.
-- Do not stop early just because a few high-confidence rows are found. Return as many contactable rows as possible up to the requested count.
-- If exact contact names are not public, do not return that company.
-- Never set Phone Status to Missing unless Email is present.
-- Never return a row where Reachability Score is Low because there is no phone and no email.
+- Do not stop early just because a few high-confidence rows are found. A public main-line phone is enough for inclusion when a company matches the request. Return as many callable rows as possible up to the requested count.
+- If exact contact names are not public, leave Contact Person blank and set Contact Status to "Role Only" or "Company Only".
 
 RESPOND WITH ONLY this JSON object:
 {
@@ -2478,102 +2430,40 @@ RESPOND WITH ONLY this JSON object:
     }
   ]
 }`;
-    };
 
     try {
-      const batchSize = 5;
-      const maxAttempts = Math.max(1, Math.ceil(leadListCount / batchSize));
-      const collectedRows = [];
-      const seenCompanies = new Set();
-      let droppedRows = 0;
-      let candidateRows = 0;
-      let failedBatches = 0;
-      let job = null;
-
-      for (let batchIndex = 1; batchIndex <= maxAttempts && collectedRows.length < leadListCount; batchIndex++) {
-        const rowTarget = Math.min(batchSize, leadListCount - ((batchIndex - 1) * batchSize));
-        const collectedCompanies = collectedRows
-          .map(row => getFirstLeadCell(row, ["Company Name", "Business Name", "Company"]))
-          .filter(Boolean);
-        const exclusions = [...pipelineExclusions, ...collectedCompanies];
-
-        setLeadListProgress(`Researching contactable leads (${batchIndex}/${maxAttempts})`);
-        let data;
-        let response;
-        try {
-          ({ response, data } = await callAnthropic(batchIndex === 1 ? "Build Lead List Search" : "Build Lead List Batch Search", {
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 5000,
-            system: "You are the Lead Request Engine for a B2B sales app. Parse natural-language requests into reusable lead jobs, search the web for real leads, and return call-ready rows. Phone numbers and reachable contacts are the priority. Accuracy beats volume. Never fabricate contact data. Return ONLY valid JSON.",
-            messages: [{ role: "user", content: makeLeadListPrompt({ rowTarget, exclusions, batchIndex, maxAttempts }) }],
-            tools: [{ type: "web_search_20250305", name: "web_search" }],
-          }));
-        } catch (batchError) {
-          failedBatches++;
-          if (collectedRows.length > 0) break;
-          throw batchError;
-        }
-
-        // Guard against non-JSON responses (Vercel/CDN error pages, timeouts, etc.)
-        if (!data || data.error?.type === "upstream_parse_error") {
-          failedBatches++;
-          if (collectedRows.length > 0) break;
-          throw new Error(`Search service unavailable (HTTP ${response.status}) — please try again in a moment.`);
-        }
-        if (data.error) {
-          failedBatches++;
-          if (collectedRows.length > 0) break;
-          setLeadListError(data.error.message || "API error. Please try again.");
-          setLeadListLoading(false);
-          setLeadListProgress(null);
-          return;
-        }
-
-        const textParts = [];
-        (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
-        const fullText = textParts.join("\n");
-        const parsed = extractJSONValue(fullText);
-        const parsedRows = getParsedRows(parsed);
-
-        if (!parsedRows || !Array.isArray(parsedRows) || parsedRows.length === 0) continue;
-        candidateRows += parsedRows.length;
-        if (!job) {
-          job = Array.isArray(parsed) ? {
-            summary: requestText.slice(0, 120),
-            industries: leadListNiche.trim() ? [leadListNiche.trim()] : [],
-            targetRoles: [],
-            companyFilters: [],
-            geography: leadListCity.trim(),
-            requiredColumns: DEFAULT_LEAD_COLUMNS,
-            specialResearchRequirements: [],
-          } : (parsed.job || {});
-        }
-
-        parsedRows.forEach(row => {
-          const company = getFirstLeadCell(row, ["Company Name", "Business Name", "Company"]);
-          const companyKey = String(company || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-          if (!companyKey || seenCompanies.has(companyKey)) return;
-          seenCompanies.add(companyKey);
-          if (!isContactableLeadRow(row)) {
-            droppedRows++;
-            return;
-          }
-          if (collectedRows.length < leadListCount) collectedRows.push(row);
-        });
-      }
-
-      setLeadListProgress("Structuring sheet");
-
-      if (collectedRows.length === 0) {
-        setLeadListError(candidateRows > 0
-          ? `No contactable leads returned. The engine found ${candidateRows} candidate ${candidateRows === 1 ? "row" : "rows"}, but none had both a contact name and a usable phone or email.`
-          : "No callable leads returned. Try a narrower geography or a more specific business category.");
+      setLeadListProgress("Researching companies");
+      const { response, data } = await callAnthropic("Build Lead List Search", {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 10000,
+        system: "You are the Lead Request Engine for a B2B sales app. Parse natural-language requests into reusable lead jobs, search the web for real leads, and return call-ready rows. Phone numbers and reachable contacts are the priority. Accuracy beats volume. Never fabricate contact data. Return ONLY valid JSON.",
+        messages: [{ role: "user", content: prompt }],
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
+      });
+      // Guard against non-JSON responses (Vercel/CDN error pages, timeouts, etc.)
+      if (!data || data.error?.type === "upstream_parse_error") throw new Error(`Search service unavailable (HTTP ${response.status}) — please try again in a moment.`);
+      if (data.error) {
+        setLeadListError(data.error.message || "API error. Please try again.");
         setLeadListLoading(false);
         setLeadListProgress(null);
         return;
       }
 
-      job = job || {
+      setLeadListProgress("Structuring sheet");
+      const textParts = [];
+      (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
+      const fullText = textParts.join("\n");
+      const parsed = extractJSONValue(fullText);
+      const parsedRows = getParsedRows(parsed);
+
+      if (!parsedRows || !Array.isArray(parsedRows) || parsedRows.length === 0) {
+        setLeadListError("No callable leads returned. Try removing 'exclude directory-only results' or broadening the geography.");
+        setLeadListLoading(false);
+        setLeadListProgress(null);
+        return;
+      }
+
+      const job = Array.isArray(parsed) ? {
         summary: requestText.slice(0, 120),
         industries: leadListNiche.trim() ? [leadListNiche.trim()] : [],
         targetRoles: [],
@@ -2581,25 +2471,18 @@ RESPOND WITH ONLY this JSON object:
         geography: leadListCity.trim(),
         requiredColumns: DEFAULT_LEAD_COLUMNS,
         specialResearchRequirements: [],
-      };
-
-      const columns = buildLeadColumns(job, collectedRows, requestText);
-      const results = collectedRows.map((r, i) => ({
+      } : (parsed.job || {});
+      const columns = buildLeadColumns({ ...job, requiredColumns: parsed?.columns || job.requiredColumns }, parsedRows, requestText);
+      const results = parsedRows.map((r, i) => ({
         ...r,
         id: Date.now() + i + Math.random(),
         __columns: columns,
       }));
 
-      const notices = [];
-      if (droppedRows > 0) notices.push(`Dropped ${droppedRows} ${droppedRows === 1 ? "row" : "rows"} missing a contact name, phone, or email.`);
-      if (results.length < leadListCount) notices.push(`Returned ${results.length} of ${leadListCount} requested because only contactable rows are kept.`);
-      if (failedBatches > 0) notices.push(`${failedBatches} search ${failedBatches === 1 ? "batch" : "batches"} timed out or failed, so these are partial results.`);
-      setLeadListQualityNotice(notices.join(" "));
-
       setLeadListJob(job);
       setLeadListColumns(columns);
       setLeadListResults(results);
-      showToast(`Built ${results.length} contactable lead rows`);
+      showToast(`Built ${results.length} lead rows`);
     } catch (err) {
       setLeadListError(`Search failed — ${err?.message || "please try again."}`);
     }
@@ -4893,12 +4776,6 @@ Return:
 
               {leadListError && (
                 <div style={{ background: t.redBg, border: `1px solid ${t.redBorder}`, borderRadius: 8, padding: "14px 18px", marginBottom: 20, fontSize: 14, color: t.red }}>{leadListError}</div>
-              )}
-
-              {leadListQualityNotice && (
-                <div style={{ background: t.accent + "14", border: `1px solid ${t.accent}55`, borderRadius: 8, padding: "12px 14px", marginBottom: 16, fontSize: 13, color: t.text }}>
-                  {leadListQualityNotice}
-                </div>
               )}
 
               {leadListLoading && (
