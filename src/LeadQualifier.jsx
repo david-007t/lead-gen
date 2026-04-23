@@ -622,6 +622,52 @@ function buildLeadListPipelineDetails(lead, columns = [], outreachDraft = "") {
   };
 }
 
+function renderPipelineSectionValue(item, t) {
+  if (Array.isArray(item.value)) {
+    return <div style={{ fontSize: 12, color: t.textMuted, lineHeight: 1.5 }}>{item.value.join(", ")}</div>;
+  }
+  if (/^https?:\/\//i.test(String(item.value || ""))) {
+    return <a href={item.value} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: t.accent, overflowWrap: "anywhere" }}>{item.value}</a>;
+  }
+  return <div style={{ fontSize: 12, color: t.textMuted, lineHeight: 1.5, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{item.value}</div>;
+}
+
+function buildDeterministicPipelineEmail(lead) {
+  const details = lead.pipelineDetails?.sections || [];
+  const detailMap = new Map();
+  details.forEach(section => {
+    (section.items || []).forEach(item => {
+      if (!detailMap.has(item.label)) detailMap.set(item.label, item.value);
+    });
+  });
+
+  const company = lead.company || detailMap.get("Company Name") || "your company";
+  const contactName = lead.name || detailMap.get("Decision Maker Name") || detailMap.get("Contact Person") || "";
+  const firstName = getFirstName(contactName);
+  const niche = lead.projectType || detailMap.get("Niche") || detailMap.get("Industry") || "your service";
+  const location = lead.location || detailMap.get("Region") || detailMap.get("Location") || "your market";
+  const signal = detailMap.get("Buying Signal") || detailMap.get("Reason / Buying Signal") || lead.description || "";
+  const firstLine = detailMap.get("Personalized First Line") || "";
+  const title = detailMap.get("Title") || detailMap.get("Target Role") || "";
+
+  const opener = firstLine
+    ? cleanBusinessObservation(firstLine, `${company} already has real momentum in ${location}`)
+    : cleanBusinessObservation(signal, `${company} looks like a strong fit for more consistent outbound prospecting`);
+
+  return `Subject: Quick idea for ${company}
+
+Hi ${firstName},
+
+${opener}
+
+Based on what I found about ${company}${title ? ` and your ${title} role` : ""}, it feels like there’s a pretty direct opportunity to turn that into more ${niche} conversations without adding more manual prospecting work.
+
+If you want, I can send over a few tailored ideas for ${company} in ${location} and show you what I’d test first.
+
+Best,
+${(lead.sourceMode === "prospects" || lead.sourceMode === "leadlist") ? (lead.name && lead.name !== company ? "" : "") : ""}`.trim();
+}
+
 function mergePipelineLeads(localLeads, remoteLeads) {
   const byKey = new Map();
   [...(remoteLeads || []), ...(localLeads || [])].forEach(lead => {
@@ -2508,46 +2554,9 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
   const handlePipelinePersonalizeEmail = async (lead) => {
     setPipelineDraftingId(lead.id);
     try {
-      const details = lead.pipelineDetails?.sections || [];
-      const detailText = details
-        .flatMap(section => (section.items || []).map(item => `${item.label}: ${Array.isArray(item.value) ? item.value.join("; ") : item.value}`))
-        .slice(0, 20)
-        .join("\n");
-      const prompt = `Write a personalized outreach email for this saved pipeline lead.
-
-Rules:
-- Use the saved lead context only.
-- Be specific and grounded in the company details.
-- Keep it concise and natural.
-- If there is a named contact, address them directly.
-- Include a short subject line.
-
-Lead context:
-Company: ${lead.company || ""}
-Contact: ${lead.name || ""}
-Email: ${lead.email || ""}
-Phone: ${lead.phone || ""}
-Project Type / Niche: ${lead.projectType || ""}
-Location: ${lead.location || ""}
-Description: ${lead.description || ""}
-Source Mode: ${lead.sourceMode || ""}
-${detailText}
-
-Return only the email text.`;
-
-      const response = await fetch("/api/anthropic", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 600,
-          messages: [{ role: "user", content: prompt }],
-        }),
-      });
-
-      const data = await response.json();
-      const draft = (data.content || []).find(b => b.type === "text")?.text || "";
-      if (!draft.trim()) throw new Error("No draft returned");
+      const baseDraft = buildDeterministicPipelineEmail(lead);
+      const senderName = shipListSenderName.trim() || "[Your name]";
+      const draft = `${baseDraft}\n${senderName}`.trim();
       updatePipelineLead(
         item => item.id === lead.id,
         item => ({ ...item, savedEmailDraft: draft }),
@@ -3688,27 +3697,48 @@ Return:
                                   <h4 style={{ fontSize: 12, fontWeight: 700, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>
                                     {lead.pipelineDetails.sourceLabel || "Saved Context"}
                                   </h4>
-                                  <div style={{ display: "grid", gap: 12 }}>
-                                    {lead.pipelineDetails.sections.map((section, index) => (
-                                      <div key={`${section.title}-${index}`} style={{ background: t.bgHover, border: `1px solid ${t.border}`, borderRadius: 8, padding: "12px 14px" }}>
-                                        <div style={{ fontSize: 11, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 10 }}>{section.title}</div>
-                                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
-                                          {(section.items || []).map((item, itemIndex) => (
-                                            <div key={`${item.label}-${itemIndex}`} style={{ minWidth: 0 }}>
-                                              <div style={{ fontSize: 10, color: t.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{item.label}</div>
-                                              {Array.isArray(item.value) ? (
-                                                <div style={{ fontSize: 12, color: t.textMuted, lineHeight: 1.5 }}>{item.value.join(", ")}</div>
-                                              ) : /^https?:\/\//i.test(String(item.value || "")) ? (
-                                                <a href={item.value} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: t.accent, overflowWrap: "anywhere" }}>{item.value}</a>
-                                              ) : (
-                                                <div style={{ fontSize: 12, color: t.textMuted, lineHeight: 1.5, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{item.value}</div>
-                                              )}
-                                            </div>
-                                          ))}
-                                        </div>
+                                  {lead.sourceMode === "prospects" && lead.prospectRaw ? (
+                                    <div style={{ ...cardStyle, marginBottom: 0, borderLeft: `4px solid ${lead.prospectRaw.classification?.color || t.green}` }}>
+                                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 12 }}>
+                                        {[
+                                          ["Company Name", lead.prospectRaw.businessName],
+                                          ["Decision Maker Name", lead.prospectRaw.ownerName],
+                                          ["Title", lead.prospectRaw.title],
+                                          ["Email", lead.prospectRaw.email],
+                                          ["Email Confidence", lead.prospectRaw.emailConfidence],
+                                          ["LinkedIn URL", lead.prospectRaw.linkedInUrl],
+                                          ["Source URL", lead.prospectRaw.sourceUrl],
+                                          ["Buying Signal", lead.prospectRaw.buyingSignal],
+                                          ["Personalized First Line", lead.prospectRaw.personalizedFirstLine],
+                                        ].map(([label, value]) => (
+                                          <div key={label} style={{ minWidth: 0 }}>
+                                            <div style={{ fontSize: 10, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 4 }}>{label}</div>
+                                            {String(value || "").startsWith("http") ? (
+                                              <a href={value} target="_blank" rel="noreferrer" style={{ fontSize: 13, color: t.accent, overflowWrap: "anywhere" }}>{value}</a>
+                                            ) : (
+                                              <div style={{ fontSize: 13, color: value ? t.text : t.textFaint, lineHeight: 1.45, overflowWrap: "anywhere" }}>{value || ""}</div>
+                                            )}
+                                          </div>
+                                        ))}
                                       </div>
-                                    ))}
-                                  </div>
+                                    </div>
+                                  ) : (
+                                    <div style={{ display: "grid", gap: 12 }}>
+                                      {lead.pipelineDetails.sections.map((section, index) => (
+                                        <div key={`${section.title}-${index}`} style={{ background: t.bgHover, border: `1px solid ${t.border}`, borderRadius: 8, padding: "12px 14px" }}>
+                                          <div style={{ fontSize: 11, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 10 }}>{section.title}</div>
+                                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+                                            {(section.items || []).map((item, itemIndex) => (
+                                              <div key={`${item.label}-${itemIndex}`} style={{ minWidth: 0 }}>
+                                                <div style={{ fontSize: 10, color: t.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{item.label}</div>
+                                                {renderPipelineSectionValue(item, t)}
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
                                 </div>
                               )}
                             </div>
