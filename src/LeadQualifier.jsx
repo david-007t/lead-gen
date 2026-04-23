@@ -1829,8 +1829,13 @@ Respond with ONLY a JSON object:
     setLeadListProgress("Parsing request");
     setLeadListSheetStatus(null);
 
-    const prompt = `Build a reusable lead generation job from this natural-language request, then research real leads for it.
+    const pipelineExclusions = leads.map(l => l.company).filter(Boolean);
+    const exclusionClause = pipelineExclusions.length > 0
+      ? `\nEXCLUSION LIST — do NOT return any of these companies (already in pipeline): ${pipelineExclusions.join(", ")}\n`
+      : "";
 
+    const prompt = `Build a reusable lead generation job from this natural-language request, then research real leads for it.
+${exclusionClause}
 USER REQUEST:
 ${requestText}
 
@@ -3904,6 +3909,9 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
                           const columns = leadListColumns.length ? leadListColumns : buildLeadColumns(leadListJob, leadListResults, leadListRequest);
                           const draft = leadListOutreach[lead.id];
                           const isGenerating = generatingLeadListOutreach === lead.id;
+                          const normCo = s => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+                          const leadCompany = getFirstLeadCell(lead, ["Company Name", "Business Name", "Company"]);
+                          const inPipeline = leads.some(l => normCo(l.company) === normCo(leadCompany));
                           return (
                             <tr key={lead.id}>
                               {columns.map(col => {
@@ -3917,7 +3925,12 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
                               })}
                               <td style={{ padding: "11px 12px", borderBottom: `1px solid ${t.border}`, verticalAlign: "top", minWidth: 150 }}>
                                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                                  <button onClick={() => handleAddLeadListToPipeline(lead)} style={{ ...btnSecondary, fontSize: 12, textAlign: "center" }}>+ Pipeline</button>
+                                  <button
+                                    onClick={() => !inPipeline && handleAddLeadListToPipeline(lead)}
+                                    disabled={inPipeline}
+                                    style={{ ...btnSecondary, fontSize: 12, textAlign: "center", background: inPipeline ? t.green + "22" : undefined, color: inPipeline ? t.green : undefined, cursor: inPipeline ? "default" : "pointer", opacity: inPipeline ? 0.85 : 1 }}>
+                                    {inPipeline ? "✓ In Pipeline" : "+ Pipeline"}
+                                  </button>
                                   <button onClick={() => handleLeadListDraftOutreach(lead)} disabled={isGenerating} style={{ ...btnPrimary, fontSize: 12, textAlign: "center", padding: "8px 10px" }}>
                                     {isGenerating ? "Writing…" : draft ? "↻ Outreach" : "✍ Outreach"}
                                   </button>
