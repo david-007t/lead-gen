@@ -60,6 +60,7 @@ function pickDomainSearchEmail(emails) {
       const score = Number(entry?.confidence ?? entry?.score ?? 0);
       const type = String(entry?.type || "").toLowerCase();
       const preferredIndex = preferredLocalParts.indexOf(localPart);
+      const hasSources = Array.isArray(entry?.sources) && entry.sources.length > 0;
       return {
         value,
         type,
@@ -67,9 +68,10 @@ function pickDomainSearchEmail(emails) {
         verificationStatus,
         sourceUrl: Array.isArray(entry?.sources) && entry.sources[0]?.uri ? entry.sources[0].uri : null,
         preferredRank: preferredIndex === -1 ? 999 : preferredIndex,
+        hasSources,
       };
     })
-    .filter(entry => entry.value && mapVerificationStatus(entry.verificationStatus));
+    .filter(entry => entry.value && (mapVerificationStatus(entry.verificationStatus) || (entry.hasSources && entry.score >= 70)));
 
   ranked.sort((a, b) => {
     if (a.preferredRank !== b.preferredRank) return a.preferredRank - b.preferredRank;
