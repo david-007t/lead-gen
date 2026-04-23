@@ -420,7 +420,7 @@ function getParsedRows(parsed) {
 // ─── PROSPECT CLASSIFICATION ──────────────────────────────────
 function classifyProspect(prospect) {
   const blank = (s) => !s || !s.trim() || /not found|n\/a|unknown/i.test(s.trim());
-  const hasOwner = !blank(prospect.ownerName);
+  const hasOwner = !blank(prospect.ownerName || prospect.decisionMakerName);
   const hasPhone = !blank(prospect.phone);
   const hasEmail = !blank(prospect.email);
 
@@ -702,7 +702,7 @@ export default function LeadQualifier() {
     setSettingsEdited(false);
   };
 
-  // ─── PROSPECT SEARCH (single call — contact info only) ───
+  // ─── PROSPECT SEARCH (two-step decision maker enrichment) ───
   const handleProspectSearch = async () => {
     if (!prospectCity.trim()) { showToast("Enter a city or region", "error"); return; }
     if (!prospectNiche.trim()) { showToast("Enter a business niche", "error"); return; }
@@ -732,22 +732,98 @@ export default function LeadQualifier() {
       return parsed;
     };
 
-    try {
+    const isBlank = (value) => !String(value || "").trim() || /^(not found|n\/a|na|none|unknown|null)$/i.test(String(value || "").trim());
+    const clean = (value) => isBlank(value) ? "" : String(value || "").trim();
+    const isPlausibleEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+    const qualityPasses = (rows, minimumRows) => {
+      if (rows.length < minimumRows) return false;
+      const withEmail = rows.filter(row => isPlausibleEmail(row.email)).length;
+      return rows.length > 0 && withEmail / rows.length >= 0.7;
+    };
+    const normalizeProspectResults = (rows) => (rows || [])
+      .map((r, i) => {
+        const p = {
+          id: Date.now() + i + Math.random(),
+          businessName: clean(r.businessName || r.companyName || r["Company Name"]),
+          ownerName: clean(r.decisionMakerName || r.ownerName || r.name || r["Decision Maker Name"]),
+          title: clean(r.title || r["Title"]),
+          email: clean(r.email || r["Email"]),
+          emailConfidence: clean(r.emailConfidence || r["Email Confidence"] || r["Email Confidence (HIGH / MEDIUM / LOW)"]).toUpperCase(),
+          linkedInUrl: clean(r.linkedInUrl || r.linkedinUrl || r.linkedIn || r.linkedin || r["LinkedIn URL"]),
+          sourceUrl: clean(r.sourceUrl || r.source || r["Source URL"]),
+          buyingSignal: clean(r.buyingSignal || r["Buying Signal"]),
+          personalizedFirstLine: clean(r.personalizedFirstLine || r["Personalized First Line"]),
+          niche: prospectNiche,
+          phone: "",
+          address: "",
+          buyingSignals: [],
+          opportunities: [],
+          classification: null,
+        };
+        if (!["HIGH", "MEDIUM", "LOW"].includes(p.emailConfidence)) p.emailConfidence = isPlausibleEmail(p.email) ? "MEDIUM" : "";
+        p.buyingSignals = p.buyingSignal ? [p.buyingSignal] : [];
+        p.opportunities = p.personalizedFirstLine ? [p.personalizedFirstLine] : [];
+        p.classification = classifyProspect(p);
+        return p;
+      })
+      .filter(p => p.businessName && p.ownerName);
+
+    const runDecisionMakerSearch = async (attempt = 1) => {
+      const targetCount = prospectCount;
+      const minimumRows = Math.max(1, Math.ceil(targetCount * 0.67));
       const resp = await fetch("/api/anthropic", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
-          max_tokens: 2000,
-          system: "You are a business research assistant. Search the web for real local businesses and their contact details. Return ONLY a raw JSON array — no markdown, no explanation.",
+          max_tokens: 5000,
+          system: "You are a B2B decision-maker lead researcher. Use web search to find real independent businesses and public decision-maker evidence. Return ONLY a raw JSON array. No markdown, no explanation, no placeholder text.",
           messages: [{
             role: "user",
-            content: `Find ${prospectCount} real ${prospectNiche} businesses in ${prospectCity.trim()}. For each, search for the owner name, direct phone number, and direct email address.
+            content: `Build a decision-maker list for ${prospectNiche} in ${prospectCity.trim()}.
 
-Return ONLY a JSON array:
-[{"businessName":"...","ownerName":"...","phone":"...","email":"...","address":"..."}]
+Use this exact two-step workflow:
 
-If a field cannot be found, use an empty string. Do not use placeholder text like "Not found".`,
+STEP 1 - Find Companies:
+Find ${targetCount} real boutique or independent ${prospectNiche} businesses in ${prospectCity.trim()}. Exclude national chains, franchises, marketplaces, directories, and lead sellers. For each company, identify company name, address, phone, website domain, and one specific buying signal sentence explaining why they are a good prospect.
+
+STEP 2 - Find the Decision Maker:
+For each company, search its website/team/about/contact pages, LinkedIn, press pages, directories, or other public sources to find ONE decision maker.
+Priority order:
+1. Founder / Owner
+2. CEO / President / Managing Partner
+3. Most senior person in the relevant department
+
+For the decision maker, return their name, title, LinkedIn URL if found, and email.
+Email rules:
+- HIGH confidence only if the exact email is found on a public page.
+- MEDIUM confidence if inferred from a visible company email pattern or a very standard pattern at the company domain.
+- LOW confidence if guessed.
+- If inferring and no public pattern is found, use firstname@companydomain.com only when it looks plausible.
+
+Return exactly these 9 fields for each row and no extra fields:
+[
+  {
+    "Company Name": "",
+    "Decision Maker Name": "",
+    "Title": "",
+    "Email": "",
+    "Email Confidence": "HIGH",
+    "LinkedIn URL": "",
+    "Source URL": "",
+    "Buying Signal": "",
+    "Personalized First Line": ""
+  }
+]
+
+Hard rules:
+- Do not return a row unless it has at least Company Name and Decision Maker Name.
+- Do not use placeholder text like "Not found", "N/A", "Unknown", or "None"; leave optional fields empty or skip the row.
+- Target ${targetCount} rows. Return at least ${minimumRows} rows if quality requires dropping rows.
+- At least 70% of returned rows should have a plausible decision-maker email.
+- The personalized first line must be one sentence referencing something specific about the business.
+
+This is attempt ${attempt}. If previous quality was too low, be stricter about named people and plausible emails.`,
           }],
           tools: [{ type: "web_search_20250305", name: "web_search" }],
         }),
@@ -756,39 +832,34 @@ If a field cannot be found, use an empty string. Do not use placeholder text lik
       const raw = await resp.text();
       let data;
       try { data = JSON.parse(raw); } catch { throw new Error(`Service unavailable (HTTP ${resp.status})`); }
-      if (data.error) {
-        setProspectError("API error: " + (data.error.message || "Unknown error from the AI service."));
-        setProspectLoading(false); setProspectProgress(null); return;
-      }
+      if (data.error) throw new Error(data.error.message || "Unknown error from the AI service.");
 
       const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
       const parsed = parseProspectJSON(text) || [];
+      return normalizeProspectResults(parsed);
+    };
 
-      if (parsed.length === 0) {
-        const preview = text.slice(0, 200).replace(/\n/g, " ");
-        setProspectError(preview
-          ? `No ${prospectNiche} businesses found in ${prospectCity.trim()}. Preview: "${preview}…" — try a broader city or different niche.`
-          : `No ${prospectNiche} businesses found in ${prospectCity.trim()}. Try a broader city or different niche.`);
+    try {
+      const targetCount = prospectCount;
+      const minimumRows = Math.max(1, Math.ceil(targetCount * 0.67));
+      let results = await runDecisionMakerSearch(1);
+
+      if (!qualityPasses(results, minimumRows)) {
+        setProspectProgress({ phase: "retrying" });
+        const retryResults = await runDecisionMakerSearch(2);
+        if (qualityPasses(retryResults, minimumRows) || retryResults.length > results.length) {
+          results = retryResults;
+        }
+      }
+
+      if (results.length === 0) {
+        setProspectError(`No decision-maker leads found for ${prospectNiche} in ${prospectCity.trim()}. Try a broader city or niche.`);
         setProspectLoading(false); setProspectProgress(null); return;
       }
 
-      const results = parsed.map((r, i) => {
-        const p = {
-          id: Date.now() + i + Math.random(),
-          businessName: r.businessName || "Unknown Business",
-          ownerName: r.ownerName || "",
-          phone: r.phone || "",
-          email: r.email || "",
-          address: r.address || "",
-          niche: prospectNiche,
-          classification: null,
-        };
-        p.classification = classifyProspect(p);
-        return p;
-      });
-
       setProspects(results);
-      showToast(`Found ${results.length} prospects`);
+      const withEmail = results.filter(row => isPlausibleEmail(row.email)).length;
+      showToast(`Found ${results.length} decision makers · ${withEmail} with plausible emails`);
     } catch (err) {
       setProspectError("Search failed — " + (err?.message || "unexpected error. Please try again."));
     }
@@ -801,19 +872,20 @@ If a field cannot be found, use an empty string. Do not use placeholder text lik
   const handleDraftEmail = async (prospect) => {
     setDraftingEmail(prospect.id);
     try {
-      const signals = prospect.buyingSignals.slice(0, 2).join(", ");
-      const opportunity = prospect.opportunities[0] || "improve their digital presence";
-
+      const signals = (prospect.buyingSignals || []).slice(0, 2).join(", ");
+      const opener = prospect.personalizedFirstLine || (prospect.opportunities || [])[0] || "";
       const location = prospect.address ? prospect.address.split(",").slice(-2).join(",").trim() : prospectCity;
-      const prompt = `Write a short cold email pitching a lead list to ${prospect.businessName}${prospect.ownerName ? ` (owner: ${prospect.ownerName})` : ""}, a ${prospect.niche} business in ${location}.
+      const prompt = `Write a short cold email to ${prospect.businessName}${prospect.ownerName ? ` (${prospect.ownerName}, ${prospect.title || "decision maker"})` : ""}, a ${prospect.niche} business in ${location}.
 
-You have a curated list of verified ${prospect.niche} leads (business names, owner names, phone numbers, emails) in their area. You are offering 5 leads for free as a sample — no strings attached. If they find the sample useful, the full list is available for purchase.
+Context:
+- Buying signal: ${signals || prospect.buyingSignal || "relevant local prospect"}
+- Suggested first line: ${opener || "Reference their business specifically."}
 
 Framework (follow this exactly, 4-5 sentences max):
-1. Hook: mention you built a lead list of ${prospect.niche} businesses in their area and that you noticed them operating there
-2. Proof: mention you have verified leads with owner names, phones, and emails
-3. Free offer: offer to send 5 leads for free, just reply to claim them
-4. Soft close: mention the full list is available if the sample is useful — no price, no pressure
+1. Open with a specific line about their business
+2. Mention a relevant result or problem tied to that signal
+3. Offer a quick next step
+4. Keep it direct and human
 
 Tone: real person, not a salesperson. Casual and direct. No fluff, no buzzwords, no "I hope this email finds you well".`;
 
@@ -2978,7 +3050,7 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
             <div style={{ animation: "fadeIn 0.3s ease" }}>
               <div style={{ marginBottom: 24 }}>
                 <h2 style={{ fontSize: 20, fontWeight: 700, fontFamily: "'Outfit', sans-serif", marginBottom: 6 }}>🎯 Prospect Search</h2>
-                <p style={{ color: t.textDim, fontSize: 14, lineHeight: 1.5 }}>Multi-pass deep search to find service businesses that need AI, web, and ad services from Ascend Solutions.</p>
+                <p style={{ color: t.textDim, fontSize: 14, lineHeight: 1.5 }}>Find independent businesses, enrich one decision maker, and return a focused outreach-ready list.</p>
               </div>
 
               <div style={cardStyle}>
@@ -3030,7 +3102,9 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
                         ? "⏳ Finding businesses..."
                         : prospectProgress?.phase === "enriching"
                           ? `⏳ Enriching ${prospectProgress.current}/${prospectProgress.total}...`
-                          : "⏳ Searching...")
+                          : prospectProgress?.phase === "retrying"
+                            ? "⏳ Retrying for better quality..."
+                            : "⏳ Searching...")
                     : "🔍 Search Prospects"}
                 </button>
               </div>
@@ -3039,7 +3113,7 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
                 <div style={{ ...cardStyle, textAlign: "center", padding: "48px 24px" }}>
                   <div style={{ fontSize: 36, marginBottom: 16, animation: "pulse 1.2s infinite" }}>🔍</div>
                   <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Finding {prospectNiche} businesses in {prospectCity}...</div>
-                  <div style={{ fontSize: 13, color: t.textDim }}>Searching for contact info — this takes about 15–30 seconds</div>
+                  <div style={{ fontSize: 13, color: t.textDim }}>Finding companies, decision makers, emails, and specific first lines</div>
                 </div>
               )}
 
@@ -3066,16 +3140,31 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
                               <span style={{ padding: "4px 10px", background: p.classification.color + "22", color: p.classification.color, borderRadius: 12, fontSize: 11, fontWeight: 700 }}>
                                 {p.classification.emoji} {p.classification.tier}
                               </span>
-                              <span style={{ padding: "4px 10px", background: t.bgHover, borderRadius: 12, fontSize: 11, color: t.textMuted }}>{p.niche}</span>
                             </div>
-                            {p.ownerName && <div style={{ fontSize: 14, color: t.textMuted }}>Owner: {p.ownerName}</div>}
                           </div>
                         </div>
 
-                        <div style={{ marginBottom: 12 }}>
-                          {p.phone && <div style={{ fontSize: 13, marginBottom: 4 }}>☎ {p.phone}</div>}
-                          {p.email && <div style={{ fontSize: 13, marginBottom: 4 }}>✉ {p.email}</div>}
-                          {p.address && <div style={{ fontSize: 13, color: t.textMuted }}>📍 {p.address}</div>}
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 12 }}>
+                          {[
+                            ["Company Name", p.businessName],
+                            ["Decision Maker Name", p.ownerName],
+                            ["Title", p.title],
+                            ["Email", p.email],
+                            ["Email Confidence", p.emailConfidence],
+                            ["LinkedIn URL", p.linkedInUrl],
+                            ["Source URL", p.sourceUrl],
+                            ["Buying Signal", p.buyingSignal],
+                            ["Personalized First Line", p.personalizedFirstLine],
+                          ].map(([label, value]) => (
+                            <div key={label} style={{ minWidth: 0 }}>
+                              <div style={{ fontSize: 10, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 4 }}>{label}</div>
+                              {String(value || "").startsWith("http") ? (
+                                <a href={value} target="_blank" rel="noreferrer" style={{ fontSize: 13, color: t.accent, overflowWrap: "anywhere" }}>{value}</a>
+                              ) : (
+                                <div style={{ fontSize: 13, color: value ? t.text : t.textFaint, lineHeight: 1.45, overflowWrap: "anywhere" }}>{value || ""}</div>
+                              )}
+                            </div>
+                          ))}
                         </div>
 
                         <div style={{ display: "flex", gap: 8, marginTop: 12, paddingTop: 12, borderTop: `1px solid ${t.border}` }}>
