@@ -666,7 +666,7 @@ function renderPipelineSectionValue(item, t) {
   return <div style={{ fontSize: 12, color: t.textMuted, lineHeight: 1.5, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{item.value}</div>;
 }
 
-function buildDeterministicPipelineEmail(lead) {
+function getPipelineDetailMap(lead) {
   const details = lead.pipelineDetails?.sections || [];
   const detailMap = new Map();
   details.forEach(section => {
@@ -674,32 +674,65 @@ function buildDeterministicPipelineEmail(lead) {
       if (!detailMap.has(item.label)) detailMap.set(item.label, item.value);
     });
   });
+  return detailMap;
+}
 
-  const company = lead.company || detailMap.get("Company Name") || "your company";
-  const contactName = lead.name || detailMap.get("Decision Maker Name") || detailMap.get("Contact Person") || "";
+function prospectFromPipelineLead(lead) {
+  const detailMap = getPipelineDetailMap(lead);
+  return {
+    id: lead.prospectRaw?.id || lead.id,
+    businessName: lead.prospectRaw?.businessName || detailMap.get("Company Name") || lead.company || lead.name,
+    ownerName: lead.prospectRaw?.ownerName || detailMap.get("Decision Maker Name") || lead.name,
+    title: lead.prospectRaw?.title || detailMap.get("Title"),
+    email: lead.prospectRaw?.email || detailMap.get("Email") || lead.email,
+    emailConfidence: lead.prospectRaw?.emailConfidence || detailMap.get("Email Confidence"),
+    phone: lead.prospectRaw?.phone || detailMap.get("Phone") || lead.phone,
+    linkedInUrl: lead.prospectRaw?.linkedInUrl || detailMap.get("LinkedIn URL"),
+    sourceUrl: lead.prospectRaw?.sourceUrl || detailMap.get("Source URL") || lead.source,
+    buyingSignal: lead.prospectRaw?.buyingSignal || detailMap.get("Buying Signal") || lead.description,
+    personalizedFirstLine: lead.prospectRaw?.personalizedFirstLine || detailMap.get("Personalized First Line"),
+    niche: lead.prospectRaw?.niche || detailMap.get("Niche") || lead.projectType || lead.searchContext?.niche,
+    address: lead.prospectRaw?.address || detailMap.get("Region") || lead.location,
+    classification: lead.prospectRaw?.classification,
+  };
+}
+
+function buildLeadListOfferEmail(lead, prospects, senderName, stripeLink) {
+  const detailMap = getPipelineDetailMap(lead);
+  const prospect = lead.sourceMode === "prospects" ? prospectFromPipelineLead(lead) : null;
+
+  const company = prospect?.businessName || lead.company || detailMap.get("Company Name") || "your company";
+  const contactName = prospect?.ownerName || lead.name || detailMap.get("Decision Maker Name") || detailMap.get("Contact Person") || "";
   const firstName = getFirstName(contactName);
-  const niche = lead.projectType || detailMap.get("Niche") || detailMap.get("Industry") || "your service";
-  const location = lead.location || detailMap.get("Region") || detailMap.get("Location") || "your market";
-  const signal = detailMap.get("Buying Signal") || detailMap.get("Reason / Buying Signal") || lead.description || "";
-  const firstLine = detailMap.get("Personalized First Line") || "";
-  const title = detailMap.get("Title") || detailMap.get("Target Role") || "";
+  const niche = prospect?.niche || lead.searchContext?.niche || lead.projectType || detailMap.get("Niche") || detailMap.get("Industry") || "your service";
+  const location = lead.searchContext?.city || lead.location || prospect?.address || detailMap.get("Region") || detailMap.get("Location") || "your market";
+  const signal = prospect?.buyingSignal || detailMap.get("Buying Signal") || detailMap.get("Reason / Buying Signal") || lead.description || "";
+  const firstLine = prospect?.personalizedFirstLine || detailMap.get("Personalized First Line") || "";
 
-  const opener = firstLine
+  const observation = firstLine
     ? cleanBusinessObservation(firstLine, `${company} already has real momentum in ${location}`)
     : cleanBusinessObservation(signal, `${company} looks like a strong fit for more consistent outbound prospecting`);
+  const sampleLeads = formatSampleLeads(prospects, location, niche, prospect?.id || lead.id);
+  const signature = String(senderName || "").trim() || "[Your name]";
+  const paymentLink = String(stripeLink || "").trim() || "[STRIPE LINK PLACEHOLDER]";
 
-  return `Subject: Quick idea for ${company}
+  return `Subject: 50 ${niche} leads in ${location} — 5 free samples inside
 
 Hi ${firstName},
 
-${opener}
+${observation}
 
-Based on what I found about ${company}${title ? ` and your ${title} role` : ""}, it feels like there’s a pretty direct opportunity to turn that into more ${niche} conversations without adding more manual prospecting work.
+I built a tool that finds small businesses in your area actively signaling they need ${niche} services — recently opened, underserved, no current provider signals.
 
-If you want, I can send over a few tailored ideas for ${company} in ${location} and show you what I’d test first.
+Here are 5 from your area as a sample:
+${sampleLeads}
 
-Best,
-${(lead.sourceMode === "prospects" || lead.sourceMode === "leadlist") ? (lead.name && lead.name !== company ? "" : "") : ""}`.trim();
+The full list of 50 is $200. Delivered within 24 hours.
+
+Interested?
+
+${signature}
+${paymentLink}`;
 }
 
 function normalizePipelineContextValue(value) {
@@ -2602,9 +2635,7 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
   const handlePipelinePersonalizeEmail = async (lead) => {
     setPipelineDraftingId(lead.id);
     try {
-      const baseDraft = buildDeterministicPipelineEmail(lead);
-      const senderName = shipListSenderName.trim() || "[Your name]";
-      const draft = `${baseDraft}\n${senderName}`.trim();
+      const draft = buildLeadListOfferEmail(lead, prospects, shipListSenderName, shipListStripeLink);
       updatePipelineLead(
         item => item.id === lead.id,
         item => ({ ...item, savedEmailDraft: draft }),
@@ -3711,7 +3742,95 @@ Return:
                                 <button onClick={() => { setEditingLead(null); setEditForm(null); }} style={{ ...btnSecondary, background: "transparent" }}>Cancel</button>
                               </div>
                             </div>
-                          ) : (
+                          ) : lead.sourceMode === "prospects" ? (() => {
+                            const prospect = prospectFromPipelineLead(lead);
+                            return (
+                              <div>
+                                <div style={{ ...cardStyle, marginBottom: 14, borderLeft: `4px solid ${prospect.classification?.color || t.accent}` }}>
+                                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14 }}>
+                                    {[
+                                      ["Company Name", prospect.businessName],
+                                      ["Decision Maker Name", prospect.ownerName],
+                                      ["Title", prospect.title],
+                                      ["Email", prospect.email],
+                                      ["Email Confidence", prospect.emailConfidence],
+                                      ["Phone", prospect.phone],
+                                      ["LinkedIn URL", prospect.linkedInUrl],
+                                      ["Source URL", prospect.sourceUrl],
+                                      ["Buying Signal", prospect.buyingSignal],
+                                      ["Personalized First Line", prospect.personalizedFirstLine],
+                                    ].map(([label, value]) => (
+                                      <div key={label} style={{ minWidth: 0 }}>
+                                        <div style={{ fontSize: 10, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 5 }}>{label}</div>
+                                        {String(value || "").startsWith("http") ? (
+                                          <a href={value} target="_blank" rel="noreferrer" style={{ fontSize: 13, color: t.accent, overflowWrap: "anywhere" }}>{value}</a>
+                                        ) : (
+                                          <div style={{ fontSize: 13, color: value ? t.text : t.textFaint, lineHeight: 1.45, overflowWrap: "anywhere" }}>{value || "—"}</div>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
+                                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                    <button onClick={() => { setEditingLead(lead.id); setEditForm({ ...lead }); }} style={{ ...btnSecondary, fontSize: 12, padding: "6px 14px" }}>✏ Edit</button>
+                                    <button onClick={() => handleDeleteLead(lead.id)} style={{ ...btnSecondary, fontSize: 12, padding: "6px 14px", color: t.red, borderColor: t.redBorder, background: "transparent" }}>🗑 Delete</button>
+                                    <button
+                                      onClick={() => handlePipelinePersonalizeEmail(lead)}
+                                      disabled={pipelineDraftingId === lead.id}
+                                      style={{ ...btnPrimary, fontSize: 12, padding: "6px 14px", opacity: pipelineDraftingId === lead.id ? 0.7 : 1 }}>
+                                      {pipelineDraftingId === lead.id ? "Writing..." : lead.savedEmailDraft ? "↻ Personalize Email" : "✍ Personalize Email"}
+                                    </button>
+                                    <button
+                                      onClick={() => handleRetryPipelineContext(lead)}
+                                      disabled={pipelineRetryingId === lead.id}
+                                      style={{ ...btnSecondary, fontSize: 12, padding: "6px 14px" }}>
+                                      {pipelineRetryingId === lead.id
+                                        ? "Rebuilding..."
+                                        : lead.pipelineDetails?.sections?.length
+                                          ? "↺ Refresh Details"
+                                          : "↺ Build Details"}
+                                    </button>
+                                  </div>
+
+                                  <div style={{ minWidth: 220, flex: "0 1 320px" }}>
+                                    <div style={{ display: "grid", gap: 6 }}>
+                                      {lead.result.criteria.map((c, i) => (
+                                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: t.bgHover, borderRadius: 6, borderLeft: `3px solid ${c.pass ? t.green : t.red}` }}>
+                                          <span style={{ fontSize: 12, color: c.pass ? t.green : t.red }}>{c.pass ? "✓" : "✕"}</span>
+                                          <div>
+                                            <div style={{ fontSize: 12, fontWeight: 700, color: c.pass ? t.green : t.red }}>{c.name}</div>
+                                            <div style={{ fontSize: 10, color: t.textDim }}>{c.detail}</div>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                    <div style={{ marginTop: 8, padding: "8px 12px", background: lead.result.qualified ? t.greenBg : t.redBg, borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                      <span style={{ fontSize: 12, fontWeight: 700 }}>Final Score</span>
+                                      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, fontWeight: 700, color: lead.result.qualified ? t.green : t.red }}>{lead.result.score}/{lead.result.total}</span>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {lead.savedEmailDraft && (
+                                  <div style={{ marginTop: 14 }}>
+                                    <h4 style={{ fontSize: 12, fontWeight: 700, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>Saved Email</h4>
+                                    <textarea
+                                      value={lead.savedEmailDraft}
+                                      onChange={e => updatePipelineLead(item => item.id === lead.id, item => ({ ...item, savedEmailDraft: e.target.value }), { silent: true })}
+                                      style={{ width: "100%", minHeight: 180, background: t.bgHover, border: `1px solid ${t.borderLight}`, borderRadius: 8, padding: "10px 12px", color: t.text, fontSize: 12, fontFamily: "inherit", resize: "vertical", boxSizing: "border-box" }}
+                                    />
+                                    <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+                                      <button onClick={() => { navigator.clipboard.writeText(lead.savedEmailDraft); showToast("Email copied to clipboard"); }} style={{ ...btnPrimary, fontSize: 12, padding: "6px 14px" }}>
+                                        Copy Email
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })() : (
                             <div style={{ display: "flex", gap: 40, flexWrap: "wrap" }}>
                               <div style={{ flex: "1 1 260px" }}>
                                 <h4 style={{ fontSize: 12, fontWeight: 700, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>Contact Details</h4>
