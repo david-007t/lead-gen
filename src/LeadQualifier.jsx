@@ -278,6 +278,8 @@ function parseCSV(text) {
 
 const LEAD_REQUEST_EXAMPLE = `Act as freight broker in the US. Identify shippers in Healthcare & Medical Supply, Food & Beverage especially refrigerated, and Construction & Building Materials. Target Transportation Managers, Logistics Managers, and Shipping Supervisors. Companies should be $10M-$100M revenue, regional distributors, overflow freight, after-hours coverage. Include company name, contact person, email, phone, LinkedIn, and high-demand lanes right now. Format as target shipper list and lanes in an Excel/Google Sheet.`;
 
+const GENERATED_LEADS_SHEET_NAME = "Generated Leads";
+
 const FREIGHT_MIN_COLUMNS = [
   "Company Name",
   "Contact Person",
@@ -1979,14 +1981,14 @@ RESPOND WITH ONLY this JSON object:
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          sheetName: "Lead Request Results",
+          sheetName: GENERATED_LEADS_SHEET_NAME,
           columns,
           rows: leadListResults.map(row => columns.map(col => getLeadCell(row, col))),
         }),
       });
       const data = await response.json();
       if (!response.ok || data.error) throw new Error(data.error || "Google Sheets append failed");
-      setLeadListSheetStatus(`Appended ${data.updatedRows || leadListResults.length} rows to Google Sheets.`);
+      setLeadListSheetStatus(`Appended ${data.updatedRows || leadListResults.length} rows to ${GENERATED_LEADS_SHEET_NAME}.`);
       showToast("Appended to Google Sheets");
     } catch (err) {
       const message = err?.message || "Google Sheets append failed";
