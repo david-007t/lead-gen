@@ -768,33 +768,72 @@ export default function LeadQualifier() {
       })
       .filter(p => p.businessName && p.ownerName);
 
-    const runDecisionMakerSearch = async (attempt = 1) => {
-      const targetCount = prospectCount;
-      const minimumRows = Math.max(1, Math.ceil(targetCount * 0.67));
+    const runAnthropicSearch = async ({ maxTokens, system, prompt }) => {
       const resp = await fetch("/api/anthropic", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-20250514",
-          max_tokens: 5000,
-          system: "You are a B2B decision-maker lead researcher. Use web search to find real independent businesses and public decision-maker evidence. Return ONLY a raw JSON array. No markdown, no explanation, no placeholder text.",
-          messages: [{
-            role: "user",
-            content: `Build a decision-maker list for ${prospectNiche} in ${prospectCity.trim()}.
+          max_tokens: maxTokens,
+          system,
+          messages: [{ role: "user", content: prompt }],
+          tools: [{ type: "web_search_20250305", name: "web_search" }],
+        }),
+      });
+      const raw = await resp.text();
+      let data;
+      try { data = JSON.parse(raw); } catch { throw new Error(`Service unavailable (HTTP ${resp.status})`); }
+      if (data.error) throw new Error(data.error.message || "Unknown error from the AI service.");
+      const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
+      return parseProspectJSON(text) || [];
+    };
 
-Use this exact two-step workflow:
+    const runCompanyDiscovery = async () => {
+      const targetCount = prospectCount;
+      return runAnthropicSearch({
+        maxTokens: 2500,
+        system: "You are a B2B company researcher. Use web search to find real independent businesses. Return ONLY a raw JSON array. No markdown, no explanation, no placeholder text.",
+        prompt: `Find ${targetCount} real boutique or independent ${prospectNiche} businesses in ${prospectCity.trim()}.
 
-STEP 1 - Find Companies:
-Find ${targetCount} real boutique or independent ${prospectNiche} businesses in ${prospectCity.trim()}. Exclude national chains, franchises, marketplaces, directories, and lead sellers. For each company, identify company name, address, phone, website domain, and one specific buying signal sentence explaining why they are a good prospect.
+Exclude national chains, franchises, marketplaces, directories, and lead sellers.
 
-STEP 2 - Find the Decision Maker:
+Return exactly this JSON array schema:
+[
+  {
+    "Company Name": "",
+    "Address": "",
+    "Phone": "",
+    "Website Domain": "",
+    "Buying Signal": ""
+  }
+]
+
+Hard rules:
+- No placeholder text like "Not found", "N/A", "Unknown", or "None".
+- The buying signal must be one specific sentence explaining why this company is a good prospect.
+- Return real companies only.`,
+      });
+    };
+
+    const runDecisionMakerBatch = async (companies, batchIndex, attempt = 1) => {
+      const companyLines = companies.map((company, index) => (
+        `${index + 1}. ${clean(company["Company Name"] || company.companyName || company.businessName)} | domain: ${clean(company["Website Domain"] || company.websiteDomain || company.domain)} | signal: ${clean(company["Buying Signal"] || company.buyingSignal)}`
+      )).join("\n");
+
+      return normalizeProspectResults(await runAnthropicSearch({
+        maxTokens: 2500,
+        system: "You are a B2B decision-maker lead researcher. Use web search to find public decision-maker evidence. Return ONLY a raw JSON array. No markdown, no explanation, no placeholder text.",
+        prompt: `Enrich these ${companies.length} ${prospectNiche} companies in ${prospectCity.trim()} with ONE decision maker each.
+
+Companies:
+${companyLines}
+
 For each company, search its website/team/about/contact pages, LinkedIn, press pages, directories, or other public sources to find ONE decision maker.
 Priority order:
 1. Founder / Owner
 2. CEO / President / Managing Partner
 3. Most senior person in the relevant department
 
-For the decision maker, return their name, title, LinkedIn URL if found, and email.
 Email rules:
 - HIGH confidence only if the exact email is found on a public page.
 - MEDIUM confidence if inferred from a visible company email pattern or a very standard pattern at the company domain.
@@ -819,37 +858,52 @@ Return exactly these 9 fields for each row and no extra fields:
 Hard rules:
 - Do not return a row unless it has at least Company Name and Decision Maker Name.
 - Do not use placeholder text like "Not found", "N/A", "Unknown", or "None"; leave optional fields empty or skip the row.
-- Target ${targetCount} rows. Return at least ${minimumRows} rows if quality requires dropping rows.
-- At least 70% of returned rows should have a plausible decision-maker email.
 - The personalized first line must be one sentence referencing something specific about the business.
 
-This is attempt ${attempt}. If previous quality was too low, be stricter about named people and plausible emails.`,
-          }],
-          tools: [{ type: "web_search_20250305", name: "web_search" }],
-        }),
-      });
-
-      const raw = await resp.text();
-      let data;
-      try { data = JSON.parse(raw); } catch { throw new Error(`Service unavailable (HTTP ${resp.status})`); }
-      if (data.error) throw new Error(data.error.message || "Unknown error from the AI service.");
-
-      const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
-      const parsed = parseProspectJSON(text) || [];
-      return normalizeProspectResults(parsed);
+This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
+      }));
     };
 
     try {
       const targetCount = prospectCount;
       const minimumRows = Math.max(1, Math.ceil(targetCount * 0.67));
-      let results = await runDecisionMakerSearch(1);
+      setProspectProgress({ phase: "discovery", current: 0, total: targetCount });
+      const companies = await runCompanyDiscovery();
 
-      if (!qualityPasses(results, minimumRows)) {
-        setProspectProgress({ phase: "retrying" });
-        const retryResults = await runDecisionMakerSearch(2);
-        if (qualityPasses(retryResults, minimumRows) || retryResults.length > results.length) {
-          results = retryResults;
+      if (!companies.length) {
+        setProspectError(`No independent ${prospectNiche} companies found in ${prospectCity.trim()}. Try a broader city or niche.`);
+        setProspectLoading(false); setProspectProgress(null); return;
+      }
+
+      const ENRICH_BATCH_SIZE = 3;
+      const batches = [];
+      for (let i = 0; i < companies.length; i += ENRICH_BATCH_SIZE) {
+        batches.push(companies.slice(i, i + ENRICH_BATCH_SIZE));
+      }
+
+      let results = [];
+      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+        setProspectProgress({
+          phase: "enriching",
+          current: results.length,
+          total: Math.min(targetCount, companies.length),
+          batchIndex: batchIndex + 1,
+          totalBatches: batches.length,
+        });
+
+        let batchResults = await runDecisionMakerBatch(batches[batchIndex], batchIndex + 1, 1);
+        const batchMinimumRows = Math.max(1, Math.ceil(batches[batchIndex].length * 0.67));
+        if (!qualityPasses(batchResults, batchMinimumRows)) {
+          setProspectProgress({ phase: "retrying", current: results.length, total: Math.min(targetCount, companies.length), batchIndex: batchIndex + 1, totalBatches: batches.length });
+          const retryResults = await runDecisionMakerBatch(batches[batchIndex], batchIndex + 1, 2);
+          if (qualityPasses(retryResults, batchMinimumRows) || retryResults.length > batchResults.length) {
+            batchResults = retryResults;
+          }
         }
+
+        results = [...results, ...batchResults].slice(0, targetCount);
+        setProspects(results);
+        if (results.length >= targetCount) break;
       }
 
       if (results.length === 0) {
@@ -857,8 +911,9 @@ This is attempt ${attempt}. If previous quality was too low, be stricter about n
         setProspectLoading(false); setProspectProgress(null); return;
       }
 
-      setProspects(results);
       const withEmail = results.filter(row => isPlausibleEmail(row.email)).length;
+      const qualityNote = qualityPasses(results, minimumRows) ? "" : " Quality is below the 70% email target.";
+      if (qualityNote) setProspectError(`Returned ${results.length} decision makers with ${withEmail} plausible emails.${qualityNote}`);
       showToast(`Found ${results.length} decision makers · ${withEmail} with plausible emails`);
     } catch (err) {
       setProspectError("Search failed — " + (err?.message || "unexpected error. Please try again."));
