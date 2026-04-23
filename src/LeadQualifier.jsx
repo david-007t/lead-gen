@@ -2347,40 +2347,16 @@ Respond with ONLY a JSON object:
     setLeadListSheetStatus(null);
 
     const pipelineExclusions = leads.map(l => l.company).filter(Boolean);
-    const buildSearchPrompt = (rowCount, exclusions = [], batchIndex = 1, totalBatches = 1, compact = false) => {
-      const allExclusions = [...new Set([...pipelineExclusions, ...exclusions].filter(Boolean))];
-      const exclusionClause = allExclusions.length > 0
-        ? `\nEXCLUSION LIST — do NOT return any of these companies (already returned or already in pipeline): ${allExclusions.join(", ")}\n`
-        : "";
-      if (compact) {
-        return `Research ${rowCount} real matching leads for this request. This is batch ${batchIndex} of ${totalBatches}.
+    const exclusionClause = pipelineExclusions.length > 0
+      ? `\nEXCLUSION LIST — do NOT return any of these companies (already in pipeline): ${pipelineExclusions.join(", ")}\n`
+      : "";
+
+    const prompt = `Build a reusable lead generation job from this natural-language request, then research real leads for it.
 ${exclusionClause}
 USER REQUEST:
 ${requestText}
 
-Rules:
-- Return exactly ${rowCount} rows if possible.
-- A public main/location phone is enough to include a matching company.
-- Do not spend time proving the business lacks coverage; use a short, plausible buying-signal sentence based on business type, recency, underserved positioning, or operational risk.
-- Do not invent names, emails, LinkedIn URLs, or phone numbers. Use empty strings for unavailable optional fields.
-- Return ONLY valid JSON that JSON.parse can parse.
-
-JSON shape:
-{
-  "job": { "summary": "short description", "industries": [], "targetRoles": [], "companyFilters": [], "geography": "", "requiredColumns": [], "specialResearchRequirements": [] },
-  "columns": ["Company Name", "Contact Person", "Target Role", "Best Phone", "Email", "LinkedIn", "Region", "Reason / Buying Signal", "Source URL", "Confidence"],
-  "rows": [
-    { "Company Name": "", "Contact Person": "", "Target Role": "", "Best Phone": "", "Email": "", "LinkedIn": "", "Region": "", "Reason / Buying Signal": "", "Source URL": "", "Confidence": "Medium" }
-  ]
-}`;
-      }
-
-      return `Build a reusable lead generation job from this natural-language request, then research real leads for it.
-${exclusionClause}
-USER REQUEST:
-${requestText}
-
-RESULT COUNT: Return ${rowCount} rows for this batch. The full user request asks for ${leadListCount} rows. This is batch ${batchIndex} of ${totalBatches}.
+RESULT COUNT: Return up to ${leadListCount} rows.
 
 Engine requirements:
 1. Parse the request into a structured job with:
@@ -2417,7 +2393,7 @@ Phone and contact field rules:
 - Do not stop early just because a few high-confidence rows are found. A public main-line phone is enough for inclusion when a company matches the request. Return as many callable rows as possible up to the requested count.
 - If exact contact names are not public, leave Contact Person blank and set Contact Status to "Role Only" or "Company Only".
 
-RESPOND WITH ONLY this JSON object. It must be valid JSON that JSON.parse can parse. Every key and every string value must be wrapped in double quotes. Do not return markdown, comments, bare words, or trailing commas:
+RESPOND WITH ONLY this JSON object:
 {
   "job": {
     "summary": "short description",
@@ -2454,80 +2430,31 @@ RESPOND WITH ONLY this JSON object. It must be valid JSON that JSON.parse can pa
     }
   ]
 }`;
-    };
 
     try {
-      const targetRows = leadListCount;
-      const BATCH_SIZE = targetRows > 10 ? 3 : targetRows;
-      const totalBatches = Math.ceil(targetRows / BATCH_SIZE);
-      let combinedRows = [];
-      let combinedJob = null;
-      let combinedColumns = [];
-      const runLeadListBatch = async ({ rowCount, batchIndex, previousCompanies, compact = false }) => callAnthropic("Build Lead List Search", {
+      setLeadListProgress("Researching companies");
+      const { response, data } = await callAnthropic("Build Lead List Search", {
         model: "claude-sonnet-4-20250514",
-        max_tokens: compact ? 3500 : 4500,
-        system: "You are the Lead Request Engine for a B2B sales app. Return real call-ready rows quickly. Phone numbers and reachable contacts are the priority. Never fabricate contact data. Return ONLY valid JSON.",
-        messages: [{ role: "user", content: buildSearchPrompt(rowCount, previousCompanies, batchIndex + 1, totalBatches, compact) }],
-        tools: [{ type: "web_search_20250305", name: "web_search", max_uses: compact ? 3 : Math.min(4, Math.max(3, rowCount + 1)) }],
+        max_tokens: 10000,
+        system: "You are the Lead Request Engine for a B2B sales app. Parse natural-language requests into reusable lead jobs, search the web for real leads, and return call-ready rows. Phone numbers and reachable contacts are the priority. Accuracy beats volume. Never fabricate contact data. Return ONLY valid JSON.",
+        messages: [{ role: "user", content: prompt }],
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
       });
-
-      for (let batchIndex = 0; batchIndex < totalBatches && combinedRows.length < targetRows; batchIndex++) {
-        const remaining = targetRows - combinedRows.length;
-        const rowCount = Math.min(BATCH_SIZE, remaining);
-        setLeadListProgress(`Researching companies ${batchIndex + 1}/${totalBatches}`);
-        const previousCompanies = combinedRows.map(row => getFirstLeadCell(row, ["Company Name", "Business Name", "Company"])).filter(Boolean);
-        let { response, data } = await runLeadListBatch({ rowCount, batchIndex, previousCompanies });
-        if (!data || data.error?.type === "upstream_parse_error") {
-          setLeadListProgress(`Retrying smaller batch ${batchIndex + 1}/${totalBatches}`);
-          ({ response, data } = await runLeadListBatch({ rowCount: Math.min(2, rowCount), batchIndex, previousCompanies, compact: true }));
-        }
-        if (!data || data.error?.type === "upstream_parse_error") throw new Error(`Search service unavailable (HTTP ${response.status}) — please try again in a moment.`);
-        if (data.error) {
-          if (combinedRows.length > 0) break;
-          setLeadListError(data.error.message || "API error. Please try again.");
-          setLeadListLoading(false);
-          setLeadListProgress(null);
-          return;
-        }
-
-        setLeadListProgress(`Structuring sheet ${batchIndex + 1}/${totalBatches}`);
-        const textParts = [];
-        (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
-        const parsed = extractJSONValue(textParts.join("\n"));
-        const parsedRows = getParsedRows(parsed);
-        if (!parsedRows || !Array.isArray(parsedRows) || parsedRows.length === 0) {
-          if (combinedRows.length > 0) break;
-          setLeadListError("No callable leads returned. Try removing 'exclude directory-only results' or broadening the geography.");
-          setLeadListLoading(false);
-          setLeadListProgress(null);
-          return;
-        }
-
-        if (!combinedJob) {
-          combinedJob = Array.isArray(parsed) ? {
-            summary: requestText.slice(0, 120),
-            industries: leadListNiche.trim() ? [leadListNiche.trim()] : [],
-            targetRoles: [],
-            companyFilters: [],
-            geography: leadListCity.trim(),
-            requiredColumns: DEFAULT_LEAD_COLUMNS,
-            specialResearchRequirements: [],
-          } : (parsed.job || {});
-        }
-        combinedColumns = [...combinedColumns, ...((Array.isArray(parsed) ? [] : parsed?.columns) || [])];
-
-        const seenCompanies = new Set(combinedRows.map(row => columnKey(getFirstLeadCell(row, ["Company Name", "Business Name", "Company"]))));
-        const freshRows = parsedRows.filter(row => {
-          const key = columnKey(getFirstLeadCell(row, ["Company Name", "Business Name", "Company"]));
-          if (!key || seenCompanies.has(key)) return false;
-          seenCompanies.add(key);
-          return true;
-        });
-        combinedRows = [...combinedRows, ...freshRows].slice(0, targetRows);
-        setLeadListResults(combinedRows.map((r, i) => ({ ...r, id: r.id || Date.now() + i + Math.random() })));
+      // Guard against non-JSON responses (Vercel/CDN error pages, timeouts, etc.)
+      if (!data || data.error?.type === "upstream_parse_error") throw new Error(`Search service unavailable (HTTP ${response.status}) — please try again in a moment.`);
+      if (data.error) {
+        setLeadListError(data.error.message || "API error. Please try again.");
+        setLeadListLoading(false);
+        setLeadListProgress(null);
+        return;
       }
 
-      const parsedRows = combinedRows;
+      setLeadListProgress("Structuring sheet");
+      const textParts = [];
+      (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
+      const fullText = textParts.join("\n");
+      const parsed = extractJSONValue(fullText);
+      const parsedRows = getParsedRows(parsed);
 
       if (!parsedRows || !Array.isArray(parsedRows) || parsedRows.length === 0) {
         setLeadListError("No callable leads returned. Try removing 'exclude directory-only results' or broadening the geography.");
@@ -2536,7 +2463,7 @@ RESPOND WITH ONLY this JSON object. It must be valid JSON that JSON.parse can pa
         return;
       }
 
-      const job = combinedJob || {
+      const job = Array.isArray(parsed) ? {
         summary: requestText.slice(0, 120),
         industries: leadListNiche.trim() ? [leadListNiche.trim()] : [],
         targetRoles: [],
@@ -2544,8 +2471,8 @@ RESPOND WITH ONLY this JSON object. It must be valid JSON that JSON.parse can pa
         geography: leadListCity.trim(),
         requiredColumns: DEFAULT_LEAD_COLUMNS,
         specialResearchRequirements: [],
-      };
-      const columns = buildLeadColumns({ ...job, requiredColumns: combinedColumns.length ? combinedColumns : job.requiredColumns }, parsedRows, requestText);
+      } : (parsed.job || {});
+      const columns = buildLeadColumns({ ...job, requiredColumns: parsed?.columns || job.requiredColumns }, parsedRows, requestText);
       const results = parsedRows.map((r, i) => ({
         ...r,
         id: Date.now() + i + Math.random(),
