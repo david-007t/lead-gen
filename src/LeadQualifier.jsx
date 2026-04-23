@@ -456,7 +456,47 @@ const themes = {
 };
 
 // ─── STORAGE HELPERS ──────────────────────────────────────────
-const SK = { leads: "lq-leads-v2", criteria: "lq-criteria-v2", settings: "lq-settings-v2" };
+const SK = { leads: "lq-leads-v2", criteria: "lq-criteria-v2", settings: "lq-settings-v2", costEvents: "lq-cost-events-v1" };
+
+const MODEL_PRICING_PER_MTOK = {
+  sonnet: { input: 3, output: 15, cacheWrite5m: 3.75, cacheRead: 0.3 },
+  haiku: { input: 0.8, output: 4, cacheWrite5m: 1, cacheRead: 0.08 },
+  opus: { input: 15, output: 75, cacheWrite5m: 18.75, cacheRead: 1.5 },
+};
+const WEB_SEARCH_COST = 0.01;
+
+function getModelPricing(model = "") {
+  const name = String(model).toLowerCase();
+  if (name.includes("haiku")) return MODEL_PRICING_PER_MTOK.haiku;
+  if (name.includes("opus")) return MODEL_PRICING_PER_MTOK.opus;
+  return MODEL_PRICING_PER_MTOK.sonnet;
+}
+
+function estimateTokensFromText(text) {
+  return Math.ceil(String(text || "").length / 4);
+}
+
+function calculateAnthropicCost(model, usage = {}, fallbackInputTokens = 0, fallbackOutputTokens = 0) {
+  const pricing = getModelPricing(model);
+  const inputTokens = Number(usage.input_tokens ?? fallbackInputTokens ?? 0);
+  const outputTokens = Number(usage.output_tokens ?? fallbackOutputTokens ?? 0);
+  const cacheCreationTokens = Number(usage.cache_creation_input_tokens ?? 0);
+  const cacheReadTokens = Number(usage.cache_read_input_tokens ?? 0);
+  const webSearchRequests = Number(usage.server_tool_use?.web_search_requests ?? 0);
+  const cost =
+    (inputTokens * pricing.input / 1_000_000) +
+    (outputTokens * pricing.output / 1_000_000) +
+    (cacheCreationTokens * pricing.cacheWrite5m / 1_000_000) +
+    (cacheReadTokens * pricing.cacheRead / 1_000_000) +
+    (webSearchRequests * WEB_SEARCH_COST);
+  return { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, webSearchRequests, cost };
+}
+
+function formatCost(cost) {
+  const value = Number(cost || 0);
+  if (value < 0.01) return `$${value.toFixed(4)}`;
+  return `$${value.toFixed(2)}`;
+}
 
 async function loadData(key) {
   try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : null; }
@@ -775,6 +815,7 @@ export default function LeadQualifier() {
   const [toast, setToast] = useState(null);
   const [settingsEdited, setSettingsEdited] = useState(false);
   const [confirmAction, setConfirmAction] = useState(null);
+  const [costEvents, setCostEvents] = useState([]);
 
   const [inlineEdit, setInlineEdit] = useState(null); // { id, field, value }
 
@@ -877,8 +918,10 @@ export default function LeadQualifier() {
       const [savedLeads, savedCriteria, savedSettings] = await Promise.all([
         loadData(SK.leads), loadData(SK.criteria), loadData(SK.settings),
       ]);
+      const savedCostEvents = await loadData(SK.costEvents);
       if (savedLeads) setLeads(savedLeads);
       if (savedCriteria) setCriteria(savedCriteria);
+      if (savedCostEvents) setCostEvents(savedCostEvents);
       if (savedSettings) {
         if (savedSettings.companyName) setCompanyName(savedSettings.companyName);
         if (savedSettings.theme) setTheme(savedSettings.theme);
@@ -897,6 +940,7 @@ export default function LeadQualifier() {
   // ─── PERSIST ON CHANGE ────────────────────────────────────
   useEffect(() => { if (!loading) saveData(SK.leads, leads); }, [leads, loading]);
   useEffect(() => { if (!loading) saveData(SK.criteria, criteria); }, [criteria, loading]);
+  useEffect(() => { if (!loading) saveData(SK.costEvents, costEvents.slice(0, 100)); }, [costEvents, loading]);
   useEffect(() => { if (!loading) saveData(SK.settings, { companyName, theme, industry, setupComplete, shipListStripeLink, shipListSenderName }); }, [companyName, theme, industry, setupComplete, shipListStripeLink, shipListSenderName, loading]);
   useEffect(() => { localStorage.setItem('lq-theme', theme); }, [theme]);
 
@@ -917,6 +961,63 @@ export default function LeadQualifier() {
   const showToast = (msg, type = "success") => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3000);
+  };
+
+  const recordCostEvent = (event) => {
+    setCostEvents(prev => [{ id: Date.now() + Math.random(), createdAt: Date.now(), ...event }, ...prev].slice(0, 100));
+  };
+
+  const callAnthropic = async (action, body) => {
+    const startedAt = Date.now();
+    const model = body?.model || "claude-sonnet-4-20250514";
+    const fallbackInputTokens = estimateTokensFromText(JSON.stringify(body || {}));
+    let raw = "";
+    let status = 0;
+    try {
+      const response = await fetch("/api/anthropic", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      status = response.status;
+      raw = await response.text();
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        data = {
+          error: {
+            type: "upstream_parse_error",
+            message: `Service unavailable (HTTP ${response.status})`,
+          },
+        };
+      }
+      const fallbackOutputTokens = estimateTokensFromText(raw);
+      const usage = calculateAnthropicCost(data.model || model, data.usage, fallbackInputTokens, fallbackOutputTokens);
+      recordCostEvent({
+        action,
+        model: data.model || model,
+        status: data.error ? "failed" : "success",
+        httpStatus: status,
+        durationMs: Date.now() - startedAt,
+        usedProviderUsage: !!data.usage,
+        ...usage,
+      });
+      return { response, data, raw };
+    } catch (error) {
+      const usage = calculateAnthropicCost(model, null, fallbackInputTokens, estimateTokensFromText(raw));
+      recordCostEvent({
+        action,
+        model,
+        status: "failed",
+        httpStatus: status,
+        durationMs: Date.now() - startedAt,
+        usedProviderUsage: false,
+        error: error?.message || "Request failed",
+        ...usage,
+      });
+      throw error;
+    }
   };
 
   // ─── PIPELINE STORAGE ─────────────────────────────────────
@@ -1094,21 +1195,15 @@ export default function LeadQualifier() {
       })
       .filter(p => p.businessName && p.ownerName);
 
-    const runAnthropicSearch = async ({ maxTokens, system, prompt }) => {
-      const resp = await fetch("/api/anthropic", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: maxTokens,
-          system,
-          messages: [{ role: "user", content: prompt }],
-          tools: [{ type: "web_search_20250305", name: "web_search" }],
-        }),
+    const runAnthropicSearch = async ({ maxTokens, system, prompt, action }) => {
+      const { response: resp, data } = await callAnthropic(action || "Find My Clients Search", {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: maxTokens,
+        system,
+        messages: [{ role: "user", content: prompt }],
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
       });
-      const raw = await resp.text();
-      let data;
-      try { data = JSON.parse(raw); } catch { throw new Error(`Service unavailable (HTTP ${resp.status})`); }
+      if (!data || data.error?.type === "upstream_parse_error") throw new Error(`Service unavailable (HTTP ${resp.status})`);
       if (data.error) throw new Error(data.error.message || "Unknown error from the AI service.");
       const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
       return parseProspectJSON(text) || [];
@@ -1121,6 +1216,7 @@ export default function LeadQualifier() {
         .join(", ");
       return runAnthropicSearch({
         maxTokens: 1200,
+        action: "Find My Clients Company Search",
         system: "You are a B2B company researcher. Use web search to find real independent businesses. Return ONLY a raw JSON array. No markdown, no explanation, no placeholder text.",
         prompt: `Find ${batchSize} real boutique or independent ${prospectNiche} businesses in ${prospectCity.trim()}.
 
@@ -1154,6 +1250,7 @@ This is discovery batch ${batchIndex}.`,
 
       return normalizeProspectResults(await runAnthropicSearch({
         maxTokens: 1800,
+        action: attempt > 1 ? "Find My Clients Retry Search" : "Find My Clients Decision Maker Search",
         system: "You are a B2B decision-maker lead researcher. Use web search to find public decision-maker evidence. Return ONLY a raw JSON array. No markdown, no explanation, no placeholder text.",
         prompt: `Enrich these ${companies.length} ${prospectNiche} companies in ${prospectCity.trim()} with ONE decision maker each.
 
@@ -1453,18 +1550,13 @@ RESPOND WITH A JSON ARRAY ONLY. No markdown, no explanation. Each object MUST ha
 
 Return 5 companies. ONLY Tier 1, 2, or 3. Verify Bay Area California location for each.`;
 
-        const response = await fetch("/api/anthropic", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 4000,
-            system: "You are a business research assistant. Search the web for real companies. Respond with ONLY a raw JSON array. No markdown, no explanation — just [ ... ].",
-            messages: [{ role: "user", content: prompt }],
-            tools: [{ type: "web_search_20250305", name: "web_search" }],
-          }),
+        const { data } = await callAnthropic("Ship List Search", {
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 4000,
+          system: "You are a business research assistant. Search the web for real companies. Respond with ONLY a raw JSON array. No markdown, no explanation — just [ ... ].",
+          messages: [{ role: "user", content: prompt }],
+          tools: [{ type: "web_search_20250305", name: "web_search" }],
         });
-        const data = await response.json();
         if (data.error) {
           const msg = data.error.message || "API error.";
           const isRateLimit = msg.toLowerCase().includes("rate limit") || data.error.type === "rate_limit_error";
@@ -1644,18 +1736,13 @@ Respond with ONLY a JSON object (no markdown):
 
 If you cannot find a specific person, return the best guess with confidence "low".`;
 
-      const res = await fetch("/api/anthropic", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          system: "You are a B2B contact research assistant. Search the web and return ONLY a raw JSON object — no markdown, no explanation.",
-          messages: [{ role: "user", content: prompt }],
-          tools: [{ type: "web_search_20250305", name: "web_search" }],
-        }),
+      const { data } = await callAnthropic("Ship List Contact Search", {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        system: "You are a B2B contact research assistant. Search the web and return ONLY a raw JSON object — no markdown, no explanation.",
+        messages: [{ role: "user", content: prompt }],
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
       });
-      const data = await res.json();
       const textParts = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
       let contact = null;
       const objMatch = textParts.match(/\{[\s\S]*\}/);
@@ -1693,16 +1780,11 @@ ${isLinkedIn
 
 Return ONLY the message text. No labels, no markdown.`;
 
-    const res = await fetch("/api/anthropic", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 400,
-        messages: [{ role: "user", content: prompt }],
-      }),
+    const { data } = await callAnthropic("Ship List Outreach Draft", {
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 400,
+      messages: [{ role: "user", content: prompt }],
     });
-    const data = await res.json();
     const draft = (data.content || []).find(b => b.type === "text")?.text || "";
     if (draft) setShipListOutreach(prev => ({ ...prev, [company.id]: draft }));
   };
@@ -1765,19 +1847,13 @@ RULES:
 Return fewer results if needed. Quality over quantity.`;
 
       try {
-        const response = await fetch("/api/anthropic", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: "claude-haiku-4-5-20251001",
-            max_tokens: 12000,
-            system: "You are a job listing researcher. You use web search to find real job postings. ABSOLUTE RULE: You may ONLY include a listing in your results if the URL came directly from a search result you received. You must NEVER construct, guess, or modify a URL. If a search result gives you a URL, use that exact URL. If the company name in the search result snippet does not match the company name in the URL destination, do NOT include it. Accuracy is everything — returning 2 real listings is better than 10 fake ones.",
-            messages: [{ role: "user", content: prompt }],
-            tools: [{ type: "web_search_20250305", name: "web_search" }],
-          }),
+        const { data } = await callAnthropic("Find AI Prospects Search", {
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 12000,
+          system: "You are a job listing researcher. You use web search to find real job postings. ABSOLUTE RULE: You may ONLY include a listing in your results if the URL came directly from a search result you received. You must NEVER construct, guess, or modify a URL. If a search result gives you a URL, use that exact URL. If the company name in the search result snippet does not match the company name in the URL destination, do NOT include it. Accuracy is everything — returning 2 real listings is better than 10 fake ones.",
+          messages: [{ role: "user", content: prompt }],
+          tools: [{ type: "web_search_20250305", name: "web_search" }],
         });
-
-        const data = await response.json();
         if (data.error) {
           failedBatches++;
           continue;
@@ -1971,17 +2047,11 @@ Framework:
 
 Under 5 sentences. Sound like a real person, not a sales pitch. No fluff.`;
 
-      const response = await fetch("/api/anthropic", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 500,
-          messages: [{ role: "user", content: prompt }],
-        }),
+      const { data } = await callAnthropic("Find AI Prospects Outreach Draft", {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 500,
+        messages: [{ role: "user", content: prompt }],
       });
-
-      const data = await response.json();
       if (data.error) { showToast("Failed to generate outreach", "error"); setDraftingIndeedEmail(null); return; }
       const emailText = (data.content || []).find(b => b.type === "text")?.text || "";
       setIndeedEmailDrafts(prev => ({ ...prev, [result.id]: emailText }));
@@ -2021,17 +2091,12 @@ Frame it as: you're not applying as a person — you're pitching an AI system th
 
 Keep it under 4 sentences. Direct, confident, no fluff.`;
 
-      const response = await fetch("/api/anthropic", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 300,
-          system: "You are writing cold pitches for an AI automation agency. The goal is to hijack a job application form to pitch AI services instead of a resume. Be direct, reference the pay rate, show the math. Under 4 sentences.",
-          messages: [{ role: "user", content: prompt }],
-        }),
+      const { data } = await callAnthropic("Find AI Prospects Apply Pitch", {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 300,
+        system: "You are writing cold pitches for an AI automation agency. The goal is to hijack a job application form to pitch AI services instead of a resume. Be direct, reference the pay rate, show the math. Under 4 sentences.",
+        messages: [{ role: "user", content: prompt }],
       });
-      const data = await response.json();
       const text = (data.content || []).find(b => b.type === "text")?.text || "";
       setIndeedApplyPitch(prev => ({ ...prev, [r.id]: text }));
       updatePipelineLead(
@@ -2090,18 +2155,13 @@ Respond with ONLY a JSON object:
 If you genuinely cannot find contact info after searching, respond with:
 { "notFound": true }`;
 
-      const response = await fetch("/api/anthropic", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          system: "You are a contact research assistant. Search the web to find real contact info for business decision makers. Cross-reference industry and location to confirm you have the right company. Respond with ONLY a JSON object.",
-          messages: [{ role: "user", content: prompt }],
-          tools: [{ type: "web_search_20250305", name: "web_search" }],
-        }),
+      const { data } = await callAnthropic("Find AI Prospects Contact Search", {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        system: "You are a contact research assistant. Search the web to find real contact info for business decision makers. Cross-reference industry and location to confirm you have the right company. Respond with ONLY a JSON object.",
+        messages: [{ role: "user", content: prompt }],
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
       });
-      const data = await response.json();
       const textParts = [];
       (data.content || []).forEach(b => { if (b.type === "text" && b.text) textParts.push(b.text); });
       const fullText = textParts.join("\n");
@@ -2158,17 +2218,12 @@ My pitch: AI automation can do this job 24/7 for a fraction of what they'd pay a
 
 Personalize this to ${contact.name || "them"} specifically. Reference the job posting and pay rate. Show the math. Under 5 sentences. No fluff.`;
 
-      const response = await fetch("/api/anthropic", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 400,
-          system: "You are writing cold outreach emails for an AI automation agency. The recipient posted a job listing for a role AI can replace. Reference their name, company, job title, and pay rate. Show the annual cost math. Be direct, not salesy. The math sells itself.",
-          messages: [{ role: "user", content: prompt }],
-        }),
+      const { data } = await callAnthropic("Find AI Prospects Contact Email", {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 400,
+        system: "You are writing cold outreach emails for an AI automation agency. The recipient posted a job listing for a role AI can replace. Reference their name, company, job title, and pay rate. Show the annual cost math. Be direct, not salesy. The math sells itself.",
+        messages: [{ role: "user", content: prompt }],
       });
-      const data = await response.json();
       const text = (data.content || []).find(b => b.type === "text")?.text || "";
       setIndeedContactDraft(prev => ({ ...prev, [r.id]: text }));
       updatePipelineLead(
@@ -2211,17 +2266,12 @@ Respond with ONLY a JSON object:
   "followUpDm": "..."
 }`;
 
-      const response = await fetch("/api/anthropic", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 500,
-          system: "You are writing LinkedIn outreach messages for an AI automation agency targeting companies that posted job listings for roles AI can replace. Respond with ONLY a JSON object with connectionNote and followUpDm fields.",
-          messages: [{ role: "user", content: prompt }],
-        }),
+      const { data } = await callAnthropic("Find AI Prospects LinkedIn Messages", {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 500,
+        system: "You are writing LinkedIn outreach messages for an AI automation agency targeting companies that posted job listings for roles AI can replace. Respond with ONLY a JSON object with connectionNote and followUpDm fields.",
+        messages: [{ role: "user", content: prompt }],
       });
-      const data = await response.json();
       const textParts = [];
       (data.content || []).forEach(b => { if (b.type === "text" && b.text) textParts.push(b.text); });
       const fullText = textParts.join("\n");
@@ -2383,21 +2433,15 @@ RESPOND WITH ONLY this JSON object:
 
     try {
       setLeadListProgress("Researching companies");
-      const response = await fetch("/api/anthropic", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 10000,
-          system: "You are the Lead Request Engine for a B2B sales app. Parse natural-language requests into reusable lead jobs, search the web for real leads, and return call-ready rows. Phone numbers and reachable contacts are the priority. Accuracy beats volume. Never fabricate contact data. Return ONLY valid JSON.",
-          messages: [{ role: "user", content: prompt }],
-          tools: [{ type: "web_search_20250305", name: "web_search" }],
-        }),
+      const { response, data } = await callAnthropic("Build Lead List Search", {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 10000,
+        system: "You are the Lead Request Engine for a B2B sales app. Parse natural-language requests into reusable lead jobs, search the web for real leads, and return call-ready rows. Phone numbers and reachable contacts are the priority. Accuracy beats volume. Never fabricate contact data. Return ONLY valid JSON.",
+        messages: [{ role: "user", content: prompt }],
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
       });
       // Guard against non-JSON responses (Vercel/CDN error pages, timeouts, etc.)
-      const _leadListRaw = await response.text();
-      let data;
-      try { data = JSON.parse(_leadListRaw); } catch { throw new Error(`Search service unavailable (HTTP ${response.status}) — please try again in a moment.`); }
+      if (!data || data.error?.type === "upstream_parse_error") throw new Error(`Search service unavailable (HTTP ${response.status}) — please try again in a moment.`);
       if (data.error) {
         setLeadListError(data.error.message || "API error. Please try again.");
         setLeadListLoading(false);
@@ -2530,16 +2574,11 @@ Framework:
 
 Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson.`;
 
-      const response = await fetch("/api/anthropic", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 400,
-          messages: [{ role: "user", content: prompt }],
-        }),
+      const { data } = await callAnthropic("Build Lead List Outreach Draft", {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 400,
+        messages: [{ role: "user", content: prompt }],
       });
-      const data = await response.json();
       const text = (data.content || []).find(b => b.type === "text")?.text || "";
       setLeadListOutreach(prev => ({ ...prev, [lead.id]: text }));
       updatePipelineLead(
@@ -2691,18 +2730,13 @@ Return:
   "Personalized First Line": ""
 }`;
 
-          const response = await fetch("/api/anthropic", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              model: "claude-sonnet-4-20250514",
-              max_tokens: 1200,
-              system: "You are a B2B decision-maker researcher. Search the web and return only one raw JSON object.",
-              messages: [{ role: "user", content: prompt }],
-              tools: [{ type: "web_search_20250305", name: "web_search" }],
-            }),
+          const { data } = await callAnthropic("Pipeline Retry Details", {
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 1200,
+            system: "You are a B2B decision-maker researcher. Search the web and return only one raw JSON object.",
+            messages: [{ role: "user", content: prompt }],
+            tools: [{ type: "web_search_20250305", name: "web_search" }],
           });
-          const data = await response.json();
           const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
           const match = text.match(/\{[\s\S]*\}/);
           const parsed = match ? JSON.parse(match[0]) : null;
@@ -3016,6 +3050,8 @@ Return:
   const modeLeads = modeScopedLeads;
   const qualifiedCount = modeLeads.filter(l => l.result.qualified).length;
   const unqualifiedCount = modeLeads.length - qualifiedCount;
+  const sessionCost = costEvents.reduce((sum, event) => sum + Number(event.cost || 0), 0);
+  const latestCostEvent = costEvents[0];
 
   return (
     <>
@@ -3100,9 +3136,37 @@ Return:
                   <p style={{ fontSize: 11, color: t.textDim, letterSpacing: "0.06em", textTransform: "uppercase" }}>{ind.label} · {leads.length} leads · {qualifiedCount} qualified</p>
                 </div>
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                {leads.length > 0 && (
-                  <div style={{ display: "flex", gap: 16, marginRight: 8 }} className="header-stats">
+	              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+	                <details style={{ position: "relative" }}>
+	                  <summary style={{ listStyle: "none", cursor: "pointer", padding: "7px 10px", border: `1px solid ${t.borderLight}`, borderRadius: 8, background: t.bgHover, minWidth: 150 }}>
+	                    <div style={{ fontSize: 9, color: t.textFaint, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>AI Cost</div>
+	                    <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700, color: t.accent }}>{formatCost(sessionCost)}</div>
+	                    <div style={{ fontSize: 10, color: t.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 180 }}>
+	                      {latestCostEvent ? `${latestCostEvent.action}: ${formatCost(latestCostEvent.cost)}` : "No paid calls yet"}
+	                    </div>
+	                  </summary>
+	                  <div style={{ position: "absolute", right: 0, top: "calc(100% + 8px)", width: 360, maxWidth: "80vw", background: t.cardBg, border: `1px solid ${t.border}`, borderRadius: 8, padding: 12, zIndex: 20, boxShadow: theme === "dark" ? "0 18px 40px rgba(0,0,0,0.45)" : "0 18px 40px rgba(41,37,36,0.16)" }}>
+	                    <div style={{ fontSize: 11, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 8 }}>Recent Paid Calls</div>
+	                    {costEvents.length === 0 ? (
+	                      <div style={{ fontSize: 12, color: t.textMuted }}>No paid AI calls tracked yet.</div>
+	                    ) : costEvents.slice(0, 8).map(event => (
+	                      <div key={event.id} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, padding: "7px 0", borderTop: `1px solid ${t.border}` }}>
+	                        <div style={{ minWidth: 0 }}>
+	                          <div style={{ fontSize: 12, fontWeight: 700, color: t.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{event.action}</div>
+	                          <div style={{ fontSize: 10, color: t.textDim }}>
+	                            {event.inputTokens || 0} in / {event.outputTokens || 0} out{event.webSearchRequests ? ` / ${event.webSearchRequests} searches` : ""}{event.usedProviderUsage ? "" : " / estimated"}
+	                          </div>
+	                        </div>
+	                        <div style={{ textAlign: "right" }}>
+	                          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 700, color: event.status === "failed" ? t.red : t.accent }}>{formatCost(event.cost)}</div>
+	                          <div style={{ fontSize: 9, color: t.textFaint, textTransform: "uppercase" }}>{event.status}</div>
+	                        </div>
+	                      </div>
+	                    ))}
+	                  </div>
+	                </details>
+	                {leads.length > 0 && (
+	                  <div style={{ display: "flex", gap: 16, marginRight: 8 }} className="header-stats">
                     {[
                       { val: qualifiedCount, label: "Pass", color: t.green },
                       { val: unqualifiedCount, label: "Fail", color: t.red },
