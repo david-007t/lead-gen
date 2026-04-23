@@ -469,6 +469,32 @@ function pipelineUniqueKey(lead) {
     .join("|") || String(lead.id || Date.now());
 }
 
+function getFirstName(name) {
+  return String(name || "").trim().split(/\s+/)[0] || "there";
+}
+
+function cleanBusinessObservation(text, fallback) {
+  const source = String(text || fallback || "").trim();
+  if (!source) return "I know finding new clients consistently gets harder when your agency already has a lot of moving parts to manage.";
+  const stripped = source.replace(/^congratulations[^.]*\.\s*/i, "").replace(/^impressed by[^.]*\.\s*/i, "").trim();
+  const sentence = stripped.endsWith(".") ? stripped : `${stripped}.`;
+  return `${sentence} I figured that probably makes steady prospecting harder to keep up with.`;
+}
+
+function formatSampleLeads(prospects, city, niche, currentId) {
+  const rows = (prospects || [])
+    .filter(p => p.id !== currentId)
+    .slice(0, 5)
+    .map(p => {
+      const name = p.businessName || "Local business";
+      const signal = p.buyingSignal || p.personalizedFirstLine || `Showing signals they may need ${niche || "help"}`;
+      return `- ${name} — ${signal}`;
+    });
+
+  if (rows.length > 0) return rows.join("\n");
+  return `- Five ${niche || "local"} prospects in ${city || "your area"} will be inserted here.`;
+}
+
 function mergePipelineLeads(localLeads, remoteLeads) {
   const byKey = new Map();
   [...(remoteLeads || []), ...(localLeads || [])].forEach(lead => {
@@ -563,6 +589,8 @@ export default function LeadQualifier() {
   const [shipListCity, setShipListCity] = useState("San Francisco");
   const [shipListTierFilter, setShipListTierFilter] = useState("all");
   const [shipListProgress, setShipListProgress] = useState(null);
+  const [shipListStripeLink, setShipListStripeLink] = useState("");
+  const [shipListSenderName, setShipListSenderName] = useState("");
 
   // Ship List DB state
   const [savedCompanies, setSavedCompanies] = useState([]); // companies saved to Supabase
@@ -604,6 +632,8 @@ export default function LeadQualifier() {
       if (savedSettings) {
         if (savedSettings.companyName) setCompanyName(savedSettings.companyName);
         if (savedSettings.theme) setTheme(savedSettings.theme);
+        if (savedSettings.shipListStripeLink) setShipListStripeLink(savedSettings.shipListStripeLink);
+        if (savedSettings.shipListSenderName) setShipListSenderName(savedSettings.shipListSenderName);
         if (savedSettings.industry) {
           setIndustry(savedSettings.industry);
         }
@@ -617,7 +647,7 @@ export default function LeadQualifier() {
   // ─── PERSIST ON CHANGE ────────────────────────────────────
   useEffect(() => { if (!loading) saveData(SK.leads, leads); }, [leads, loading]);
   useEffect(() => { if (!loading) saveData(SK.criteria, criteria); }, [criteria, loading]);
-  useEffect(() => { if (!loading) saveData(SK.settings, { companyName, theme, industry, setupComplete }); }, [companyName, theme, industry, setupComplete, loading]);
+  useEffect(() => { if (!loading) saveData(SK.settings, { companyName, theme, industry, setupComplete, shipListStripeLink, shipListSenderName }); }, [companyName, theme, industry, setupComplete, shipListStripeLink, shipListSenderName, loading]);
   useEffect(() => { localStorage.setItem('lq-theme', theme); }, [theme]);
 
   // ─── KEYBOARD SHORTCUTS ───────────────────────────────────
@@ -1001,41 +1031,33 @@ This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
   const handleDraftEmail = async (prospect) => {
     setDraftingEmail(prospect.id);
     try {
-      const signals = (prospect.buyingSignals || []).slice(0, 2).join(", ");
-      const opener = prospect.personalizedFirstLine || (prospect.opportunities || [])[0] || "";
-      const location = prospect.address ? prospect.address.split(",").slice(-2).join(",").trim() : prospectCity;
-      const prompt = `Write a short cold email to ${prospect.businessName}${prospect.ownerName ? ` (${prospect.ownerName}, ${prospect.title || "decision maker"})` : ""}, a ${prospect.niche} business in ${location}.
+      const niche = prospect.niche || prospect.title || prospect.projectType || prospectNiche || "service";
+      const city = prospectCity || (prospect.address ? prospect.address.split(",").slice(-2).join(",").trim() : "your area");
+      const firstName = getFirstName(prospect.ownerName);
+      const observation = cleanBusinessObservation(
+        prospect.personalizedFirstLine || prospect.buyingSignal || (prospect.opportunities || [])[0],
+        `${prospect.businessName || "Your agency"} already has real momentum in ${city}`
+      );
+      const sampleLeads = formatSampleLeads(prospects, city, niche, prospect.id);
+      const senderName = shipListSenderName.trim() || "[Your name]";
+      const stripeLink = shipListStripeLink.trim() || "[STRIPE LINK PLACEHOLDER]";
+      const emailText = `Subject: 50 ${niche} leads in ${city} — 5 free samples inside
 
-Context:
-- Buying signal: ${signals || prospect.buyingSignal || "relevant local prospect"}
-- Suggested first line: ${opener || "Reference their business specifically."}
+Hi ${firstName},
 
-Framework (follow this exactly, 4-5 sentences max):
-1. Open with a specific line about their business
-2. Mention a relevant result or problem tied to that signal
-3. Offer a quick next step
-4. Keep it direct and human
+${observation}
 
-Tone: real person, not a salesperson. Casual and direct. No fluff, no buzzwords, no "I hope this email finds you well".`;
+I built a tool that finds small businesses in your area actively signaling they need ${niche} services — recently opened, underserved, no current provider signals.
 
-      const response = await fetch("/api/anthropic", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 500,
-          messages: [{ role: "user", content: prompt }],
-        }),
-      });
+Here are 5 from your area as a sample:
+${sampleLeads}
 
-      const data = await response.json();
-      if (data.error) {
-        showToast("Failed to generate email", "error");
-        setDraftingEmail(null);
-        return;
-      }
+The full list of 50 is $200. Delivered within 24 hours.
 
-      const emailText = (data.content || []).find(b => b.type === "text")?.text || "";
+Interested?
+
+${senderName}
+${stripeLink}`;
       setEmailDrafts(prev => ({ ...prev, [prospect.id]: emailText }));
       showToast("Email draft generated");
     } catch (err) {
@@ -2570,6 +2592,27 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
 
               {/* Controls */}
               <div style={{ ...cardStyle, marginBottom: 24 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+                  <div>
+                    <label style={labelStyle}>Stripe Payment Link</label>
+                    <input
+                      style={inputStyle}
+                      value={shipListStripeLink}
+                      onChange={e => setShipListStripeLink(e.target.value)}
+                      placeholder="https://buy.stripe.com/..."
+                    />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Your Name</label>
+                    <input
+                      style={inputStyle}
+                      value={shipListSenderName}
+                      onChange={e => setShipListSenderName(e.target.value)}
+                      placeholder="Your name"
+                    />
+                  </div>
+                </div>
+
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr auto", gap: 16, alignItems: "flex-end" }}>
                   <div>
                     <label style={labelStyle}>City / Region</label>
