@@ -788,14 +788,18 @@ export default function LeadQualifier() {
       return parseProspectJSON(text) || [];
     };
 
-    const runCompanyDiscovery = async () => {
-      const targetCount = prospectCount;
+    const runCompanyDiscoveryBatch = async ({ batchSize, batchIndex, existingCompanies }) => {
+      const existingNames = existingCompanies
+        .map(company => clean(company["Company Name"] || company.companyName || company.businessName))
+        .filter(Boolean)
+        .join(", ");
       return runAnthropicSearch({
-        maxTokens: 2500,
+        maxTokens: 1200,
         system: "You are a B2B company researcher. Use web search to find real independent businesses. Return ONLY a raw JSON array. No markdown, no explanation, no placeholder text.",
-        prompt: `Find ${targetCount} real boutique or independent ${prospectNiche} businesses in ${prospectCity.trim()}.
+        prompt: `Find ${batchSize} real boutique or independent ${prospectNiche} businesses in ${prospectCity.trim()}.
 
 Exclude national chains, franchises, marketplaces, directories, and lead sellers.
+${existingNames ? `Do not repeat these companies: ${existingNames}.` : ""}
 
 Return exactly this JSON array schema:
 [
@@ -811,7 +815,9 @@ Return exactly this JSON array schema:
 Hard rules:
 - No placeholder text like "Not found", "N/A", "Unknown", or "None".
 - The buying signal must be one specific sentence explaining why this company is a good prospect.
-- Return real companies only.`,
+- Return real companies only.
+
+This is discovery batch ${batchIndex}.`,
       });
     };
 
@@ -821,7 +827,7 @@ Hard rules:
       )).join("\n");
 
       return normalizeProspectResults(await runAnthropicSearch({
-        maxTokens: 2500,
+        maxTokens: 1800,
         system: "You are a B2B decision-maker lead researcher. Use web search to find public decision-maker evidence. Return ONLY a raw JSON array. No markdown, no explanation, no placeholder text.",
         prompt: `Enrich these ${companies.length} ${prospectNiche} companies in ${prospectCity.trim()} with ONE decision maker each.
 
@@ -867,15 +873,39 @@ This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
     try {
       const targetCount = prospectCount;
       const minimumRows = Math.max(1, Math.ceil(targetCount * 0.67));
-      setProspectProgress({ phase: "discovery", current: 0, total: targetCount });
-      const companies = await runCompanyDiscovery();
+      const DISCOVERY_BATCH_SIZE = 5;
+      const discoveryBatches = Math.ceil(targetCount / DISCOVERY_BATCH_SIZE);
+      let companies = [];
+
+      for (let discoveryIndex = 0; discoveryIndex < discoveryBatches; discoveryIndex++) {
+        setProspectProgress({ phase: "discovery", current: companies.length, total: targetCount, batchIndex: discoveryIndex + 1, totalBatches: discoveryBatches });
+        try {
+          const remaining = targetCount - companies.length;
+          const batch = await runCompanyDiscoveryBatch({
+            batchSize: Math.min(DISCOVERY_BATCH_SIZE, remaining),
+            batchIndex: discoveryIndex + 1,
+            existingCompanies: companies,
+          });
+          const seen = new Set(companies.map(company => columnKey(company["Company Name"] || company.companyName || company.businessName)));
+          const fresh = batch.filter(company => {
+            const key = columnKey(company["Company Name"] || company.companyName || company.businessName);
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+          companies = [...companies, ...fresh].slice(0, targetCount);
+        } catch (err) {
+          if (companies.length === 0) throw err;
+          break;
+        }
+      }
 
       if (!companies.length) {
         setProspectError(`No independent ${prospectNiche} companies found in ${prospectCity.trim()}. Try a broader city or niche.`);
         setProspectLoading(false); setProspectProgress(null); return;
       }
 
-      const ENRICH_BATCH_SIZE = 3;
+      const ENRICH_BATCH_SIZE = 2;
       const batches = [];
       for (let i = 0; i < companies.length; i += ENRICH_BATCH_SIZE) {
         batches.push(companies.slice(i, i + ENRICH_BATCH_SIZE));
@@ -891,14 +921,21 @@ This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
           totalBatches: batches.length,
         });
 
-        let batchResults = await runDecisionMakerBatch(batches[batchIndex], batchIndex + 1, 1);
-        const batchMinimumRows = Math.max(1, Math.ceil(batches[batchIndex].length * 0.67));
-        if (!qualityPasses(batchResults, batchMinimumRows)) {
-          setProspectProgress({ phase: "retrying", current: results.length, total: Math.min(targetCount, companies.length), batchIndex: batchIndex + 1, totalBatches: batches.length });
-          const retryResults = await runDecisionMakerBatch(batches[batchIndex], batchIndex + 1, 2);
-          if (qualityPasses(retryResults, batchMinimumRows) || retryResults.length > batchResults.length) {
-            batchResults = retryResults;
+        let batchResults = [];
+        try {
+          batchResults = await runDecisionMakerBatch(batches[batchIndex], batchIndex + 1, 1);
+          const batchMinimumRows = Math.max(1, Math.ceil(batches[batchIndex].length * 0.67));
+          if (!qualityPasses(batchResults, batchMinimumRows)) {
+            setProspectProgress({ phase: "retrying", current: results.length, total: Math.min(targetCount, companies.length), batchIndex: batchIndex + 1, totalBatches: batches.length });
+            const retryResults = await runDecisionMakerBatch(batches[batchIndex], batchIndex + 1, 2);
+            if (qualityPasses(retryResults, batchMinimumRows) || retryResults.length > batchResults.length) {
+              batchResults = retryResults;
+            }
           }
+        } catch (err) {
+          if (results.length === 0) throw err;
+          setProspectError(`Loaded ${results.length} decision makers so far. One enrichment batch timed out, so partial results are shown.`);
+          continue;
         }
 
         results = [...results, ...batchResults].slice(0, targetCount);
