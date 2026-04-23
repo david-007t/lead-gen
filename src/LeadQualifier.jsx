@@ -389,6 +389,15 @@ function csvEscape(value) {
   return `"${String(value ?? "").replace(/"/g, '""')}"`;
 }
 
+function getParsedRows(parsed) {
+  if (Array.isArray(parsed)) return parsed;
+  if (!parsed || typeof parsed !== "object") return null;
+  for (const key of ["rows", "leads", "results", "companies", "data"]) {
+    if (Array.isArray(parsed[key])) return parsed[key];
+  }
+  return null;
+}
+
 // ─── PROSPECT CLASSIFICATION ──────────────────────────────────
 function classifyProspect(prospect) {
   const hasOwner = !!(prospect.ownerName && prospect.ownerName.trim());
@@ -1817,16 +1826,16 @@ Engine requirements:
    - requiredColumns
    - specialResearchRequirements
 2. Research real companies and contacts using web search.
-3. Prioritize callable leads. A row with a usable phone number is more valuable than a row with only company info.
-4. Prefer named decision makers with a phone number. If no named person is public, use the best call target role and the main/location phone.
+3. Prioritize callable leads. A public company/location phone number is enough to include a lead.
+4. Prefer named decision makers, but do NOT reject a company just because no named person is public. If no named person is public, use the best call target role and the main/location phone.
 5. Search specifically for:
    - main company phone
    - location/branch phone
    - dispatch, logistics, shipping, warehouse, operations, or distribution department phone
    - named decision maker
    - contact source URL that verifies the phone/name when possible
-6. If a company has no phone number after research, include it only if it is an exceptional fit; mark Phone Status as "Missing", Reachability Score as "Low", and explain what is missing.
-7. For freight/shipper searches, include shippers, distributors, manufacturers, and wholesalers. Exclude carriers, brokers, 3PLs, couriers, directories, job boards, and national mega-companies unless the user asks for them.
+6. If a company has no phone number after research, skip it unless it is an exceptional fit.
+7. For freight/shipper searches, include shippers, distributors, manufacturers, and wholesalers. Exclude carriers, brokers, 3PLs, couriers, and job boards. Directory pages are allowed only as fallback evidence when they point to a real company and show a phone number.
 8. Do not invent unavailable contact data. If a person, email, LinkedIn, revenue, lane, or direct phone cannot be verified, use an empty string and lower the confidence.
 9. Every row must include a Source URL when possible and a Confidence value of High, Medium, or Low.
 10. Add dynamic columns requested by the user. If the request is about freight brokers, shippers, logistics, lanes, refrigerated freight, or overflow freight, include at minimum these columns:
@@ -1840,7 +1849,8 @@ Phone and contact field rules:
 - Contact Status: Named Contact, Role Only, or Company Only.
 - Reachability Score: High if named contact + phone, Medium if role/company + phone, Low if no phone.
 - Call Notes: one short sentence telling a caller who to ask for and why.
-- Return fewer rows if needed. Five callable leads are better than ten thin company records.
+- Return fewer rows if needed. Five callable leads are better than ten thin company records, but do not return zero rows if public main-line phone numbers exist.
+- If exact contact names are not public, leave Contact Person blank and set Contact Status to "Role Only" or "Company Only".
 
 RESPOND WITH ONLY this JSON object:
 {
@@ -1909,10 +1919,10 @@ RESPOND WITH ONLY this JSON object:
       (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
       const fullText = textParts.join("\n");
       const parsed = extractJSONValue(fullText);
-      const parsedRows = Array.isArray(parsed) ? parsed : parsed?.rows;
+      const parsedRows = getParsedRows(parsed);
 
       if (!parsedRows || !Array.isArray(parsedRows) || parsedRows.length === 0) {
-        setLeadListError("No leads found. Try broadening the request or reducing hard filters.");
+        setLeadListError("No callable leads returned. Try removing 'exclude directory-only results' or broadening the geography.");
         setLeadListLoading(false);
         setLeadListProgress(null);
         return;
