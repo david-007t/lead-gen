@@ -2297,6 +2297,7 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
               { tab: "leadlist", label: "🎯 Build a Lead List" },
               { tab: "indeed",   label: "⚡ Find AI Prospects" },
               { tab: "prospects", label: "🔍 Find My Clients" },
+              { tab: "shiplist", label: "📋 Ship List" },
             ].map(m => {
               const active = tab === m.tab;
               return (
