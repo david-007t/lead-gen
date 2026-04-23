@@ -73,6 +73,8 @@ export default async function handler(req, res) {
     if (!response.ok) {
       return res.status(500).json({
         error: data?.error?.message || "Failed to send Gmail message",
+        debug: data,
+        status: response.status,
       });
     }
 
@@ -84,6 +86,7 @@ export default async function handler(req, res) {
   } catch (error) {
     return res.status(500).json({
       error: error?.message || "Failed to send Gmail message",
+      debug: error?.stack || null,
     });
   }
 }
