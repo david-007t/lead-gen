@@ -89,11 +89,23 @@ export default async function handler(req, res) {
       });
       const rawText = await webhookResponse.text();
       let data = {};
-      try { data = JSON.parse(rawText); } catch {}
-      if (!webhookResponse.ok || data.error) {
+      let webhookParsed = false;
+      try { data = JSON.parse(rawText); webhookParsed = true; } catch {}
+
+      // Surface real errors: HTTP failure, JSON parse failure, or explicit error field
+      if (!webhookResponse.ok) {
         return res.status(webhookResponse.status || 502).json({
-          error: data.error || rawText || 'Google Sheets webhook append failed',
+          error: (webhookParsed && data.error) || `Webhook HTTP ${webhookResponse.status}: ${rawText.slice(0, 300)}`,
         });
+      }
+      if (!webhookParsed) {
+        // GAS returned HTTP 200 but non-JSON — usually means it threw internally
+        return res.status(502).json({
+          error: `Webhook returned non-JSON response (sheet tab may not exist or GAS script error): ${rawText.slice(0, 300)}`,
+        });
+      }
+      if (data.error) {
+        return res.status(502).json({ error: data.error });
       }
       console.log('google-sheets-append webhook success', {
         sheetName,
@@ -119,6 +131,22 @@ export default async function handler(req, res) {
 
     const token = await getAccessToken(clientEmail, privateKey);
     const targetSpreadsheetId = spreadsheetId || defaultSpreadsheetId;
+
+    // Auto-create the sheet tab if it doesn't exist
+    const metaUrl = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(targetSpreadsheetId)}?fields=sheets.properties.title`;
+    const metaResponse = await fetch(metaUrl, { headers: { Authorization: `Bearer ${token}` } });
+    if (metaResponse.ok) {
+      const meta = await metaResponse.json();
+      const tabExists = (meta.sheets || []).some(s => s.properties?.title === sheetName);
+      if (!tabExists) {
+        await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(targetSpreadsheetId)}:batchUpdate`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ requests: [{ addSheet: { properties: { title: sheetName } } }] }),
+        });
+      }
+    }
+
     const appendRange = range || `${sheetName}!A1`;
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(targetSpreadsheetId)}/values/${encodeURIComponent(appendRange)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
 
