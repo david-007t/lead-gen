@@ -2374,16 +2374,18 @@ Respond with ONLY a JSON object:
     setLeadListSheetStatus(null);
 
     const pipelineExclusions = leads.map(l => l.company).filter(Boolean);
-    const exclusionClause = pipelineExclusions.length > 0
-      ? `\nEXCLUSION LIST — do NOT return any of these companies (already in pipeline): ${pipelineExclusions.join(", ")}\n`
-      : "";
+    const makeLeadListPrompt = ({ rowTarget, exclusions, batchIndex, maxAttempts }) => {
+      const exclusionClause = exclusions.length > 0
+        ? `\nEXCLUSION LIST — do NOT return any of these companies: ${exclusions.join(", ")}\n`
+        : "";
 
-    const prompt = `Build a reusable lead generation job from this natural-language request, then research real leads for it.
+      return `Build a reusable lead generation job from this natural-language request, then research real leads for it.
 ${exclusionClause}
 USER REQUEST:
 ${requestText}
 
-RESULT COUNT: Return up to ${leadListCount} rows.
+RESULT COUNT: Return up to ${rowTarget} rows for this batch.
+BATCH: ${batchIndex} of up to ${maxAttempts}. Do not repeat excluded companies.
 
 Engine requirements:
 1. Parse the request into a structured job with:
@@ -2416,7 +2418,7 @@ Engine requirements:
 8. For freight/shipper searches, include shippers, distributors, manufacturers, and wholesalers. Exclude carriers, brokers, 3PLs, couriers, and job boards. Directory pages are allowed only as fallback evidence when they point to a real company and show a phone number.
 9. Do not invent unavailable contact data. If a person, email, LinkedIn, revenue, lane, or direct phone cannot be verified, use an empty string and lower the confidence.
 10. Every row must include a Source URL when possible and a Confidence value of High, Medium, or Low.
-11. Return fewer than ${leadListCount} rows if needed. Quality beats count. If you cannot find enough contactable rows, return only the contactable rows you verified.
+11. Return fewer than ${rowTarget} rows if needed. Quality beats count. If you cannot find enough contactable rows, return only the contactable rows you verified.
 12. Add dynamic columns requested by the user. If the request is about freight brokers, shippers, logistics, lanes, refrigerated freight, or overflow freight, include at minimum these columns:
 ${FREIGHT_MIN_COLUMNS.map(c => `   - ${c}`).join("\n")}
 13. Special research requirements like "high-demand lanes" should become columns and should be supported by a reason / buying signal.
@@ -2470,40 +2472,102 @@ RESPOND WITH ONLY this JSON object:
     }
   ]
 }`;
+    };
 
     try {
-      setLeadListProgress("Researching companies");
-      const { response, data } = await callAnthropic("Build Lead List Search", {
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 10000,
-        system: "You are the Lead Request Engine for a B2B sales app. Parse natural-language requests into reusable lead jobs, search the web for real leads, and return call-ready rows. Phone numbers and reachable contacts are the priority. Accuracy beats volume. Never fabricate contact data. Return ONLY valid JSON.",
-        messages: [{ role: "user", content: prompt }],
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-      });
-      // Guard against non-JSON responses (Vercel/CDN error pages, timeouts, etc.)
-      if (!data || data.error?.type === "upstream_parse_error") throw new Error(`Search service unavailable (HTTP ${response.status}) — please try again in a moment.`);
-      if (data.error) {
-        setLeadListError(data.error.message || "API error. Please try again.");
-        setLeadListLoading(false);
-        setLeadListProgress(null);
-        return;
+      const batchSize = 5;
+      const maxAttempts = Math.min(5, Math.ceil(leadListCount / batchSize) + 1);
+      const collectedRows = [];
+      const seenCompanies = new Set();
+      let droppedRows = 0;
+      let candidateRows = 0;
+      let failedBatches = 0;
+      let job = null;
+
+      for (let batchIndex = 1; batchIndex <= maxAttempts && collectedRows.length < leadListCount; batchIndex++) {
+        const rowTarget = Math.min(batchSize, leadListCount - collectedRows.length);
+        const collectedCompanies = collectedRows
+          .map(row => getFirstLeadCell(row, ["Company Name", "Business Name", "Company"]))
+          .filter(Boolean);
+        const exclusions = [...pipelineExclusions, ...collectedCompanies];
+
+        setLeadListProgress(`Researching contactable leads (${batchIndex}/${maxAttempts})`);
+        let data;
+        let response;
+        try {
+          ({ response, data } = await callAnthropic(batchIndex === 1 ? "Build Lead List Search" : "Build Lead List Batch Search", {
+            model: "claude-sonnet-4-20250514",
+            max_tokens: 5000,
+            system: "You are the Lead Request Engine for a B2B sales app. Parse natural-language requests into reusable lead jobs, search the web for real leads, and return call-ready rows. Phone numbers and reachable contacts are the priority. Accuracy beats volume. Never fabricate contact data. Return ONLY valid JSON.",
+            messages: [{ role: "user", content: makeLeadListPrompt({ rowTarget, exclusions, batchIndex, maxAttempts }) }],
+            tools: [{ type: "web_search_20250305", name: "web_search" }],
+          }));
+        } catch (batchError) {
+          failedBatches++;
+          if (collectedRows.length > 0) break;
+          throw batchError;
+        }
+
+        // Guard against non-JSON responses (Vercel/CDN error pages, timeouts, etc.)
+        if (!data || data.error?.type === "upstream_parse_error") {
+          failedBatches++;
+          if (collectedRows.length > 0) break;
+          throw new Error(`Search service unavailable (HTTP ${response.status}) — please try again in a moment.`);
+        }
+        if (data.error) {
+          failedBatches++;
+          if (collectedRows.length > 0) break;
+          setLeadListError(data.error.message || "API error. Please try again.");
+          setLeadListLoading(false);
+          setLeadListProgress(null);
+          return;
+        }
+
+        const textParts = [];
+        (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
+        const fullText = textParts.join("\n");
+        const parsed = extractJSONValue(fullText);
+        const parsedRows = getParsedRows(parsed);
+
+        if (!parsedRows || !Array.isArray(parsedRows) || parsedRows.length === 0) continue;
+        candidateRows += parsedRows.length;
+        if (!job) {
+          job = Array.isArray(parsed) ? {
+            summary: requestText.slice(0, 120),
+            industries: leadListNiche.trim() ? [leadListNiche.trim()] : [],
+            targetRoles: [],
+            companyFilters: [],
+            geography: leadListCity.trim(),
+            requiredColumns: DEFAULT_LEAD_COLUMNS,
+            specialResearchRequirements: [],
+          } : (parsed.job || {});
+        }
+
+        parsedRows.forEach(row => {
+          const company = getFirstLeadCell(row, ["Company Name", "Business Name", "Company"]);
+          const companyKey = String(company || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+          if (!companyKey || seenCompanies.has(companyKey)) return;
+          seenCompanies.add(companyKey);
+          if (!isContactableLeadRow(row)) {
+            droppedRows++;
+            return;
+          }
+          if (collectedRows.length < leadListCount) collectedRows.push(row);
+        });
       }
 
       setLeadListProgress("Structuring sheet");
-      const textParts = [];
-      (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
-      const fullText = textParts.join("\n");
-      const parsed = extractJSONValue(fullText);
-      const parsedRows = getParsedRows(parsed);
 
-      if (!parsedRows || !Array.isArray(parsedRows) || parsedRows.length === 0) {
-        setLeadListError("No callable leads returned. Try removing 'exclude directory-only results' or broadening the geography.");
+      if (collectedRows.length === 0) {
+        setLeadListError(candidateRows > 0
+          ? `No contactable leads returned. The engine found ${candidateRows} candidate ${candidateRows === 1 ? "row" : "rows"}, but none had a usable phone or email.`
+          : "No callable leads returned. Try a narrower geography or a more specific business category.");
         setLeadListLoading(false);
         setLeadListProgress(null);
         return;
       }
 
-      const job = Array.isArray(parsed) ? {
+      job = job || {
         summary: requestText.slice(0, 120),
         industries: leadListNiche.trim() ? [leadListNiche.trim()] : [],
         targetRoles: [],
@@ -2511,19 +2575,10 @@ RESPOND WITH ONLY this JSON object:
         geography: leadListCity.trim(),
         requiredColumns: DEFAULT_LEAD_COLUMNS,
         specialResearchRequirements: [],
-      } : (parsed.job || {});
-      const contactableRows = parsedRows.filter(isContactableLeadRow);
-      const droppedRows = parsedRows.length - contactableRows.length;
+      };
 
-      if (contactableRows.length === 0) {
-        setLeadListError(`No contactable leads returned. The engine found ${parsedRows.length} candidate ${parsedRows.length === 1 ? "row" : "rows"}, but none had a usable phone or email.`);
-        setLeadListLoading(false);
-        setLeadListProgress(null);
-        return;
-      }
-
-      const columns = buildLeadColumns({ ...job, requiredColumns: parsed?.columns || job.requiredColumns }, contactableRows, requestText);
-      const results = contactableRows.map((r, i) => ({
+      const columns = buildLeadColumns(job, collectedRows, requestText);
+      const results = collectedRows.map((r, i) => ({
         ...r,
         id: Date.now() + i + Math.random(),
         __columns: columns,
@@ -2532,6 +2587,7 @@ RESPOND WITH ONLY this JSON object:
       const notices = [];
       if (droppedRows > 0) notices.push(`Dropped ${droppedRows} company-only ${droppedRows === 1 ? "row" : "rows"} with no usable phone or email.`);
       if (results.length < leadListCount) notices.push(`Returned ${results.length} of ${leadListCount} requested because only contactable rows are kept.`);
+      if (failedBatches > 0) notices.push(`${failedBatches} search ${failedBatches === 1 ? "batch" : "batches"} timed out or failed, so these are partial results.`);
       setLeadListQualityNotice(notices.join(" "));
 
       setLeadListJob(job);
