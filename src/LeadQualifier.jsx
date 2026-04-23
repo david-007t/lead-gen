@@ -758,15 +758,14 @@ function buildLeadListOfferEmail(lead, prospects, senderName, stripeLink) {
     : cleanBusinessObservation(signal, `${company} looks like a strong fit for more consistent outbound prospecting`);
   const sampleLeads = formatSampleLeads(prospects, location, niche, prospect?.id || lead.id);
   const signature = String(senderName || "").trim() || "[Your name]";
-  const paymentLink = String(stripeLink || "").trim() || "[STRIPE LINK PLACEHOLDER]";
 
-  return `Subject: 50 ${niche} leads in ${location} — 5 free samples inside
+  return `Subject: Found 5 ${location} businesses that need coverage
 
 Hi ${firstName},
 
 ${observation}
 
-I built a tool that finds small businesses in your area actively signaling they need ${niche} services — recently opened, underserved, no current provider signals.
+I built a tool that finds small businesses in your area actively signaling they need ${niche} services — recently opened, changing ownership, or expanding — businesses that typically fall through the cracks on coverage.
 
 Here are 5 from your area as a sample:
 ${sampleLeads}
@@ -775,8 +774,29 @@ The full list of 50 is $200. Delivered within 24 hours.
 
 Interested?
 
-${signature}
-${paymentLink}`;
+${signature}`;
+}
+
+function upgradeLegacyDraftEmail(text) {
+  const value = String(text || "");
+  if (!value) return value;
+
+  return value
+    .replace(
+      /^Subject: 50 .*? leads in (.+?) — 5 free samples inside$/m,
+      "Subject: Found 5 $1 businesses that need coverage",
+    )
+    .replace(
+      "recently opened, underserved, no current provider signals",
+      "recently opened, changing ownership, or expanding — businesses that typically fall through the cracks on coverage",
+    )
+    .replace(/\n\[STRIPE LINK PLACEHOLDER\]\s*$/m, "");
+}
+
+function upgradeLegacyLeadDraft(lead) {
+  if (!lead?.savedEmailDraft) return lead;
+  const upgradedDraft = upgradeLegacyDraftEmail(lead.savedEmailDraft);
+  return upgradedDraft === lead.savedEmailDraft ? lead : { ...lead, savedEmailDraft: upgradedDraft };
 }
 
 function normalizePipelineContextValue(value) {
@@ -919,7 +939,7 @@ export default function LeadQualifier() {
         loadData(SK.leads), loadData(SK.criteria), loadData(SK.settings),
       ]);
       const savedCostEvents = await loadData(SK.costEvents);
-      if (savedLeads) setLeads(savedLeads);
+      if (savedLeads) setLeads(savedLeads.map(upgradeLegacyLeadDraft));
       if (savedCriteria) setCriteria(savedCriteria);
       if (savedCostEvents) setCostEvents(savedCostEvents);
       if (savedSettings) {
@@ -1396,14 +1416,13 @@ This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
       );
       const sampleLeads = formatSampleLeads(prospects, city, niche, prospect.id);
       const senderName = shipListSenderName.trim() || "[Your name]";
-      const stripeLink = shipListStripeLink.trim() || "[STRIPE LINK PLACEHOLDER]";
-      const emailText = `Subject: 50 ${niche} leads in ${city} — 5 free samples inside
+      const emailText = `Subject: Found 5 ${city} businesses that need coverage
 
 Hi ${firstName},
 
 ${observation}
 
-I built a tool that finds small businesses in your area actively signaling they need ${niche} services — recently opened, underserved, no current provider signals.
+I built a tool that finds small businesses in your area actively signaling they need ${niche} services — recently opened, changing ownership, or expanding — businesses that typically fall through the cracks on coverage.
 
 Here are 5 from your area as a sample:
 ${sampleLeads}
@@ -1412,8 +1431,7 @@ The full list of 50 is $200. Delivered within 24 hours.
 
 Interested?
 
-${senderName}
-${stripeLink}`;
+${senderName}`;
       setEmailDrafts(prev => ({ ...prev, [prospect.id]: emailText }));
       updatePipelineLead(
         lead => pipelineUniqueKey(lead) === pipelineUniqueKey({
