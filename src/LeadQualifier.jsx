@@ -2347,16 +2347,17 @@ Respond with ONLY a JSON object:
     setLeadListSheetStatus(null);
 
     const pipelineExclusions = leads.map(l => l.company).filter(Boolean);
-    const exclusionClause = pipelineExclusions.length > 0
-      ? `\nEXCLUSION LIST — do NOT return any of these companies (already in pipeline): ${pipelineExclusions.join(", ")}\n`
-      : "";
-
-    const prompt = `Build a reusable lead generation job from this natural-language request, then research real leads for it.
+    const buildSearchPrompt = (rowCount, exclusions = [], batchIndex = 1, totalBatches = 1) => {
+      const allExclusions = [...new Set([...pipelineExclusions, ...exclusions].filter(Boolean))];
+      const exclusionClause = allExclusions.length > 0
+        ? `\nEXCLUSION LIST — do NOT return any of these companies (already returned or already in pipeline): ${allExclusions.join(", ")}\n`
+        : "";
+      return `Build a reusable lead generation job from this natural-language request, then research real leads for it.
 ${exclusionClause}
 USER REQUEST:
 ${requestText}
 
-RESULT COUNT: Return up to ${leadListCount} rows.
+RESULT COUNT: Return ${rowCount} rows for this batch. The full user request asks for ${leadListCount} rows. This is batch ${batchIndex} of ${totalBatches}.
 
 Engine requirements:
 1. Parse the request into a structured job with:
@@ -2366,7 +2367,7 @@ Engine requirements:
    - geography
    - requiredColumns
    - specialResearchRequirements
-2. Research real companies and contacts using web search.
+2. Research enough real companies and contacts using web search to fill the requested row count.
 3. Prioritize callable leads. A public company/location phone number is enough to include a lead.
 4. Prefer named decision makers, but do NOT reject a company just because no named person is public. If no named person is public, use the best call target role and the main/location phone.
 5. Search specifically for:
@@ -2390,10 +2391,10 @@ Phone and contact field rules:
 - Contact Status: Named Contact, Role Only, or Company Only.
 - Reachability Score: High if named contact + phone, Medium if role/company + phone, Low if no phone.
 - Call Notes: one short sentence telling a caller who to ask for and why.
-- Return fewer rows if needed. Five callable leads are better than ten thin company records, but do not return zero rows if public main-line phone numbers exist.
+- Do not stop early just because a few high-confidence rows are found. A public main-line phone is enough for inclusion when a company matches the request. Return as many callable rows as possible up to the requested count.
 - If exact contact names are not public, leave Contact Person blank and set Contact Status to "Role Only" or "Company Only".
 
-RESPOND WITH ONLY this JSON object:
+RESPOND WITH ONLY this JSON object. It must be valid JSON that JSON.parse can parse. Every key and every string value must be wrapped in double quotes. Do not return markdown, comments, bare words, or trailing commas:
 {
   "job": {
     "summary": "short description",
@@ -2430,31 +2431,75 @@ RESPOND WITH ONLY this JSON object:
     }
   ]
 }`;
+    };
 
     try {
-      setLeadListProgress("Researching companies");
-      const { response, data } = await callAnthropic("Build Lead List Search", {
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 10000,
-        system: "You are the Lead Request Engine for a B2B sales app. Parse natural-language requests into reusable lead jobs, search the web for real leads, and return call-ready rows. Phone numbers and reachable contacts are the priority. Accuracy beats volume. Never fabricate contact data. Return ONLY valid JSON.",
-        messages: [{ role: "user", content: prompt }],
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-      });
-      // Guard against non-JSON responses (Vercel/CDN error pages, timeouts, etc.)
-      if (!data || data.error?.type === "upstream_parse_error") throw new Error(`Search service unavailable (HTTP ${response.status}) — please try again in a moment.`);
-      if (data.error) {
-        setLeadListError(data.error.message || "API error. Please try again.");
-        setLeadListLoading(false);
-        setLeadListProgress(null);
-        return;
+      const targetRows = leadListCount;
+      const BATCH_SIZE = targetRows > 10 ? 5 : targetRows;
+      const totalBatches = Math.ceil(targetRows / BATCH_SIZE);
+      let combinedRows = [];
+      let combinedJob = null;
+      let combinedColumns = [];
+
+      for (let batchIndex = 0; batchIndex < totalBatches && combinedRows.length < targetRows; batchIndex++) {
+        const remaining = targetRows - combinedRows.length;
+        const rowCount = Math.min(BATCH_SIZE, remaining);
+        setLeadListProgress(`Researching companies ${batchIndex + 1}/${totalBatches}`);
+        const previousCompanies = combinedRows.map(row => getFirstLeadCell(row, ["Company Name", "Business Name", "Company"])).filter(Boolean);
+        const { response, data } = await callAnthropic("Build Lead List Search", {
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 7000,
+          system: "You are the Lead Request Engine for a B2B sales app. Parse natural-language requests into reusable lead jobs, search the web for real leads, and return call-ready rows. Phone numbers and reachable contacts are the priority. Accuracy beats volume. Never fabricate contact data. Return ONLY valid JSON.",
+          messages: [{ role: "user", content: buildSearchPrompt(rowCount, previousCompanies, batchIndex + 1, totalBatches) }],
+          tools: [{ type: "web_search_20250305", name: "web_search", max_uses: Math.min(10, Math.max(5, rowCount + 2)) }],
+        });
+        if (!data || data.error?.type === "upstream_parse_error") throw new Error(`Search service unavailable (HTTP ${response.status}) — please try again in a moment.`);
+        if (data.error) {
+          if (combinedRows.length > 0) break;
+          setLeadListError(data.error.message || "API error. Please try again.");
+          setLeadListLoading(false);
+          setLeadListProgress(null);
+          return;
+        }
+
+        setLeadListProgress(`Structuring sheet ${batchIndex + 1}/${totalBatches}`);
+        const textParts = [];
+        (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
+        const parsed = extractJSONValue(textParts.join("\n"));
+        const parsedRows = getParsedRows(parsed);
+        if (!parsedRows || !Array.isArray(parsedRows) || parsedRows.length === 0) {
+          if (combinedRows.length > 0) break;
+          setLeadListError("No callable leads returned. Try removing 'exclude directory-only results' or broadening the geography.");
+          setLeadListLoading(false);
+          setLeadListProgress(null);
+          return;
+        }
+
+        if (!combinedJob) {
+          combinedJob = Array.isArray(parsed) ? {
+            summary: requestText.slice(0, 120),
+            industries: leadListNiche.trim() ? [leadListNiche.trim()] : [],
+            targetRoles: [],
+            companyFilters: [],
+            geography: leadListCity.trim(),
+            requiredColumns: DEFAULT_LEAD_COLUMNS,
+            specialResearchRequirements: [],
+          } : (parsed.job || {});
+        }
+        combinedColumns = [...combinedColumns, ...((Array.isArray(parsed) ? [] : parsed?.columns) || [])];
+
+        const seenCompanies = new Set(combinedRows.map(row => columnKey(getFirstLeadCell(row, ["Company Name", "Business Name", "Company"]))));
+        const freshRows = parsedRows.filter(row => {
+          const key = columnKey(getFirstLeadCell(row, ["Company Name", "Business Name", "Company"]));
+          if (!key || seenCompanies.has(key)) return false;
+          seenCompanies.add(key);
+          return true;
+        });
+        combinedRows = [...combinedRows, ...freshRows].slice(0, targetRows);
+        setLeadListResults(combinedRows.map((r, i) => ({ ...r, id: r.id || Date.now() + i + Math.random() })));
       }
 
-      setLeadListProgress("Structuring sheet");
-      const textParts = [];
-      (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
-      const fullText = textParts.join("\n");
-      const parsed = extractJSONValue(fullText);
-      const parsedRows = getParsedRows(parsed);
+      const parsedRows = combinedRows;
 
       if (!parsedRows || !Array.isArray(parsedRows) || parsedRows.length === 0) {
         setLeadListError("No callable leads returned. Try removing 'exclude directory-only results' or broadening the geography.");
@@ -2463,7 +2508,7 @@ RESPOND WITH ONLY this JSON object:
         return;
       }
 
-      const job = Array.isArray(parsed) ? {
+      const job = combinedJob || {
         summary: requestText.slice(0, 120),
         industries: leadListNiche.trim() ? [leadListNiche.trim()] : [],
         targetRoles: [],
@@ -2471,8 +2516,8 @@ RESPOND WITH ONLY this JSON object:
         geography: leadListCity.trim(),
         requiredColumns: DEFAULT_LEAD_COLUMNS,
         specialResearchRequirements: [],
-      } : (parsed.job || {});
-      const columns = buildLeadColumns({ ...job, requiredColumns: parsed?.columns || job.requiredColumns }, parsedRows, requestText);
+      };
+      const columns = buildLeadColumns({ ...job, requiredColumns: combinedColumns.length ? combinedColumns : job.requiredColumns }, parsedRows, requestText);
       const results = parsedRows.map((r, i) => ({
         ...r,
         id: Date.now() + i + Math.random(),
