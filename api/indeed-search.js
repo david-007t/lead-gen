@@ -86,16 +86,16 @@ export default async function handler(req, res) {
 
   const errors = [];
 
-  const roleResults = await Promise.all(
-    roles.slice(0, 5).map(async (role) => {
-      try {
-        return { role, jobs: await fetchJSearch(role, location, apiKey) };
-      } catch (err) {
-        errors.push({ role, error: err.message });
-        return { role, jobs: [] };
-      }
-    })
-  );
+  const roleResults = [];
+  for (const [i, role] of roles.slice(0, 5).entries()) {
+    if (i > 0) await new Promise(r => setTimeout(r, 500));
+    try {
+      roleResults.push({ role, jobs: await fetchJSearch(role, location, apiKey) });
+    } catch (err) {
+      errors.push({ role, error: err.message });
+      roleResults.push({ role, jobs: [] });
+    }
+  }
 
   const seenUrls = new Set();
   const results = [];
