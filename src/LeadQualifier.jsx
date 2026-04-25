@@ -2114,7 +2114,6 @@ Return ONLY the message text. No labels, no markdown.`;
 
   // ─── INDEED LEAD SEARCH ──────────────────────────────────
   const handleIndeedSearch = async () => {
-    // Problem 1 fixed: city is optional — no validation block
     const rolesToSearch = [
       ...indeedSelectedRoles.map(id => INDEED_ROLES.find(r => r.id === id)?.label).filter(Boolean),
       ...(indeedCustomRole.trim() ? [indeedCustomRole.trim()] : []),
@@ -2125,194 +2124,82 @@ Return ONLY the message text. No labels, no markdown.`;
     setIndeedError(null);
     setIndeedResults([]);
 
-    // Problem 3 fixed: batch roles into groups of 3 to avoid overwhelming the AI
-    const batches = [];
-    for (let i = 0; i < rolesToSearch.length; i += 3) {
-      batches.push(rolesToSearch.slice(i, i + 3));
-    }
+    try {
+      const response = await fetch("/api/indeed-search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          roles: rolesToSearch,
+          location: indeedCity.trim(),
+          count: indeedCount,
+        }),
+      });
 
-    const allRaw = [];
-    let failedBatches = 0;
+      const data = await response.json().catch(() => ({}));
 
-    for (const batch of batches) {
-      // 3 query variations per role for broader coverage
-      const searchQueries = batch.flatMap(role => [
-        indeedCity.trim()
-          ? `"${role}" job hiring ${indeedCity.trim()}`
-          : `"${role}" job hiring 2025 OR 2026`,
-        `"${role}" hiring ${indeedCity.trim() ? indeedCity.trim() + " " : ""}site:indeed.com OR site:linkedin.com/jobs OR site:ziprecruiter.com`,
-        `"${role}" position open ${indeedCity.trim() ? indeedCity.trim() + " " : ""}site:glassdoor.com OR site:careerbuilder.com`,
-      ]);
-
-      const countForBatch = Math.max(3, Math.ceil(indeedCount / batches.length));
-
-      const prompt = `Search for companies currently hiring for these roles: ${batch.join(", ")}.${indeedCity.trim() ? ` Focus on listings in ${indeedCity.trim()}.` : ""}
-
-Use simple search queries like: '[role]' job hiring${indeedCity.trim() ? ` ${indeedCity.trim()}` : ""}
-
-For each search result that is an actual job listing, extract:
-- jobTitle: the exact job title from the search result
-- company: the exact company name from the search result
-- pay: salary or hourly rate if shown in the snippet
-- location: Remote or location listed
-- source: which site the listing is on (Indeed, LinkedIn, ZipRecruiter, Glassdoor, etc)
-- postingUrl: the EXACT URL from the search result. Copy it character for character. Do NOT modify it.
-- description: brief description from the search snippet
-- postedDate: when it was posted if visible
-
-RULES:
-1. The postingUrl MUST be the actual URL returned by the search. Do not construct URLs.
-2. The company name MUST appear in the search result snippet or title. If you can't confirm the company name, skip it.
-3. Only include listings that appear to be from the last 30 days.
-4. If a search result is a job board search results page (not a specific listing), skip it.
-5. Return ONLY a JSON array. No other text.
-
-Return fewer results if needed. Quality over quantity.`;
-
-      try {
-        const { data } = await callAnthropic("Find AI Prospects Search", {
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 12000,
-          system: "You are a job listing researcher. You use web search to find real job postings. ABSOLUTE RULE: You may ONLY include a listing in your results if the URL came directly from a search result you received. You must NEVER construct, guess, or modify a URL. If a search result gives you a URL, use that exact URL. If the company name in the search result snippet does not match the company name in the URL destination, do NOT include it. Accuracy is everything — returning 2 real listings is better than 10 fake ones.",
-          messages: [{ role: "user", content: prompt }],
-          tools: [{ type: "web_search_20250305", name: "web_search" }],
-        });
-        if (data.error) {
-          failedBatches++;
-          continue;
-        }
-
-        const textParts = [];
-        (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
-        const fullText = textParts.join("\n");
-
-        let parsed = null;
-        let jsonMatch = fullText.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
-        if (jsonMatch) { try { parsed = JSON.parse(jsonMatch[1]); } catch {} }
-        if (!parsed) {
-          jsonMatch = fullText.match(/\[\s*\{[\s\S]*\}\s*\]/);
-          if (jsonMatch) {
-            try { parsed = JSON.parse(jsonMatch[0]); } catch {
-              try { parsed = JSON.parse(jsonMatch[0].replace(/,\s*(?=[}\]])/g, "")); } catch {}
-            }
-          }
-        }
-
-        if (parsed && Array.isArray(parsed)) {
-          // Filter out any listings where the URL doesn't contain some form of the company name
-          // or doesn't look like a real job listing URL
-          const validated = parsed.filter(listing => {
-            if (!listing.postingUrl || listing.postingUrl.trim() === '') return false;
-
-            // Must be a real URL
-            try { new URL(listing.postingUrl); } catch { return false; }
-
-            // Must be from a known job board or company site
-            const validDomains = ['indeed.com', 'linkedin.com', 'ziprecruiter.com', 'glassdoor.com', 'careerbuilder.com', 'monster.com', 'simplyhired.com'];
-            const url = listing.postingUrl.toLowerCase();
-            const isJobBoard = validDomains.some(d => url.includes(d));
-            const isCompanySite = listing.company && url.includes(listing.company.toLowerCase().split(' ')[0]);
-
-            if (!isJobBoard && !isCompanySite) return false;
-
-            return true;
-          });
-
-          // Map new prompt field names to the field names the rest of the code expects
-          const normalized = validated.map(l => ({
-            companyName: l.company || l.companyName || "",
-            jobTitle: l.jobTitle || "",
-            jobPayRate: l.pay || l.jobPayRate || "",
-            location: l.location || "",
-            jobUrl: l.postingUrl || l.jobUrl || "",
-            postingDate: l.postedDate || l.postingDate || "",
-            industry: l.source || l.industry || "",
-            website: l.website || "",
-            phone: l.phone || "",
-            email: l.email || "",
-            companySize: l.companySize || "",
-            googleReviews: l.googleReviews || { rating: 0, count: 0 },
-            automationAngle: l.automationAngle || l.description || "",
-            automationUseCase: l.automationUseCase || "",
-            pitchHook: l.pitchHook || "",
-            urgency: l.urgency || "medium",
-            buyingSignals: l.buyingSignals || [],
-            opportunities: l.opportunities || [],
-            annualCost: l.annualCost || "",
-          }));
-
-          allRaw.push(...normalized);
-        }
-      } catch (err) {
-        failedBatches++;
+      if (!response.ok || data.error) {
+        setIndeedError(data.error || "Search failed — please try again.");
+        setIndeedLoading(false);
+        return;
       }
+
+      if (data.errors?.length) {
+        setIndeedError(`Some roles failed to load: ${data.errors.map(e => e.role).join(", ")}. Results may be incomplete.`);
+      }
+
+      const raw = Array.isArray(data.results) ? data.results : [];
+
+      if (raw.length === 0) {
+        setIndeedError("No local results found. Try a different city or role.");
+        setIndeedLoading(false);
+        return;
+      }
+
+      const normalizeName = (s) => (s || "").toLowerCase().trim().replace(/[™®©]/g, "").replace(/[^a-z0-9]/g, "");
+      const pipelineLeadMap = {};
+      leads.forEach(l => {
+        const norm = normalizeName(l.company);
+        if (!pipelineLeadMap[norm]) pipelineLeadMap[norm] = [];
+        pipelineLeadMap[norm].push(l.followUp || "new");
+      });
+
+      const results = raw.map((r, i) => {
+        const normCompany = normalizeName(r.companyName);
+        const statuses = pipelineLeadMap[normCompany] || [];
+        const isActedOn = statuses.some(s => s === "contacted" || s === "replied");
+        const isInPipeline = statuses.length > 0;
+        return {
+          id: Date.now() + i + Math.random(),
+          companyName: r.companyName || "Unknown Company",
+          industry: r.industry || r.source || "",
+          location: r.location || indeedCity.trim() || "On-site",
+          website: r.website || "",
+          phone: r.phone || "",
+          email: r.email || "",
+          jobTitle: r.jobTitle || "",
+          jobPayRate: r.jobPayRate || "",
+          annualCost: r.annualCost || "",
+          postingDate: r.postingDate || "",
+          jobUrl: r.jobUrl || "",
+          companySize: r.companySize || "",
+          googleReviews: { rating: 0, count: 0 },
+          automationAngle: r.description || "",
+          automationUseCase: "",
+          pitchHook: "",
+          urgency: "medium",
+          buyingSignals: [],
+          opportunities: [],
+          skipRender: isActedOn,
+          pipelineTag: isInPipeline && !isActedOn ? "✓ Already in Pipeline" : null,
+        };
+      }).filter(r => !r.skipRender);
+
+      setIndeedResults(results);
+      showToast(`Found ${results.length} local companies hiring`);
+    } catch (err) {
+      setIndeedError("Search failed — " + (err?.message || "please try again."));
     }
 
-    if (failedBatches > 0 && allRaw.length > 0) {
-      setIndeedError(`${failedBatches} batch${failedBatches > 1 ? "es" : ""} failed to load. Results may be incomplete.`);
-    }
-
-    if (allRaw.length === 0) {
-      setIndeedError("No results returned. Try selecting fewer roles and rerun the search.");
-      setIndeedLoading(false);
-      return;
-    }
-
-    // Deduplicate within allRaw by company+jobTitle
-    const seenKeys = new Set();
-    const dedupedRaw = allRaw.filter(r => {
-      const key = `${(r.companyName || "").toLowerCase().trim().replace(/[^a-z0-9]/g, "")}|${(r.jobTitle || "").toLowerCase().trim().replace(/[^a-z0-9]/g, "")}`;
-      if (seenKeys.has(key)) return false;
-      seenKeys.add(key);
-      return true;
-    });
-
-    // Fix 1: Filter out listings with no confirmed job URL
-    const withLinks = dedupedRaw.filter(r => r.jobUrl && r.jobUrl.trim() !== "");
-
-    // Fix 4: Build pipeline lead map — normalizedCompany → array of followUp statuses
-    const normalizeName = (s) => (s || "").toLowerCase().trim().replace(/[™®©]/g, "").replace(/[^a-z0-9]/g, "");
-    const pipelineLeadMap = {};
-    leads.forEach(l => {
-      const norm = normalizeName(l.company);
-      if (!pipelineLeadMap[norm]) pipelineLeadMap[norm] = [];
-      pipelineLeadMap[norm].push(l.followUp || "new");
-    });
-
-    const results = withLinks.map((r, i) => {
-      const normCompany = normalizeName(r.companyName);
-      const statuses = pipelineLeadMap[normCompany] || [];
-      const isActedOn = statuses.some(s => s === "contacted" || s === "replied");
-      const isInPipeline = statuses.length > 0;
-      return {
-        id: Date.now() + i + Math.random(),
-        companyName: r.companyName || "Unknown Company",
-        industry: r.industry || "",
-        location: r.location || (indeedCity.trim() || "Remote"),
-        website: r.website || "",
-        phone: r.phone || "",
-        email: r.email || "",
-        jobTitle: r.jobTitle || "",
-        jobPayRate: r.jobPayRate || "",
-        annualCost: r.annualCost || "",
-        postingDate: r.postingDate || "",
-        jobUrl: r.jobUrl || "",
-        companySize: r.companySize || "",
-        googleReviews: r.googleReviews || { rating: 0, count: 0 },
-        automationAngle: r.automationAngle || "",
-        automationUseCase: r.automationUseCase || "",
-        pitchHook: r.pitchHook || "",
-        urgency: r.urgency || "medium",
-        buyingSignals: r.buyingSignals || [],
-        opportunities: r.opportunities || [],
-        // Only hide if already acted on (contacted/replied); new pipeline leads still show
-        skipRender: isActedOn,
-        pipelineTag: isInPipeline && !isActedOn ? "✓ Already in Pipeline" : null,
-      };
-    }).filter(r => !r.skipRender);
-
-    setIndeedResults(results);
-    showToast(`Found ${results.length} companies hiring`);
     setIndeedLoading(false);
   };
 
