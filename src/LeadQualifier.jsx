@@ -2138,17 +2138,17 @@ Return ONLY the message text. No labels, no markdown.`;
       // 3 query variations per role for broader coverage
       const searchQueries = batch.flatMap(role => [
         indeedCity.trim()
-          ? `"${role}" remote job hiring ${indeedCity.trim()}`
-          : `"${role}" remote job hiring 2025 OR 2026`,
-        `"${role}" remote hiring site:indeed.com OR site:linkedin.com/jobs OR site:ziprecruiter.com`,
-        `"${role}" remote position open site:glassdoor.com OR site:careerbuilder.com`,
+          ? `"${role}" job hiring ${indeedCity.trim()}`
+          : `"${role}" job hiring 2025 OR 2026`,
+        `"${role}" hiring ${indeedCity.trim() ? indeedCity.trim() + " " : ""}site:indeed.com OR site:linkedin.com/jobs OR site:ziprecruiter.com`,
+        `"${role}" position open ${indeedCity.trim() ? indeedCity.trim() + " " : ""}site:glassdoor.com OR site:careerbuilder.com`,
       ]);
 
       const countForBatch = Math.max(3, Math.ceil(indeedCount / batches.length));
 
-      const prompt = `Search for companies currently hiring for these remote roles: ${batch.join(", ")}.
+      const prompt = `Search for companies currently hiring for these roles: ${batch.join(", ")}.${indeedCity.trim() ? ` Focus on listings in ${indeedCity.trim()}.` : ""}
 
-Use simple search queries like: '[role]' remote job hiring
+Use simple search queries like: '[role]' job hiring${indeedCity.trim() ? ` ${indeedCity.trim()}` : ""}
 
 For each search result that is an actual job listing, extract:
 - jobTitle: the exact job title from the search result
