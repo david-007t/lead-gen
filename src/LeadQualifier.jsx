@@ -2143,16 +2143,21 @@ Return ONLY the message text. No labels, no markdown.`;
         return;
       }
 
-      if (data.errors?.length) {
-        setIndeedError(`Some roles failed to load: ${data.errors.map(e => e.role).join(", ")}. Results may be incomplete.`);
-      }
-
       const raw = Array.isArray(data.results) ? data.results : [];
 
       if (raw.length === 0) {
-        setIndeedError("No local results found. Try a different city or role.");
+        if (data.errors?.length) {
+          const firstErr = data.errors[0];
+          setIndeedError(`Search failed for "${firstErr.role}": ${firstErr.error}`);
+        } else {
+          setIndeedError("No local results found for these roles in this city. Try broader roles or a larger city.");
+        }
         setIndeedLoading(false);
         return;
+      }
+
+      if (data.errors?.length) {
+        setIndeedError(`Partial results — ${data.errors.map(e => e.role).join(", ")} failed to load.`);
       }
 
       const normalizeName = (s) => (s || "").toLowerCase().trim().replace(/[™®©]/g, "").replace(/[^a-z0-9]/g, "");
