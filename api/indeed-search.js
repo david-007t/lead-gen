@@ -54,7 +54,7 @@ function buildPayRate(job) {
 
 async function fetchJSearch(role, location, apiKey) {
   const query = location ? `${role} in ${location}` : role;
-  const params = new URLSearchParams({ query, num_pages: "3", date_posted: "week" });
+  const params = new URLSearchParams({ query, num_pages: "1", date_posted: "week" });
 
   const resp = await fetch(`${JSEARCH_BASE}?${params}`, {
     headers: {
@@ -84,15 +84,24 @@ export default async function handler(req, res) {
   const { roles = [], location = "", count = 10 } = req.body || {};
   if (!Array.isArray(roles) || roles.length === 0) return res.status(400).json({ error: "roles[] is required" });
 
-  const seenUrls = new Set();
-  const results = [];
   const errors = [];
 
-  for (const role of roles.slice(0, 5)) {
-    try {
-      const raw = await fetchJSearch(role, location, apiKey);
+  const roleResults = await Promise.all(
+    roles.slice(0, 5).map(async (role) => {
+      try {
+        return { role, jobs: await fetchJSearch(role, location, apiKey) };
+      } catch (err) {
+        errors.push({ role, error: err.message });
+        return { role, jobs: [] };
+      }
+    })
+  );
 
-      for (const job of raw) {
+  const seenUrls = new Set();
+  const results = [];
+
+  for (const { role, jobs } of roleResults) {
+    for (const job of jobs) {
         if (isRemoteJob(job)) continue;
         if (isBlockedEmployer(job.employer_name)) continue;
 
@@ -129,9 +138,6 @@ export default async function handler(req, res) {
           opportunities: [],
           googleReviews: { rating: 0, count: 0 },
         });
-      }
-    } catch (err) {
-      errors.push({ role, error: err.message });
     }
   }
 
