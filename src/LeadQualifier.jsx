@@ -1062,6 +1062,8 @@ export default function LeadQualifier() {
   const [generatingContactDraft, setGeneratingContactDraft] = useState(null);
   const [indeedLinkedInMsg, setIndeedLinkedInMsg] = useState({});   // { [id]: { connectionNote, followUpDm } }
   const [generatingLinkedInMsg, setGeneratingLinkedInMsg] = useState(null);
+  const [indeedSendStatus, setIndeedSendStatus] = useState({});     // { [id]: { sent, sentAt, to } }
+  const [sendingIndeedId, setSendingIndeedId] = useState(null);
 
   // Ship List state
   const [shipListResults, setShipListResults] = useState([]);
@@ -2628,6 +2630,38 @@ Respond with ONLY a JSON object:
       showToast("Failed to generate messages", "error");
     }
     setGeneratingLinkedInMsg(null);
+  };
+
+  const handleSendIndeedEmail = async (r) => {
+    const draft = indeedEmailDrafts[r.id];
+    if (!draft) { showToast("Generate an outreach draft first", "error"); return; }
+    if (indeedSendStatus[r.id]?.sent) return;
+
+    const lines = draft.split("\n");
+    const subjectLine = lines.find(l => l.toLowerCase().startsWith("subject:"));
+    const subject = subjectLine ? subjectLine.replace(/^subject:\s*/i, "").trim() : `AI automation for ${r.companyName}`;
+    const body = subjectLine ? lines.slice(lines.indexOf(subjectLine) + 1).join("\n").trim() : draft;
+
+    const contact = indeedContactInfo[r.id];
+    const to = contact && contact !== "not_found" && contact.email ? contact.email : r.email;
+    if (!to) { showToast("No email found — use Find Contact Info first", "error"); return; }
+
+    setSendingIndeedId(r.id);
+    try {
+      const response = await fetch("/api/gmail-send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to, subject, body }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.error) throw new Error(data.error || "Failed to send email");
+      setIndeedSendStatus(prev => ({ ...prev, [r.id]: { sent: true, sentAt: Date.now(), to } }));
+      setIndeedQueueActions(prev => ({ ...prev, [r.id]: "contacted" }));
+      showToast(`Sent to ${r.companyName}`);
+    } catch (err) {
+      showToast(err?.message || "Failed to send email", "error");
+    }
+    setSendingIndeedId(null);
   };
 
   const handleClearAll = () => {
@@ -5092,10 +5126,18 @@ Return:
                             <div style={{ marginTop: 12, padding: 16, background: t.bgAlt, borderRadius: 8, border: `1px solid ${t.borderLight}` }}>
                               <div style={{ fontSize: 11, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}>📧 Outreach Draft</div>
                               <div style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 12, whiteSpace: "pre-wrap" }}>{indeedEmailDrafts[r.id]}</div>
-                              <button onClick={() => { navigator.clipboard.writeText(indeedEmailDrafts[r.id]); showToast("Copied to clipboard"); }}
-                                style={{ ...btnPrimary, fontSize: 12, padding: "6px 16px" }}>
-                                Copy to Clipboard
-                              </button>
+                              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                                <button onClick={() => { navigator.clipboard.writeText(indeedEmailDrafts[r.id]); showToast("Copied to clipboard"); }}
+                                  style={{ ...btnSecondary, fontSize: 12, padding: "6px 16px" }}>
+                                  Copy to Clipboard
+                                </button>
+                                <button
+                                  onClick={() => handleSendIndeedEmail(r)}
+                                  disabled={indeedSendStatus[r.id]?.sent || sendingIndeedId === r.id}
+                                  style={{ ...btnPrimary, fontSize: 12, padding: "6px 16px", opacity: indeedSendStatus[r.id]?.sent || sendingIndeedId === r.id ? 0.6 : 1 }}>
+                                  {indeedSendStatus[r.id]?.sent ? "✓ Sent" : sendingIndeedId === r.id ? "Sending..." : "Send via Gmail"}
+                                </button>
+                              </div>
                             </div>
                           )}
 
