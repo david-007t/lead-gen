@@ -95,10 +95,25 @@ const BLOCKED_PATTERNS = [
   // Corporate conglomerate name patterns (structure signal)
   /\b(global|national|american)\s+(services|solutions|group|corp|inc)\b/i,
   /\b(enterprise|corporate|premier|elite)\s+(management|hospitality|staffing|resources)\b/i,
+  // Company name ending in Hotels / Resorts / Hotel Group / Hotels & Resorts
+  /\b(hotels|resorts|hotels\s*&\s*resorts|hotel\s+group)\s*$/i,
 ];
 
 function isBlockedEmployer(name) {
   return BLOCKED_PATTERNS.some(p => p.test(name || ""));
+}
+
+// Description-level checks — catches large-operation signals the name alone misses.
+function isBlockedByDescription(desc) {
+  if (!desc) return false;
+  // Large hospitality footprint combos
+  if (/state.of.the.art\s+facilit/i.test(desc) && /24\s*(hours?|hr).{0,25}(day|7)/i.test(desc)) return true;
+  if (/\b\d+\s*acres?\b/i.test(desc) && /hotel|resort|lodg/i.test(desc)) return true;
+  if (/for over a century|since\s+(18|19[0-8]\d)\b/i.test(desc) && /hotel|resort|lodg/i.test(desc)) return true;
+  if (/on.?site (restaurant|fine dining|spa|pool|conference center|ballroom)/i.test(desc)) return true;
+  // Multi-location scale (also in scoreLocalBusiness, belt-and-suspenders here)
+  if (/locations across the (us|united states|country)|[0-9]{2,}\s+locations|in \d+ states/i.test(desc)) return true;
+  return false;
 }
 
 function isRemoteJob(job) {
@@ -176,6 +191,7 @@ export default async function handler(req, res) {
     for (const job of jobs) {
         if (isRemoteJob(job)) continue;
         if (isBlockedEmployer(job.employer_name)) continue;
+        if (isBlockedByDescription(job.job_description)) continue;
 
         const url = job.job_apply_link || job.job_google_link || "";
         if (!url || seenUrls.has(url)) continue;

@@ -848,6 +848,36 @@ function scoreLocalBusiness(r) {
     return { score: 0, tags: [], hardExclude: true };
   }
 
+  // Hard-exclude: company name ending in Hotels / Resorts / Hotel Group / Hotels & Resorts
+  if (/\b(hotels|resorts|hotels\s*&\s*resorts|hotel\s+group)\s*$/i.test(name.trim())) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+
+  // Hard-exclude: website domain contains "hotels" (plural) — multi-location brand signal
+  // e.g. waghotels.com, heihotels.com — single boutique hotel domains use "hotel" singular
+  const domain = website.replace(/^https?:\/\//, "").split("/")[0].replace(/^www\./, "");
+  if (domain && /hotels/.test(domain)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+
+  // Hard-exclude: large physical footprint language (resort-scale, not a walkin SMB)
+  if (/\b\d+\s*acres?\b/i.test(desc) && /hotel|resort|lodg|propert/i.test(desc)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+  if (/on.?site (restaurant|fine dining|spa|pool|conference center|ballroom|event space)/i.test(desc)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+
+  // Hard-exclude: "state-of-the-art facilities" + "24 hours" combo — signals large operation
+  if (/state.of.the.art\s+facilit/i.test(desc) && /24\s*(hours?|hr).{0,25}(day|7)/i.test(desc)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+
+  // Hard-exclude: legacy hospitality chain — "for over a century" or founding before 1990 + hotel/resort language
+  if (/for over a century|since\s+(18|19[0-8]\d)\b/i.test(desc) && /hotel|resort|lodg/i.test(desc)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+
   // ── FRANCHISE SOFT DETECTION — local franchisee (tag, don't exclude) ──
   const isFranchise = /\bindependently owned\b|\bfranchis(ee|ised)\b/i.test(desc);
 
@@ -2310,15 +2340,46 @@ Return ONLY the message text. No labels, no markdown.`;
         })
         .filter(r => !r._exclude);
 
-      // Sort Oakland first → SF → rest of Bay Area by distance, then by score
-      scored.sort((a, b) => {
+      const sortScored = (arr) => arr.sort((a, b) => {
         const rank = x => x._tags.includes("Oakland") ? 2 : x._tags.includes("SF") ? 1 : 0;
         if (rank(b) !== rank(a)) return rank(b) - rank(a);
-        // Within same tier: closer first, then score descending
         const miA = a._miles ?? 999, miB = b._miles ?? 999;
         if (miA !== miB) return miA - miB;
         return b._score - a._score;
       });
+
+      // Sort Oakland first → SF → rest of Bay Area by distance, then by score
+      sortScored(scored);
+
+      // ── FALLBACK BROADENING — if fewer than 3 results passed the filter, widen to Bay Area ──
+      // This avoids empty state when tight city filtering is too aggressive.
+      if (scored.length < 3 && indeedCity.trim()) {
+        try {
+          const broaderResp = await fetch("/api/indeed-search", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              roles: rolesToSearch,
+              location: "San Francisco Bay Area, CA",
+              count: indeedCount,
+            }),
+          });
+          const broaderData = await broaderResp.json().catch(() => ({}));
+          if (broaderResp.ok && Array.isArray(broaderData.results)) {
+            const seenUrls = new Set(scored.map(r => r.jobUrl).filter(Boolean));
+            const broaderScored = broaderData.results
+              .filter(r => r.jobUrl && !seenUrls.has(r.jobUrl))
+              .map(r => {
+                const s = scoreLocalBusiness(r);
+                const miles = distanceFromOakland(r.location);
+                return { ...r, _score: s.score, _tags: s.tags, _exclude: s.hardExclude, _miles: miles };
+              })
+              .filter(r => !r._exclude);
+            scored.push(...broaderScored);
+            sortScored(scored);
+          }
+        } catch (_) { /* silent — display whatever we have */ }
+      }
 
       const normalizeName = (s) => (s || "").toLowerCase().trim().replace(/[™®©]/g, "").replace(/[^a-z0-9]/g, "");
       const pipelineLeadMap = {};
