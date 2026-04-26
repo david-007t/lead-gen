@@ -776,13 +776,19 @@ function distanceFromOakland(locationStr) {
 }
 
 // ─── LOCAL BUSINESS FILTER & SCORER ──────────────────────────
+// Filters on company SIZE and STRUCTURE only — any niche is acceptable.
 // Returns { score: 1-10, tags: string[], hardExclude: boolean }
 function scoreLocalBusiness(r) {
-  const name = (r.companyName || "").toLowerCase();
-  const desc = ((r.automationAngle || "") + " " + (r.jobTitle || "")).toLowerCase();
-  const loc  = (r.location || "").toLowerCase();
+  const name    = (r.companyName || "").toLowerCase();
+  // Use r.description (raw API field) at scoring time; r.automationAngle is populated later
+  const desc    = ((r.description || r.automationAngle || "") + " " + (r.jobTitle || "")).toLowerCase();
+  const loc     = (r.location || "").toLowerCase();
+  const website = (r.website || "").toLowerCase();
+  const nameAndDesc = name + " " + desc;
 
-  // Hard-exclude: known national/regional chains
+  // ── HARD EXCLUDES — structure & size signals only ────────────
+
+  // Known Fortune 500 / national chains / enterprise brands
   const CHAINS = [
     'safelite','liberty mutual','conduent','supercuts','mcdonald','subway','starbucks',
     'walmart','target','cvs','walgreens','rite aid','ups store','fedex office','amazon',
@@ -796,52 +802,88 @@ function scoreLocalBusiness(r) {
     'enterprise rent-a-car','hertz','avis car',
     'ashley furniture','rooms to go','pottery barn',
     'ulta beauty','sephora','bath & body works',"victoria's secret",
+    // Additional Fortune 500 / enterprise
+    "humana","dave & buster","marriott","hilton","hyatt","ihg","wyndham","sheraton","westin",
+    "sodexo","aramark","compass group","aimbridge","sonder","vacasa",
+    "unitedhealth","cigna","aetna","anthem","kaiser permanente",
+    "jpmorgan","bank of america","wells fargo","chase bank",
+    "deloitte","kpmg","ernst & young","pricewaterhouse","pwc",
+    "public storage","extra space storage","life storage",
+    "uhaul","penske truck","ryder system",
+    "accenture","cognizant","infosys","wipro","tata consultancy",
   ];
   if (CHAINS.some(c => name.includes(c))) return { score: 0, tags: [], hardExclude: true };
 
-  // Hard-exclude: corporate-conglomerate name patterns
-  if (/\b(global|national|american|premier|elite|corporate)\s+(services|solutions|group|partners|corp)\b/i.test(name)) {
+  // Hotel management / hospitality group (chain-level, not a single boutique hotel)
+  if (/\b(hotel\s+management|hospitality\s+group|resort\s+group|hotel\s+group|lodging\s+group|property\s+management\s+group)\b/i.test(name)) {
     return { score: 0, tags: [], hardExclude: true };
   }
 
-  // Hard-exclude: multi-location / franchise signals in description
-  if (/multiple locations|nationwide|across the (country|nation|us)|[0-9]{2,}\s+locations|franchise operator|independently owned and operated by/i.test(desc)) {
+  // Corporate-conglomerate name patterns
+  if (/\b(global|national|american|premier|elite|corporate|enterprise)\s+(services|solutions|group|partners|corp|management|hospitality|staffing|resources)\b/i.test(name)) {
     return { score: 0, tags: [], hardExclude: true };
   }
 
-  // Hard-exclude: MLM / commission-only
+  // Multi-location / national-scale signals in description
+  if (/locations across the (us|united states|country|nation)|nationwide|[0-9]{2,}\s+locations|in \d+ states|premier .{3,40} in the united states/i.test(desc)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+
+  // Franchise corporate postings (franchisor, not local franchisee)
+  if (/franchise opportunity|become a franchis|franchis.{0,30}across the|we are a franchise with \d+/i.test(desc)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+
+  // Nonprofit / government
+  if (/\bnon.?profit\b|\b501.?c\b|\bschool district\b|\bcity of\b|\bcounty of\b/i.test(nameAndDesc)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+  if (/\.org$|\.gov$/.test(website)) return { score: 0, tags: [], hardExclude: true };
+  if (/\boutreach (program|center|org)\b|\bfoundation\b|\bcommunity organization\b|\bcharit(y|able)\b/i.test(desc)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+
+  // MLM / commission-only
   if (/be your own boss|unlimited earning potential|1099.*commission|no experience.*commission only/i.test(desc)) {
     return { score: 0, tags: [], hardExclude: true };
   }
 
-  // Hard-exclude: nonprofit / government
-  if (/\bnon.?profit\b|\b501.?c\b|\bschool district\b|\bcity of\b|\bcounty of\b/i.test(name + " " + desc)) {
-    return { score: 0, tags: [], hardExclude: true };
-  }
+  // ── FRANCHISE SOFT DETECTION — local franchisee (tag, don't exclude) ──
+  const isFranchise = /\bindependently owned\b|\bfranchis(ee|ised)\b/i.test(desc);
 
-  // ── Scoring — Oakland-first priority ──
+  // ── SCORING — Oakland-first, structure-positive ───────────────
   let score = 5;
   const tags = [];
 
+  // Location scoring
   const miles = distanceFromOakland(r.location);
-  if (/\boakland\b/i.test(loc))                                { score += 2; tags.push("Oakland"); }
-  else if (/\bsan francisco\b|\bsf,?\s*(ca)?\b/i.test(loc))   { score += 1; tags.push("SF"); }
-  else if (miles !== null && miles <= 50)                      { /* Bay Area — no boost, just show distance */ }
-  else                                                          { score -= 2; }
+  if (/\boakland\b/i.test(loc))                              { score += 2; tags.push("Oakland"); }
+  else if (/\bsan francisco\b|\bsf,?\s*(ca)?\b/i.test(loc)) { score += 1; tags.push("SF"); }
+  else if (miles !== null && miles <= 50)                    { /* Bay Area — no boost, show distance only */ }
+  else                                                        { score -= 2; }
 
-  // Local-business name signals (positive)
-  if (/\b(dr\.|dental|salon|spa|clinic|law office|realty|vet|veterinary|auto repair|bakery|cafe|bistro|boutique|studio|gallery|chiropractic|optometry)\b/i.test(name)) {
-    score += 1; tags.push("Local biz");
+  // Owner-operated / small team feel (strong positive)
+  if (/join our (family|small team)|family.owned|owner.operated|neighborhood|locally owned|our (small |)team|boutique|our (doctor|dentist|lawyer|owner)\b/i.test(desc)) {
+    score += 2; tags.push("Owner-operated");
   }
 
-  // Corporate name signals (soft penalty)
-  if (/\bgroup\b|\bassociates\b|\bholdings\b|\benterprises\b|\bventures\b/i.test(name)) score -= 1;
-  if (/\bsolutions\b|\boutsorc|\bmanaged services\b/i.test(name)) score -= 1;
+  // Single-location signal (positive)
+  if (/\b(single|one|our only|our sole)\s+location\b|our (office|clinic|studio|shop|salon|practice)\b/i.test(desc)) {
+    score += 1; tags.push("Single location");
+  }
 
-  // Direct-apply = real company, not aggregator shell
+  // Corporate name structure (soft penalty — not a hard exclude)
+  if (/\bholdings\b|\benterprises\b|\bventures\b|\bcorp\b|\binc\b/i.test(name))      score -= 1;
+  if (/\bsolutions\b|\boutsorc|\bmanaged services\b|\bstaffing\b/i.test(name))        score -= 1;
+  if (/\bgroup\b|\bassociates\b/i.test(name))                                         score -= 1;
+
+  // Direct-apply = real company posting, not an aggregator shell
   if (r.isDirectApply) { score += 1; tags.push("Direct listing"); }
 
-  return { score: Math.max(1, Math.min(10, score)), tags, hardExclude: false };
+  // Franchise soft penalty
+  if (isFranchise) { score -= 2; tags.push("⚠️ Franchise"); }
+
+  return { score: Math.max(1, Math.min(10, Math.round(score))), tags, hardExclude: false };
 }
 
 function buildIndeedPipelineDetails(result, extras = {}) {

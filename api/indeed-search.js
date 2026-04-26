@@ -4,8 +4,10 @@
 
 const JSEARCH_BASE = "https://jsearch.p.rapidapi.com/search";
 
+// Employer name blocklist — structure & size signals only, not industry.
+// Any niche is fine as long as the company is small and single-location.
 const BLOCKED_PATTERNS = [
-  // Staffing / recruiting agencies
+  // Staffing / recruiting agencies (structure: intermediary, not a real employer)
   /\bstaffing\b/i,
   /\brecruiting\b/i,
   /\brecruitment\b/i,
@@ -35,7 +37,7 @@ const BLOCKED_PATTERNS = [
   /\bwipro\b/i,
   /\baccenture\b/i,
   /\bcognizant\b/i,
-  // National chains / franchises
+  // Fortune 500 / national chains — excluded by SIZE, not industry
   /\bsafelite\b/i,
   /\bconduent\b/i,
   /\bliberty\s+mutual\b/i,
@@ -66,8 +68,33 @@ const BLOCKED_PATTERNS = [
   /\bmolly\s+maid\b/i,
   /\bthe\s+maids\b/i,
   /\bjani.?king\b/i,
-  // Conglomerate name patterns
+  // Hotel / hospitality chains and management groups
+  /\bmarriott\b/i,
+  /\bhilton\b/i,
+  /\bhyatt\b/i,
+  /\bihg\b|\bintercontinental\b/i,
+  /\bwyndham\b/i,
+  /\bsheraton\b|\bwestin\b|\bw\s+hotel\b/i,
+  /\bsodexo\b/i,
+  /\baramark\b/i,
+  /\bcompass\s+group\b/i,
+  /\baimbridge\b/i,
+  /\bsonder\b/i,
+  /\bvacasa\b/i,
+  /\bhotel\s+management\b|\bhospitality\s+group\b|\blodging\s+group\b/i,
+  // Healthcare enterprise
+  /\bhumana\b/i,
+  /\bunitedhealth\b/i,
+  /\bcigna\b/i,
+  /\baetna\b/i,
+  /\banthemj?\b/i,
+  /\bkaiser\s+permanente\b/i,
+  // Entertainment / F&B chains
+  /\bdave\s*&\s*buster/i,
+  /\bapplebee's\b|\bolive\s+garden\b|\bchili's\b|\bdenny's\b|\bihop\b/i,
+  // Corporate conglomerate name patterns (structure signal)
   /\b(global|national|american)\s+(services|solutions|group|corp|inc)\b/i,
+  /\b(enterprise|corporate|premier|elite)\s+(management|hospitality|staffing|resources)\b/i,
 ];
 
 function isBlockedEmployer(name) {
