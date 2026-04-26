@@ -92,6 +92,15 @@ const BLOCKED_PATTERNS = [
   // Entertainment / F&B chains
   /\bdave\s*&\s*buster/i,
   /\bapplebee's\b|\bolive\s+garden\b|\bchili's\b|\bdenny's\b|\bihop\b/i,
+  /\brestaurant\s+depot\b/i,
+  // Fitness / wellness franchise chains (by brand name)
+  /\borange\s*theory\b|\bf45\b|\bpure\s*barre\b|\bsolid\s*core\b|\bstudiomd\b/i,
+  /\bmassage\s+envy\b|\bhand\s+&?\s*stone\b|\beuropean\s+wax\b|\bwax\s+center\b/i,
+  /\bstretch\s*lab\b|\bthe\s+joint\b|\blaser\s*away\b|\bdry\s*bar\b|\bbodyrok\b/i,
+  // Behavioral health / treatment organizations (large orgs, not small practices)
+  /\btelecare\b|\bbhavioral\s+health\s+(center|services|group)\b/i,
+  // Fintech / tech companies that are clearly enterprise
+  /\bmarqeta\b/i,
   // Corporate conglomerate name patterns (structure signal)
   /\b(global|national|american)\s+(services|solutions|group|corp|inc)\b/i,
   /\b(enterprise|corporate|premier|elite)\s+(management|hospitality|staffing|resources)\b/i,
@@ -111,8 +120,19 @@ function isBlockedByDescription(desc) {
   if (/\b\d+\s*acres?\b/i.test(desc) && /hotel|resort|lodg/i.test(desc)) return true;
   if (/for over a century|since\s+(18|19[0-8]\d)\b/i.test(desc) && /hotel|resort|lodg/i.test(desc)) return true;
   if (/on.?site (restaurant|fine dining|spa|pool|conference center|ballroom)/i.test(desc)) return true;
-  // Multi-location scale (also in scoreLocalBusiness, belt-and-suspenders here)
+  // Multi-location scale language (belt-and-suspenders)
   if (/locations across the (us|united states|country)|[0-9]{2,}\s+locations|in \d+ states/i.test(desc)) return true;
+  // Explicit scale numbers ("420+ locations", "11,000 team members")
+  if (/\b\d{3,}\+?\s*(locations|clinics|centers|studios|stores|sites)\b/i.test(desc)) return true;
+  if (/\b\d[\d,]{3,}\s*(team members|employees|staff members)\b/i.test(desc)) return true;
+  // Hospital / treatment center / behavioral health
+  if (/\bhospital\b|health system|\btreatment center\b|behavioral health (center|program)|addiction (treatment|program|recovery)|residential treatment/i.test(desc)) return true;
+  // Staffing agency / third-party employer
+  if (/staffing agency position|employed by (a |an )?(third.party|staffing|outside)|this (is a|position is a) (contract|temp|temporary) (role|position) (through|via)/i.test(desc)) return true;
+  // Rapidly growing + fitness/wellness = franchise expansion
+  if (/rapidly growing/i.test(desc) && /fitness|wellness|yoga|pilates|gym|studio|health club/i.test(desc)) return true;
+  // Wholesale / depot / warehouse operations
+  if (/restaurant depot|wholesale depot|\bdistribution center\b|\bfulfillment center\b/i.test(desc)) return true;
   return false;
 }
 

@@ -853,10 +853,10 @@ function scoreLocalBusiness(r) {
     return { score: 0, tags: [], hardExclude: true };
   }
 
-  // Hard-exclude: website domain contains "hotels" (plural) — multi-location brand signal
-  // e.g. waghotels.com, heihotels.com — single boutique hotel domains use "hotel" singular
+  // Hard-exclude: website domain — "hotels" plural = chain; known national brand domains
   const domain = website.replace(/^https?:\/\//, "").split("/")[0].replace(/^www\./, "");
-  if (domain && /hotels/.test(domain)) {
+  if (domain && /hotels/.test(domain)) return { score: 0, tags: [], hardExclude: true };
+  if (domain && /restaurantdepot|waxcenter|telecarecorp|marqeta|massageenvy|handanstone|thejointhq|laseraway|drybar|europeanwax|stretchlab|bodyrok|solidcore|orangetheory|f45training|purebarre/.test(domain)) {
     return { score: 0, tags: [], hardExclude: true };
   }
 
@@ -873,8 +873,43 @@ function scoreLocalBusiness(r) {
     return { score: 0, tags: [], hardExclude: true };
   }
 
-  // Hard-exclude: legacy hospitality chain — "for over a century" or founding before 1990 + hotel/resort language
+  // Hard-exclude: legacy hospitality chain
   if (/for over a century|since\s+(18|19[0-8]\d)\b/i.test(desc) && /hotel|resort|lodg/i.test(desc)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+
+  // Hard-exclude: explicit scale language ("420+ locations", "11,000 team members", etc.)
+  if (/\b\d{3,}\+?\s*(locations|clinics|centers|studios|stores|sites)\b/i.test(desc)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+  if (/\b\d[\d,]{3,}\s*(team members|employees|staff members)\b/i.test(desc)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+
+  // Hard-exclude: hospitals, treatment centers, behavioral health, addiction programs
+  if (/\bhospital\b|health system|\btreatment center\b|behavioral health (center|program|services)|addiction (treatment|program|services|recovery)|residential treatment|detox (center|program|facility)/i.test(nameAndDesc)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+
+  // Hard-exclude: staffing agency position / third-party employer language
+  if (/staffing agency position|employed by (a |an )?(third.party|staffing|outside)|this (is a|position is a) (contract|temp|temporary) (role|position) (through|via|with a)/i.test(desc)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+
+  // Hard-exclude: rapidly growing + fitness/wellness = franchise expansion play
+  if (/rapidly growing/i.test(desc) && /fitness|wellness|yoga|pilates|gym|studio|health club/i.test(desc)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+
+  // Hard-exclude: wholesale / depot / warehouse / distribution operations
+  if (/restaurant depot|wholesale depot|\bdistribution center\b|\bfulfillment center\b|\bwarehouse (operations|facility)\b/i.test(nameAndDesc)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+
+  // Hard-exclude: funded/venture-backed tech company posting for internal office roles
+  // (not their core product — e.g. Marqeta hiring a receptionist)
+  if (/series [a-e] funding|venture.backed|recently (funded|raised)|post.ipo/i.test(desc) &&
+      /\b(software|platform|api|fintech|payments|saas|marketplace)\b/i.test(nameAndDesc)) {
     return { score: 0, tags: [], hardExclude: true };
   }
 
@@ -910,8 +945,8 @@ function scoreLocalBusiness(r) {
   // Direct-apply = real company posting, not an aggregator shell
   if (r.isDirectApply) { score += 1; tags.push("Direct listing"); }
 
-  // Franchise soft penalty
-  if (isFranchise) { score -= 2; tags.push("⚠️ Franchise"); }
+  // Franchise: hard ceiling at 5 regardless of other signals
+  if (isFranchise) { score = Math.min(score, 5); tags.push("⚠️ Franchise"); }
 
   return { score: Math.max(1, Math.min(10, Math.round(score))), tags, hardExclude: false };
 }
@@ -2377,7 +2412,17 @@ Return ONLY the message text. No labels, no markdown.`;
         } catch (_) { /* silent — show whatever we have */ }
       }
 
-      const results = scored.map((r, i) => {
+      // Deduplicate by normalized company name — prevents same company appearing
+      // twice from different role searches or from first-pass + fallback pass
+      const seenCompanyNames = new Set();
+      const deduped = scored.filter(r => {
+        const norm = normalizeName(r.companyName);
+        if (seenCompanyNames.has(norm)) return false;
+        seenCompanyNames.add(norm);
+        return true;
+      });
+
+      const results = deduped.map((r, i) => {
         return {
           id: Date.now() + i + Math.random(),
           companyName: r.companyName || "Unknown Company",
