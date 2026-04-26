@@ -141,7 +141,7 @@ async function fetchJSearch(role, location, apiKey) {
   // Default to Oakland when no location is set
   const loc = location || "Oakland, CA";
   const query = `${role} in ${loc}`;
-  const params = new URLSearchParams({ query, num_pages: "1", date_posted: "week" });
+  const params = new URLSearchParams({ query, num_pages: "2", date_posted: "month" });
 
   const resp = await fetch(`${JSEARCH_BASE}?${params}`, {
     headers: {

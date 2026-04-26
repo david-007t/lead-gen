@@ -2331,14 +2331,9 @@ Return ONLY the message text. No labels, no markdown.`;
         setIndeedError(`Partial results — ${data.errors.map(e => e.role).join(", ")} failed to load.`);
       }
 
-      // Apply local-business hard filter and score
-      const scored = raw
-        .map(r => {
-          const s = scoreLocalBusiness(r);
-          const miles = distanceFromOakland(r.location);
-          return { ...r, _score: s.score, _tags: s.tags, _exclude: s.hardExclude, _miles: miles };
-        })
-        .filter(r => !r._exclude);
+      // ── Build pipeline lookup first so dedup runs before fallback ──
+      const normalizeName = (s) => (s || "").toLowerCase().trim().replace(/[™®©]/g, "").replace(/[^a-z0-9]/g, "");
+      const pipelineCompanies = new Set(leads.map(l => normalizeName(l.company)).filter(Boolean));
 
       const sortScored = (arr) => arr.sort((a, b) => {
         const rank = x => x._tags.includes("Oakland") ? 2 : x._tags.includes("SF") ? 1 : 0;
@@ -2348,52 +2343,41 @@ Return ONLY the message text. No labels, no markdown.`;
         return b._score - a._score;
       });
 
-      // Sort Oakland first → SF → rest of Bay Area by distance, then by score
+      // Score, hard-filter, and drop anything already in the pipeline
+      const scoreAndFilter = (items) =>
+        items
+          .map(r => {
+            const s = scoreLocalBusiness(r);
+            const miles = distanceFromOakland(r.location);
+            return { ...r, _score: s.score, _tags: s.tags, _exclude: s.hardExclude, _miles: miles };
+          })
+          .filter(r => !r._exclude && !pipelineCompanies.has(normalizeName(r.companyName)));
+
+      const scored = scoreAndFilter(raw);
       sortScored(scored);
 
-      // ── FALLBACK BROADENING — if fewer than 3 results passed the filter, widen to Bay Area ──
-      // This avoids empty state when tight city filtering is too aggressive.
-      if (scored.length < 3 && indeedCity.trim()) {
+      // ── FALLBACK BROADENING — fires when <3 displayable results after pipeline dedup ──
+      if (scored.length < 3) {
+        const broaderLocation = indeedCity.trim() ? "San Francisco Bay Area, CA" : "California";
         try {
           const broaderResp = await fetch("/api/indeed-search", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              roles: rolesToSearch,
-              location: "San Francisco Bay Area, CA",
-              count: indeedCount,
-            }),
+            body: JSON.stringify({ roles: rolesToSearch, location: broaderLocation, count: indeedCount }),
           });
           const broaderData = await broaderResp.json().catch(() => ({}));
           if (broaderResp.ok && Array.isArray(broaderData.results)) {
             const seenUrls = new Set(scored.map(r => r.jobUrl).filter(Boolean));
-            const broaderScored = broaderData.results
-              .filter(r => r.jobUrl && !seenUrls.has(r.jobUrl))
-              .map(r => {
-                const s = scoreLocalBusiness(r);
-                const miles = distanceFromOakland(r.location);
-                return { ...r, _score: s.score, _tags: s.tags, _exclude: s.hardExclude, _miles: miles };
-              })
-              .filter(r => !r._exclude);
-            scored.push(...broaderScored);
+            const broaderFiltered = scoreAndFilter(
+              broaderData.results.filter(r => r.jobUrl && !seenUrls.has(r.jobUrl))
+            );
+            scored.push(...broaderFiltered);
             sortScored(scored);
           }
-        } catch (_) { /* silent — display whatever we have */ }
+        } catch (_) { /* silent — show whatever we have */ }
       }
 
-      const normalizeName = (s) => (s || "").toLowerCase().trim().replace(/[™®©]/g, "").replace(/[^a-z0-9]/g, "");
-      const pipelineLeadMap = {};
-      leads.forEach(l => {
-        const norm = normalizeName(l.company);
-        if (!pipelineLeadMap[norm]) pipelineLeadMap[norm] = [];
-        pipelineLeadMap[norm].push(l.followUp || "new");
-      });
-
       const results = scored.map((r, i) => {
-        const normCompany = normalizeName(r.companyName);
-        const statuses = pipelineLeadMap[normCompany] || [];
-        const isActedOn = statuses.some(s => s === "contacted" || s === "replied");
-        const isInPipeline = statuses.length > 0;
         return {
           id: Date.now() + i + Math.random(),
           companyName: r.companyName || "Unknown Company",
@@ -2419,13 +2403,11 @@ Return ONLY the message text. No labels, no markdown.`;
           walkabilityScore: r._score,
           walkabilityTags: r._tags,
           milesFromOakland: r._miles,
-          skipRender: isActedOn,
-          pipelineTag: isInPipeline && !isActedOn ? "✓ Already in Pipeline" : null,
         };
-      }).filter(r => !r.skipRender);
+      });
 
       setIndeedResults(results);
-      showToast(`Found ${results.length} local companies hiring`);
+      showToast(`Found ${results.length} fresh leads`);
     } catch (err) {
       setIndeedError("Search failed — " + (err?.message || "please try again."));
     }
