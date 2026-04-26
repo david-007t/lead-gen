@@ -5,14 +5,13 @@
 const JSEARCH_BASE = "https://jsearch.p.rapidapi.com/search";
 
 const BLOCKED_PATTERNS = [
+  // Staffing / recruiting agencies
   /\bstaffing\b/i,
   /\brecruiting\b/i,
   /\brecruitment\b/i,
   /\btalent\s+(group|solutions|partners|acquisition)\b/i,
   /\bstaff\s+(solutions|services|pro|partners)\b/i,
   /\b(global|national|american|premier|elite|professional)\s+(staffing|resources|solutions|hr)\b/i,
-  /\bconduent\b/i,
-  /\bsafelite\b/i,
   /\bmanpower\b/i,
   /\bkelly\s+services\b/i,
   /\brobert\s+half\b/i,
@@ -26,8 +25,49 @@ const BLOCKED_PATTERNS = [
   /\bsupport\.com\b/i,
   /\bcognosante\b/i,
   /\bworkhuman\b/i,
-  /\bworkaholics\b/i,
   /\b(hiring|workforce)\s+(solutions|group|partners)\b/i,
+  /\bhirequest\b/i,
+  /\bsphere\s+recruiting\b/i,
+  /\bteam\s+health\b/i,
+  /\bvensure\b/i,
+  /\binfosys\b/i,
+  /\btata\s+consultancy\b/i,
+  /\bwipro\b/i,
+  /\baccenture\b/i,
+  /\bcognizant\b/i,
+  // National chains / franchises
+  /\bsafelite\b/i,
+  /\bconduent\b/i,
+  /\bliberty\s+mutual\b/i,
+  /\bstate\s+farm\b/i,
+  /\ballstate\b/i,
+  /\bgeico\b/i,
+  /\bprogressive\s+insurance\b/i,
+  /\bfarmers\s+insurance\b/i,
+  /\bsupercuts\b/i,
+  /\bgreat\s+clips\b/i,
+  /\bsports\s+clips\b/i,
+  /\bfantastic\s+sams\b/i,
+  /\bjiffy\s+lube\b/i,
+  /\bmidas\b/i,
+  /\bfirestone\b/i,
+  /\bautozone\b/i,
+  /\bpep\s+boys\b/i,
+  /\banytime\s+fitness\b/i,
+  /\bplanet\s+fitness\b/i,
+  /\bcrunch\s+fitness\b/i,
+  /\bh&r\s+block\b/i,
+  /\bjackson\s+hewitt\b/i,
+  /\bliberty\s+tax\b/i,
+  /\bups\s+store\b/i,
+  /\bfedex\s+office\b/i,
+  /\bservpro\b/i,
+  /\b1-800-got-junk\b/i,
+  /\bmolly\s+maid\b/i,
+  /\bthe\s+maids\b/i,
+  /\bjani.?king\b/i,
+  // Conglomerate name patterns
+  /\b(global|national|american)\s+(services|solutions|group|corp|inc)\b/i,
 ];
 
 function isBlockedEmployer(name) {
@@ -37,8 +77,11 @@ function isBlockedEmployer(name) {
 function isRemoteJob(job) {
   if (job.job_is_remote === true) return true;
   const loc = [job.job_city, job.job_state].filter(Boolean).join(" ").toLowerCase();
-  if (/\bremote\b/.test(loc)) return true;
-  if (/\bremote\b/.test((job.job_title || "").toLowerCase())) return true;
+  if (/\b(remote|hybrid|wfh)\b/.test(loc)) return true;
+  const title = (job.job_title || "").toLowerCase();
+  if (/\b(remote|hybrid|work from home)\b/.test(title)) return true;
+  const desc = (job.job_description || "").slice(0, 300).toLowerCase();
+  if (/\bfully remote\b|\bwork from home\b|\bhybrid schedule\b/.test(desc)) return true;
   return false;
 }
 
@@ -53,7 +96,9 @@ function buildPayRate(job) {
 }
 
 async function fetchJSearch(role, location, apiKey) {
-  const query = location ? `${role} in ${location}` : role;
+  // Default to SF when no location is set — this is a Bay Area tool
+  const loc = location || "San Francisco, CA";
+  const query = `${role} in ${loc}`;
   const params = new URLSearchParams({ query, num_pages: "1", date_posted: "week" });
 
   const resp = await fetch(`${JSEARCH_BASE}?${params}`, {

@@ -745,6 +745,77 @@ function buildProspectPipelineDetails(prospect, emailDraft = "", cityHint = "") 
   };
 }
 
+// ─── LOCAL BUSINESS FILTER & SCORER ──────────────────────────
+// Returns { score: 1-10, tags: string[], hardExclude: boolean }
+// Hard-excluded results are dropped before display.
+function scoreLocalBusiness(r) {
+  const name = (r.companyName || "").toLowerCase();
+  const desc = ((r.automationAngle || "") + " " + (r.jobTitle || "")).toLowerCase();
+  const loc  = (r.location || "").toLowerCase();
+
+  // Hard-exclude: known national/regional chains
+  const CHAINS = [
+    'safelite','liberty mutual','conduent','supercuts','mcdonald','subway','starbucks',
+    'walmart','target','cvs','walgreens','rite aid','ups store','fedex office','amazon',
+    'apple store','geico','allstate','state farm','progressive insurance','nationwide ins',
+    'comcast','at&t','verizon','t-mobile','best buy','costco','homegoods',
+    'tj maxx','marshalls','old navy','banana republic','forever 21','h&m','zara',
+    'autozone',"o'reilly auto",'advance auto','jiffy lube','midas auto','firestone','pep boys',
+    'anytime fitness','planet fitness','crunch fitness',"gold's gym",
+    'liberty tax','h&r block','jackson hewitt',
+    'great clips','sports clips','fantastic sams',
+    'enterprise rent-a-car','hertz','avis car',
+    'ashley furniture','rooms to go','pottery barn',
+    'ulta beauty','sephora','bath & body works',"victoria's secret",
+  ];
+  if (CHAINS.some(c => name.includes(c))) return { score: 0, tags: [], hardExclude: true };
+
+  // Hard-exclude: corporate-conglomerate name patterns
+  if (/\b(global|national|american|premier|elite|corporate)\s+(services|solutions|group|partners|corp)\b/i.test(name)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+
+  // Hard-exclude: multi-location / franchise signals in description
+  if (/multiple locations|nationwide|across the (country|nation|us)|[0-9]{2,}\s+locations|franchise operator|independently owned and operated by/i.test(desc)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+
+  // Hard-exclude: MLM / commission-only
+  if (/be your own boss|unlimited earning potential|1099.*commission|no experience.*commission only/i.test(desc)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+
+  // Hard-exclude: nonprofit / government
+  if (/\bnon.?profit\b|\b501.?c\b|\bschool district\b|\bcity of\b|\bcounty of\b/i.test(name + " " + desc)) {
+    return { score: 0, tags: [], hardExclude: true };
+  }
+
+  // ── Scoring ──
+  let score = 5;
+  const tags = [];
+
+  // Location boost
+  if (/\bsan francisco\b|\bsf,?\s*(ca)?\b/i.test(loc))       { score += 2; tags.push("SF"); }
+  else if (/\boakland\b/i.test(loc))                          { score += 1; tags.push("Oakland"); }
+  else if (/bay area|berkeley|san jose|daly city|south san francisco|san mateo|marin|fremont|hayward|richmond|emeryville/i.test(loc)) {
+    tags.push("Bay Area");
+  } else { score -= 2; }
+
+  // Local-business name signals (positive)
+  if (/\b(dr\.|dental|salon|spa|clinic|law office|realty|vet|veterinary|auto repair|bakery|cafe|bistro|boutique|studio|gallery|chiropractic|optometry)\b/i.test(name)) {
+    score += 1; tags.push("Local biz");
+  }
+
+  // Corporate name signals (soft penalty)
+  if (/\bgroup\b|\bassociates\b|\bholdings\b|\benterprises\b|\bventures\b/i.test(name)) score -= 1;
+  if (/\bsolutions\b|\boutsorc|\bmanaged services\b/i.test(name)) score -= 1;
+
+  // Direct-apply = real company, not aggregator shell
+  if (r.isDirectApply) { score += 1; tags.push("Direct listing"); }
+
+  return { score: Math.max(1, Math.min(10, score)), tags, hardExclude: false };
+}
+
 function buildIndeedPipelineDetails(result, extras = {}) {
   const contact = extras.contactInfo && extras.contactInfo !== "not_found" ? extras.contactInfo : null;
   const linkedInMsg = extras.linkedInMsg || null;
@@ -2160,6 +2231,18 @@ Return ONLY the message text. No labels, no markdown.`;
         setIndeedError(`Partial results — ${data.errors.map(e => e.role).join(", ")} failed to load.`);
       }
 
+      // Apply local-business hard filter and score
+      const scored = raw
+        .map(r => { const s = scoreLocalBusiness(r); return { ...r, _score: s.score, _tags: s.tags, _exclude: s.hardExclude }; })
+        .filter(r => !r._exclude);
+
+      // Sort SF first → Oakland → rest of Bay Area, then by score descending
+      scored.sort((a, b) => {
+        const rank = x => x._tags.includes("SF") ? 2 : x._tags.includes("Oakland") ? 1 : 0;
+        if (rank(b) !== rank(a)) return rank(b) - rank(a);
+        return b._score - a._score;
+      });
+
       const normalizeName = (s) => (s || "").toLowerCase().trim().replace(/[™®©]/g, "").replace(/[^a-z0-9]/g, "");
       const pipelineLeadMap = {};
       leads.forEach(l => {
@@ -2168,7 +2251,7 @@ Return ONLY the message text. No labels, no markdown.`;
         pipelineLeadMap[norm].push(l.followUp || "new");
       });
 
-      const results = raw.map((r, i) => {
+      const results = scored.map((r, i) => {
         const normCompany = normalizeName(r.companyName);
         const statuses = pipelineLeadMap[normCompany] || [];
         const isActedOn = statuses.some(s => s === "contacted" || s === "replied");
@@ -2176,7 +2259,7 @@ Return ONLY the message text. No labels, no markdown.`;
         return {
           id: Date.now() + i + Math.random(),
           companyName: r.companyName || "Unknown Company",
-          industry: r.industry || r.source || "",
+          industry: r.industry || "",
           location: r.location || indeedCity.trim() || "On-site",
           website: r.website || "",
           phone: r.phone || "",
@@ -2194,6 +2277,9 @@ Return ONLY the message text. No labels, no markdown.`;
           urgency: "medium",
           buyingSignals: [],
           opportunities: [],
+          isDirectApply: r.isDirectApply || false,
+          walkabilityScore: r._score,
+          walkabilityTags: r._tags,
           skipRender: isActedOn,
           pipelineTag: isInPipeline && !isActedOn ? "✓ Already in Pipeline" : null,
         };
@@ -4912,6 +4998,9 @@ Return:
                       const urgencyBg = r.urgency === "high" ? t.greenBg : r.urgency === "medium" ? t.accent + "15" : t.bgHover;
                       const urgencyLabel = r.urgency === "high" ? "🔥 Hot Listing" : r.urgency === "medium" ? "⚡ Active" : "📋 Listed";
                       const skipped = indeedQueueActions[r.id] === "skip";
+                      const ws = r.walkabilityScore || 0;
+                      const wsColor = ws >= 8 ? "#34d399" : ws >= 6 ? t.accent : ws >= 4 ? "#f59e0b" : t.textDim;
+                      const wsBg   = ws >= 8 ? "#34d39922" : ws >= 6 ? t.accent + "22" : ws >= 4 ? "#f59e0b22" : t.bgHover;
                       return (
                         <div key={r.id} style={{ ...cardStyle, borderLeft: `4px solid ${urgencyColor}`, opacity: skipped ? 0.4 : 1 }}>
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
@@ -4919,11 +5008,19 @@ Return:
                               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4, flexWrap: "wrap" }}>
                                 <h3 style={{ fontSize: 18, fontWeight: 700 }}>{r.companyName}</h3>
                                 <span style={{ padding: "4px 10px", background: urgencyBg, color: urgencyColor, borderRadius: 12, fontSize: 11, fontWeight: 700 }}>{urgencyLabel}</span>
+                                {ws > 0 && <span title="Walkability score: how approachable this lead is for an in-person sale (1–10)" style={{ padding: "4px 10px", background: wsBg, color: wsColor, borderRadius: 12, fontSize: 11, fontWeight: 700 }}>🚶 {ws}/10</span>}
                                 {indeedQueueActions[r.id] === "contacted" && <span style={{ padding: "4px 10px", background: t.accent + "22", color: t.accent, borderRadius: 12, fontSize: 11, fontWeight: 700 }}>✓ Contacted</span>}
                                 {indeedQueueActions[r.id] === "replied" && <span style={{ padding: "4px 10px", background: t.greenBg, color: t.green, borderRadius: 12, fontSize: 11, fontWeight: 700 }}>✓ Replied</span>}
                                 {r.pipelineTag && <span style={{ padding: "4px 10px", background: "#f59e0b22", color: "#f59e0b", borderRadius: 12, fontSize: 11, fontWeight: 700 }}>{r.pipelineTag}</span>}
                               </div>
                               {r.industry && <div style={{ fontSize: 13, color: t.textMuted }}>{r.industry} · {r.location}</div>}
+                              {r.walkabilityTags && r.walkabilityTags.length > 0 && (
+                                <div style={{ display: "flex", gap: 6, marginTop: 5, flexWrap: "wrap" }}>
+                                  {r.walkabilityTags.map(tag => (
+                                    <span key={tag} style={{ padding: "2px 8px", background: t.bgHover, border: `1px solid ${t.borderLight}`, borderRadius: 10, fontSize: 11, color: t.textMuted, fontWeight: 500 }}>{tag}</span>
+                                  ))}
+                                </div>
+                              )}
                             </div>
                             <div style={{ textAlign: "right" }}>
                               <div style={{ fontSize: 22, fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: t.accent }}>{r.jobPayRate}</div>
