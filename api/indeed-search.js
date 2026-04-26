@@ -96,8 +96,8 @@ function buildPayRate(job) {
 }
 
 async function fetchJSearch(role, location, apiKey) {
-  // Default to SF when no location is set — this is a Bay Area tool
-  const loc = location || "San Francisco, CA";
+  // Default to Oakland when no location is set
+  const loc = location || "Oakland, CA";
   const query = `${role} in ${loc}`;
   const params = new URLSearchParams({ query, num_pages: "1", date_posted: "week" });
 

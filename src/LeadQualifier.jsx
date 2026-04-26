@@ -745,9 +745,38 @@ function buildProspectPipelineDetails(prospect, emailDraft = "", cityHint = "") 
   };
 }
 
+// ─── DISTANCE FROM OAKLAND ────────────────────────────────────
+// Approximate driving miles from Oakland to Bay Area cities.
+// Returns a display string like "~3 mi" or null if unknown.
+const OAKLAND_DISTANCES = {
+  "oakland": 0, "emeryville": 2, "alameda": 3, "piedmont": 3,
+  "berkeley": 5, "el cerrito": 8, "albany": 6, "richmond": 10,
+  "san leandro": 8, "san lorenzo": 12, "hayward": 15,
+  "union city": 20, "newark": 23, "fremont": 22,
+  "san francisco": 9, "daly city": 16, "south san francisco": 19,
+  "san bruno": 21, "burlingame": 23, "millbrae": 22,
+  "san mateo": 25, "foster city": 26, "belmont": 28,
+  "redwood city": 30, "menlo park": 33, "palo alto": 35,
+  "mountain view": 38, "los altos": 38, "sunnyvale": 40,
+  "santa clara": 42, "san jose": 46, "milpitas": 38,
+  "walnut creek": 14, "concord": 20, "pleasant hill": 17,
+  "martinez": 24, "antioch": 35, "pittsburg": 30,
+  "livermore": 33, "pleasanton": 28, "dublin": 25,
+  "san ramon": 26, "danville": 22,
+  "marin": 20, "san rafael": 22, "novato": 30, "mill valley": 18,
+  "san anselmo": 23, "fairfax": 26,
+};
+
+function distanceFromOakland(locationStr) {
+  const loc = (locationStr || "").toLowerCase();
+  for (const [city, miles] of Object.entries(OAKLAND_DISTANCES)) {
+    if (loc.includes(city)) return miles;
+  }
+  return null;
+}
+
 // ─── LOCAL BUSINESS FILTER & SCORER ──────────────────────────
 // Returns { score: 1-10, tags: string[], hardExclude: boolean }
-// Hard-excluded results are dropped before display.
 function scoreLocalBusiness(r) {
   const name = (r.companyName || "").toLowerCase();
   const desc = ((r.automationAngle || "") + " " + (r.jobTitle || "")).toLowerCase();
@@ -790,16 +819,15 @@ function scoreLocalBusiness(r) {
     return { score: 0, tags: [], hardExclude: true };
   }
 
-  // ── Scoring ──
+  // ── Scoring — Oakland-first priority ──
   let score = 5;
   const tags = [];
 
-  // Location boost
-  if (/\bsan francisco\b|\bsf,?\s*(ca)?\b/i.test(loc))       { score += 2; tags.push("SF"); }
-  else if (/\boakland\b/i.test(loc))                          { score += 1; tags.push("Oakland"); }
-  else if (/bay area|berkeley|san jose|daly city|south san francisco|san mateo|marin|fremont|hayward|richmond|emeryville/i.test(loc)) {
-    tags.push("Bay Area");
-  } else { score -= 2; }
+  const miles = distanceFromOakland(r.location);
+  if (/\boakland\b/i.test(loc))                                { score += 2; tags.push("Oakland"); }
+  else if (/\bsan francisco\b|\bsf,?\s*(ca)?\b/i.test(loc))   { score += 1; tags.push("SF"); }
+  else if (miles !== null && miles <= 50)                      { /* Bay Area — no boost, just show distance */ }
+  else                                                          { score -= 2; }
 
   // Local-business name signals (positive)
   if (/\b(dr\.|dental|salon|spa|clinic|law office|realty|vet|veterinary|auto repair|bakery|cafe|bistro|boutique|studio|gallery|chiropractic|optometry)\b/i.test(name)) {
@@ -2233,13 +2261,20 @@ Return ONLY the message text. No labels, no markdown.`;
 
       // Apply local-business hard filter and score
       const scored = raw
-        .map(r => { const s = scoreLocalBusiness(r); return { ...r, _score: s.score, _tags: s.tags, _exclude: s.hardExclude }; })
+        .map(r => {
+          const s = scoreLocalBusiness(r);
+          const miles = distanceFromOakland(r.location);
+          return { ...r, _score: s.score, _tags: s.tags, _exclude: s.hardExclude, _miles: miles };
+        })
         .filter(r => !r._exclude);
 
-      // Sort SF first → Oakland → rest of Bay Area, then by score descending
+      // Sort Oakland first → SF → rest of Bay Area by distance, then by score
       scored.sort((a, b) => {
-        const rank = x => x._tags.includes("SF") ? 2 : x._tags.includes("Oakland") ? 1 : 0;
+        const rank = x => x._tags.includes("Oakland") ? 2 : x._tags.includes("SF") ? 1 : 0;
         if (rank(b) !== rank(a)) return rank(b) - rank(a);
+        // Within same tier: closer first, then score descending
+        const miA = a._miles ?? 999, miB = b._miles ?? 999;
+        if (miA !== miB) return miA - miB;
         return b._score - a._score;
       });
 
@@ -2280,6 +2315,7 @@ Return ONLY the message text. No labels, no markdown.`;
           isDirectApply: r.isDirectApply || false,
           walkabilityScore: r._score,
           walkabilityTags: r._tags,
+          milesFromOakland: r._miles,
           skipRender: isActedOn,
           pipelineTag: isInPipeline && !isActedOn ? "✓ Already in Pipeline" : null,
         };
@@ -5013,7 +5049,14 @@ Return:
                                 {indeedQueueActions[r.id] === "replied" && <span style={{ padding: "4px 10px", background: t.greenBg, color: t.green, borderRadius: 12, fontSize: 11, fontWeight: 700 }}>✓ Replied</span>}
                                 {r.pipelineTag && <span style={{ padding: "4px 10px", background: "#f59e0b22", color: "#f59e0b", borderRadius: 12, fontSize: 11, fontWeight: 700 }}>{r.pipelineTag}</span>}
                               </div>
-                              {r.industry && <div style={{ fontSize: 13, color: t.textMuted }}>{r.industry} · {r.location}</div>}
+                              <div style={{ fontSize: 13, color: t.textMuted }}>
+                                {r.industry ? `${r.industry} · ` : ""}{r.location}
+                                {r.milesFromOakland !== null && r.milesFromOakland !== undefined && (
+                                  <span style={{ marginLeft: 8, fontWeight: 600, color: r.milesFromOakland <= 5 ? "#34d399" : r.milesFromOakland <= 20 ? t.accent : t.textFaint }}>
+                                    {r.milesFromOakland === 0 ? "📍 Oakland" : `~${r.milesFromOakland} mi from Oakland`}
+                                  </span>
+                                )}
+                              </div>
                               {r.walkabilityTags && r.walkabilityTags.length > 0 && (
                                 <div style={{ display: "flex", gap: 6, marginTop: 5, flexWrap: "wrap" }}>
                                   {r.walkabilityTags.map(tag => (
