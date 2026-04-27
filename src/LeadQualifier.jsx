@@ -948,6 +948,47 @@ function scoreLocalBusiness(r) {
   // Franchise: hard ceiling at 5 regardless of other signals
   if (isFranchise) { score = Math.min(score, 5); tags.push("⚠️ Franchise"); }
 
+  // ── SOFT PENALTIES — each deducts 3 points ───────────────────
+
+  const jobUrl = (r.jobUrl || "").toLowerCase();
+
+  // -3: Corporate hiring manager title in description
+  if (/\b(hr director|talent acquisition|recruiting team|human resources department|our hr (team|department)|contact our hr)\b/i.test(desc)) {
+    score -= 3; tags.push("Corp HR");
+  }
+
+  // -3: Corporate ATS platform in the apply URL
+  if (/greenhouse\.io|lever\.co|workday\.com|icims\.com|bamboohr\.com|adp\.com|taleo\.net|myworkday\.com|jobvite\.com|smartrecruiters\.com/.test(jobUrl)) {
+    score -= 3; tags.push("Corp ATS");
+  }
+
+  // -3: Formal benefits package — 3 or more distinct signals
+  const BENEFITS_PATTERNS = [
+    /\b401k\b|\b401\s*\(k\)/i,
+    /\bpto\b|paid time off|vacation (days|policy|accrual)/i,
+    /health insurance|medical (insurance|coverage|benefits)|dental (insurance|coverage|benefits)|vision (insurance|coverage|benefits)/i,
+    /parental leave|maternity leave|paternity leave/i,
+    /\b(fsa|hsa)\b|flexible spending account|health savings account/i,
+    /life insurance/i,
+    /disability insurance|short.term disability|long.term disability/i,
+    /profit.sharing/i,
+    /stock options|equity (package|grant|compensation)/i,
+    /employee assistance program|\beap\b/i,
+  ];
+  if (BENEFITS_PATTERNS.filter(re => re.test(desc)).length >= 3) {
+    score -= 3; tags.push("Full benefits pkg");
+  }
+
+  // -3: Dedicated /careers portal on company's own domain (not a job board)
+  if (r.isDirectApply && /\/careers\/|\/career\/|\/jobs\/|\/job-openings\//i.test(jobUrl)) {
+    score -= 3; tags.push("Careers portal");
+  }
+
+  // -3: Scale language in posting
+  if (/our team of \d+\s*(professionals|members|experts|employees)|serving \d+ states|in \d+ (states|cities|markets)|nationwide|national provider|across the (country|us|nation)|multiple (locations|offices|markets)/i.test(desc)) {
+    score -= 3; tags.push("Scale language");
+  }
+
   return { score: Math.max(1, Math.min(10, Math.round(score))), tags, hardExclude: false };
 }
 
@@ -2412,8 +2453,7 @@ Return ONLY the message text. No labels, no markdown.`;
         } catch (_) { /* silent — show whatever we have */ }
       }
 
-      // Deduplicate by normalized company name — prevents same company appearing
-      // twice from different role searches or from first-pass + fallback pass
+      // Deduplicate by normalized company name
       const seenCompanyNames = new Set();
       const deduped = scored.filter(r => {
         const norm = normalizeName(r.companyName);
@@ -2422,7 +2462,20 @@ Return ONLY the message text. No labels, no markdown.`;
         return true;
       });
 
-      const results = deduped.map((r, i) => {
+      // ── VISIBILITY RULES (applied after all penalties are baked in) ──
+      // 1. Score ≤ 4 → never show
+      // 2. Outside SF/Oakland → only show if score ≥ 8
+      // 3. Cap at 10 results, best scores first
+      const visible = deduped
+        .filter(r => {
+          if (r._score <= 4) return false;
+          const isOaklandOrSF = r._tags.includes("Oakland") || r._tags.includes("SF");
+          if (!isOaklandOrSF && r._score < 8) return false;
+          return true;
+        })
+        .slice(0, 10);
+
+      const results = visible.map((r, i) => {
         return {
           id: Date.now() + i + Math.random(),
           companyName: r.companyName || "Unknown Company",
