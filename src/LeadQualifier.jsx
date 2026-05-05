@@ -369,6 +369,15 @@ function buildLeadColumns(job, rows, promptText) {
   return [...LEAD_LIST_COLUMNS];
 }
 
+function stripLeadListMarkup(value) {
+  return String(value ?? "")
+    .replace(/<cite[^>]*>/gi, "")
+    .replace(/<\/cite>|<cite[^>]*\/>/gi, "")
+    .replace(/<[^>]+>/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function sanitizeLeadListRow(row) {
   const aliases = {
     "Company Name": ["Company Name", "Business Name", "Company", "Name"],
@@ -380,12 +389,87 @@ function sanitizeLeadListRow(row) {
     "Industry": ["Industry", "Niche", "Vertical"],
     "Company Type": ["Company Type", "Type", "Business Type"],
     "Signal": ["Signal", "Freight Signal", "Active Freight Signal", "Demand Signal", "Reason"],
-    "Signal Proof URL": ["Signal Proof URL", "Proof URL", "Signal URL", "Evidence URL", "Source URL"],
+    "Signal Proof URL": ["Signal Proof URL", "Proof URL", "Signal URL", "Evidence URL"],
   };
   return LEAD_LIST_COLUMNS.reduce((cleanRow, column) => {
-    cleanRow[column] = getFirstLeadCell(row || {}, aliases[column] || [column]);
+    cleanRow[column] = stripLeadListMarkup(getFirstLeadCell(row || {}, aliases[column] || [column]));
     return cleanRow;
   }, {});
+}
+
+function getUrlDomain(value) {
+  const raw = stripLeadListMarkup(value);
+  if (!raw) return "";
+  const match = raw.match(/https?:\/\/[^\s)"]+/i);
+  return normalizeLeadDomain(match ? match[0] : raw);
+}
+
+function getUrlPath(value) {
+  const raw = stripLeadListMarkup(value);
+  const match = raw.match(/https?:\/\/[^\s)"]+/i);
+  if (!match) return "";
+  try {
+    return new URL(match[0]).pathname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function validateLeadListRow(row) {
+  const company = getLeadListCompany(row);
+  const signal = stripLeadListMarkup(getLeadCell(row, "Signal"));
+  const proofUrl = stripLeadListMarkup(getLeadCell(row, "Signal Proof URL"));
+  const proofDomain = getUrlDomain(proofUrl);
+  const proofPath = getUrlPath(proofUrl);
+  const companyContext = [
+    getLeadCell(row, "Company Name"),
+    getLeadCell(row, "Industry"),
+    getLeadCell(row, "Company Type"),
+    getLeadCell(row, "Source URL"),
+  ].map(stripLeadListMarkup).join(" ");
+  const signalText = signal.toLowerCase();
+  const contextText = `${companyContext} ${signal}`.toLowerCase();
+
+  if (!company || !signal || !proofUrl || !/^https?:\/\//i.test(proofUrl)) {
+    return { ok: false, reason: "missing company, signal, or direct proof URL" };
+  }
+
+  if (/(^|\.)(zoominfo|apollo|dnb|crunchbase|yelp|zippia|signalhire|rocketreach|adapt|lusha|seamless)\.com$/i.test(proofDomain)) {
+    return { ok: false, reason: "generic data/directory proof source" };
+  }
+
+  if (/(^|\.)indeed\.com$/i.test(proofDomain) && /^\/cmp\//i.test(proofPath)) {
+    return { ok: false, reason: "generic job-board company page" };
+  }
+
+  if (/(carrier|broker|3pl|third[-\s]?party logistics|freight forwarder|forwarder|trucking company|trucking service|courier|stevedore|marine logistics|load board|freight marketplace)/i.test(contextText)) {
+    return { ok: false, reason: "not a shipper/manufacturer/distributor" };
+  }
+
+  if (/(serv(es|ing)|delivery service|service area|has a warehouse|operates a warehouse|for over \d+ years|since \d{4}|been around|reliable delivery|proudly serving)/i.test(signal)) {
+    return { ok: false, reason: "static company fact, not active freight signal" };
+  }
+
+  if (/(more open roles|past 6 months|hiring spike|increased job postings|trend)/i.test(signal)) {
+    return { ok: false, reason: "unsupported trend-style signal" };
+  }
+
+  const freightRole = /\b(warehouse|shipping|receiving|logistics|supply chain|cdl|driver|forklift|distribution|inventory|operations|order selector|selector|material handler|dock|yard|loader|loader\/unloader)\b/i.test(signal);
+  const hiringSignal = /\b(hiring|now hiring|currently seeking|open roles|open jobs|job openings|recruiting|positions?|careers?)\b/i.test(signal);
+  if (hiringSignal && !freightRole) {
+    return { ok: false, reason: "hiring signal is not freight/warehouse/driver related" };
+  }
+
+  const activeEvent = /\b(opened|opening|new|expanded|expansion|distribution center|warehouse|plant|facility|cold storage|production line|ramp|ramping|launch|launched|bid|rfp|contract|renovations|expected to open|completed|beginning operations|investment|invest)\b/i.test(signal);
+  if (!activeEvent && !freightRole) {
+    return { ok: false, reason: "no active freight event or freight role" };
+  }
+
+  if (/^\/?$|^\/(about|contact|locations?|services?|company|home)\/?$/i.test(proofPath)) {
+    return { ok: false, reason: "proof URL is too generic" };
+  }
+
+  return { ok: true, reason: "" };
 }
 
 function withCallFeedbackColumns(columns) {
@@ -2989,6 +3073,7 @@ RESPOND WITH ONLY this JSON object:
       const excludedCompanies = new Set(initialPipelineExclusions);
       let skippedCount = 0;
       let timedOutCount = 0;
+      let qualityRejectedCount = 0;
 
       setLeadListJob(fallbackJob);
       setLeadListColumns(buildLeadColumns(fallbackJob, [], requestText));
@@ -3050,8 +3135,15 @@ RESPOND WITH ONLY this JSON object:
             continue;
           }
 
-          const rowKey = leadListRowKey(row);
+          const cleanRow = sanitizeLeadListRow(row);
+          const rowKey = leadListRowKey(cleanRow);
           if (!row || !rowKey || seenRowKeys.has(rowKey)) {
+            skippedCount += 1;
+            continue;
+          }
+          const qualityCheck = validateLeadListRow(cleanRow);
+          if (!qualityCheck.ok) {
+            qualityRejectedCount += 1;
             skippedCount += 1;
             continue;
           }
@@ -3059,7 +3151,7 @@ RESPOND WITH ONLY this JSON object:
 
           const rowId = Date.now() + Math.random();
           const baseRow = {
-            ...sanitizeLeadListRow(row),
+            ...cleanRow,
             id: rowId,
             __columns: parsedColumns,
           };
@@ -3078,7 +3170,7 @@ RESPOND WITH ONLY this JSON object:
       }
 
       if (acceptedRows.length < desiredCount) {
-        showToast(`Built ${acceptedRows.length} rows · ${skippedCount} skipped · ${timedOutCount} timed out`);
+        showToast(`Built ${acceptedRows.length} rows · ${qualityRejectedCount} quality rejected · ${timedOutCount} timed out`);
       } else {
         showToast(`Built ${acceptedRows.length} lead rows`);
       }
@@ -3092,7 +3184,7 @@ RESPOND WITH ONLY this JSON object:
   const handleExportLeadListCSV = () => {
     if (leadListResults.length === 0) return;
     const columns = withCallFeedbackColumns(leadListColumns.length ? leadListColumns : buildLeadColumns(leadListJob, leadListResults, leadListRequest));
-    const rows = leadListResults.map(row => columns.map(col => csvEscape(getLeadCell(row, col))).join(","));
+    const rows = leadListResults.map(row => columns.map(col => csvEscape(stripLeadListMarkup(getLeadCell(row, col)))).join(","));
     const csv = [columns.map(csvEscape).join(","), ...rows].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
