@@ -288,69 +288,29 @@ function csvValue(value) {
   return `"${String(value || "").replace(/"/g, '""')}"`;
 }
 
-const LEAD_REQUEST_EXAMPLE = `Act as freight broker in the US. Identify shippers in Healthcare & Medical Supply, Food & Beverage especially refrigerated, and Construction & Building Materials. Target Transportation Managers, Logistics Managers, and Shipping Supervisors. Companies should be $10M-$100M revenue, regional distributors, overflow freight, after-hours coverage. Include company name, contact person, email, phone, LinkedIn, and high-demand lanes right now. Format as target shipper list and lanes in an Excel/Google Sheet.`;
+const LEAD_REQUEST_EXAMPLE = `Act as a freight broker in the US. Identify shippers with current freight-demand signals: distribution or warehouse openings, shipping/logistics/warehouse hiring, public freight or delivery bids, facility expansions, seasonal outbound freight, or active supplier/distributor growth. Return only company name, contact person, best phone, email, region, source URL, industry, company type, signal, and signal proof URL.`;
 
 const GENERATED_LEADS_SHEET_NAME = "Generated Leads";
 const GENERATED_LEADS_SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1N8l7_rJhwmvm4kz6HvjiAP9uI3togYBxSd3th-KMvHc/edit?gid=1737529281#gid=1737529281";
 
-const CALL_FEEDBACK_COLUMNS = [
-  "Call Outcome",
-  "Number Verified",
-  "Connected To Right Company",
-  "Reached Decision Maker",
-  "Bad Number Reason",
-  "Caller Notes",
-  "Follow-Up Needed",
-];
-
-const FREIGHT_MIN_COLUMNS = [
+const LEAD_LIST_COLUMNS = [
   "Company Name",
   "Contact Person",
-  "Target Role",
   "Best Phone",
-  "Phone Type",
-  "Phone Status",
   "Email",
-  "LinkedIn",
-  "Contact Status",
-  "Reachability Score",
+  "Region",
+  "Source URL",
   "Industry",
-  "Estimated Revenue",
   "Company Type",
-  "Region",
-  "High-Demand Lane",
-  "Reason / Buying Signal",
-  "Source URL",
-  "Contact Source URL",
-  "Call Notes",
-  "Confidence",
-];
-
-const DEFAULT_LEAD_COLUMNS = [
-  "Company Name",
-  "Contact Person",
-  "Target Role",
-  "Best Phone",
-  "Phone Type",
-  "Phone Status",
-  "Email",
-  "LinkedIn",
-  "Contact Status",
-  "Reachability Score",
-  "Region",
-  "Reason / Buying Signal",
-  "Source URL",
-  "Contact Source URL",
-  "Call Notes",
-  "Confidence",
+  "Signal",
+  "Signal Proof URL",
 ];
 
 const LEAD_LIST_MAX_GENERATION_PASSES = 8;
 const LEAD_LIST_BUFFER_ROWS = 2;
-const LEAD_LIST_EMAIL_DELAY_MS = 350;
+const LEAD_LIST_ROW_DELAY_MS = 350;
 const PROSPECT_EMAIL_BATCH_SIZE = 1;
 const PROSPECT_EMAIL_DELAY_MS = 350;
-const VERIFIED_PHONE_BADGE = "✓ Verified";
 
 function extractJSONValue(fullText) {
   if (!fullText) return null;
@@ -406,19 +366,31 @@ function getFirstLeadCell(row, columns) {
 }
 
 function buildLeadColumns(job, rows, promptText) {
-  const requested = [
-    ...((job?.requiredColumns || job?.columns || []).map(normalizeColumnName)),
-    ...((rows || []).flatMap(row => Object.keys(row || {}).filter(k => !k.startsWith("__")).map(normalizeColumnName))),
-  ].filter(Boolean);
-  const looksFreight = /freight|broker|shipper|lane|refrigerated|logistics|distributor|wholesale|foodservice/i.test(promptText || "");
-  const base = looksFreight ? FREIGHT_MIN_COLUMNS : DEFAULT_LEAD_COLUMNS;
-  return [...base, ...requested].filter((col, index, list) => (
-    list.findIndex(other => columnKey(other) === columnKey(col)) === index
-  ));
+  return [...LEAD_LIST_COLUMNS];
+}
+
+function sanitizeLeadListRow(row) {
+  const aliases = {
+    "Company Name": ["Company Name", "Business Name", "Company", "Name"],
+    "Contact Person": ["Contact Person", "Decision Maker Name", "Owner Name", "Name"],
+    "Best Phone": ["Best Phone", "Phone", "Phone Number", "Main Phone"],
+    "Email": ["Email", "Email Address"],
+    "Region": ["Region", "Location", "City", "State", "Market"],
+    "Source URL": ["Source URL", "Source", "Website", "URL"],
+    "Industry": ["Industry", "Niche", "Vertical"],
+    "Company Type": ["Company Type", "Type", "Business Type"],
+    "Signal": ["Signal", "Freight Signal", "Active Freight Signal", "Demand Signal", "Reason"],
+    "Signal Proof URL": ["Signal Proof URL", "Proof URL", "Signal URL", "Evidence URL", "Source URL"],
+  };
+  return LEAD_LIST_COLUMNS.reduce((cleanRow, column) => {
+    cleanRow[column] = getFirstLeadCell(row || {}, aliases[column] || [column]);
+    return cleanRow;
+  }, {});
 }
 
 function withCallFeedbackColumns(columns) {
-  return [...(columns || []), ...CALL_FEEDBACK_COLUMNS].filter((col, index, list) => (
+  return [...(columns || LEAD_LIST_COLUMNS)].filter((col, index, list) => (
+    LEAD_LIST_COLUMNS.some(allowed => columnKey(allowed) === columnKey(col)) &&
     list.findIndex(other => columnKey(other) === columnKey(col)) === index
   ));
 }
@@ -434,10 +406,6 @@ function getParsedRows(parsed) {
     if (Array.isArray(parsed[key])) return parsed[key];
   }
   return null;
-}
-
-function isPhoneColumnName(column) {
-  return ["bestphone", "phone", "phonenumber"].includes(columnKey(column));
 }
 
 function getLeadListPhone(row) {
@@ -466,16 +434,6 @@ function normalizeLeadDomain(value) {
       .split("/")[0]
       .trim();
   }
-}
-
-function getLeadListDomain(row) {
-  return normalizeLeadDomain(getFirstLeadCell(row, [
-    "Website Domain",
-    "Website",
-    "Domain",
-    "Source URL",
-    "Contact Source URL",
-  ]));
 }
 
 function inferRequestedRowCount(requestText, fallbackCount) {
@@ -2907,11 +2865,8 @@ Respond with ONLY a JSON object:
     const fallbackJob = {
       summary: requestText.slice(0, 160),
       industries: leadListNiche.trim() ? [leadListNiche.trim()] : [],
-      targetRoles: [],
       companyFilters: [],
       geography: leadListCity.trim(),
-      requiredColumns: buildLeadColumns(null, [], requestText),
-      specialResearchRequirements: [],
     };
 
     const buildDiscoveryPrompt = (resultCount, exclusions = []) => {
@@ -2929,38 +2884,47 @@ RESULT COUNT: Return up to ${resultCount} candidate companies.
 Discovery requirements:
 1. Parse the request into a structured job with:
    - industries
-   - targetRoles
    - companyFilters
    - geography
-   - requiredColumns
-   - specialResearchRequirements
-2. Find real candidate companies that match the request. Prefer companies likely to have callable public main lines.
-3. For freight/shipper searches, include shippers, distributors, manufacturers, and wholesalers. Exclude carriers, brokers, 3PLs, couriers, and job boards.
-4. Do not find individual contacts in this step. That happens later one company at a time.
-5. Add dynamic columns requested by the user. If the request is about freight brokers, shippers, logistics, lanes, refrigerated freight, or overflow freight, include at minimum these columns:
-${FREIGHT_MIN_COLUMNS.map(c => `   - ${c}`).join("\n")}
+2. Find real candidate companies that match the request and show at least one current freight-demand signal.
+3. Strong freight-demand signals include:
+   - distribution center, warehouse, plant, cold storage, or branch openings
+   - shipping, receiving, warehouse, logistics, dispatch, supply chain, CDL, forklift, or operations hiring
+   - public freight, delivery, courier, warehousing, drayage, or transportation bids/RFPs
+   - facility expansions, new production lines, increased distribution, or new market launches
+   - seasonal outbound freight patterns for produce, beverage, nursery, building materials, retail replenishment, medical supply, or similar goods
+   - supplier, distributor, manufacturer, wholesaler, or foodservice growth that implies truckload/LTL movement
+4. Write Signal as one practical caller-facing sentence that states the exact reason this company may be actively moving freight.
+   Example: "Opened a new Dallas distribution center, which likely creates new inbound and outbound freight lanes."
+5. Signal Proof URL must be a direct link to the page proving that exact signal, such as the hiring post, public bid, press release, facility opening announcement, expansion article, permit/news page, or company announcement.
+6. Source URL can be the company website or best company source, but Signal Proof URL must correspond to the Signal. Do not use a generic homepage as Signal Proof URL unless it directly contains the signal.
+7. Prefer companies with callable public main lines.
+8. For freight/shipper searches, include shippers, distributors, manufacturers, wholesalers, suppliers, producers, and foodservice operators. Exclude carriers, brokers, 3PLs, couriers, freight marketplaces, and staffing agencies.
+9. Job boards are allowed only as Signal Proof URL evidence for direct shipping, receiving, warehouse, logistics, supply chain, CDL, forklift, or operations hiring by the shipper company itself. Do not return the job board as the company.
+10. Do not find individual contacts in this step. That happens later one company at a time.
+11. Only return the fields shown in the JSON shape below. Do not add lanes, buying signals, call notes, revenue, LinkedIn, confidence, contact status, or other extra fields.
 
 RESPOND WITH ONLY this JSON object:
 {
   "job": {
     "summary": "short description",
     "industries": ["..."],
-    "targetRoles": ["..."],
     "companyFilters": ["..."],
-    "geography": "...",
-    "requiredColumns": ["..."],
-    "specialResearchRequirements": ["..."]
+    "geography": "..."
   },
-  "columns": ["Company Name", "..."],
+  "columns": ${JSON.stringify(LEAD_LIST_COLUMNS)},
   "candidates": [
     {
       "Company Name": "...",
-      "Website": "https://...",
+      "Contact Person": "",
+      "Best Phone": "",
+      "Email": "",
+      "Region": "...",
+      "Source URL": "https://...",
       "Industry": "...",
       "Company Type": "...",
-      "Region": "...",
-      "Reason / Buying Signal": "...",
-      "Source URL": "https://..."
+      "Signal": "One sentence explaining the specific freight-demand signal a caller can mention.",
+      "Signal Proof URL": "https://..."
     }
   ]
 }`;
@@ -2982,111 +2946,31 @@ ${JSON.stringify(candidate)}
 Rules:
 - Return one real company row only. Do not return competitors or alternatives.
 - Prioritize getting a useful phone number. A public main/location phone is acceptable.
-- Prefer dispatch, logistics, shipping, warehouse, operations, distribution, transportation, or supply chain contacts when public.
-- If a named contact is not public, leave Contact Person blank and use the best target role.
-- For freight/shipper searches, the company must be a shipper, distributor, manufacturer, wholesaler, or supplier. Exclude carriers, brokers, 3PLs, couriers, and job boards.
-- Do not invent contact names, emails, LinkedIn URLs, revenue, lanes, or phone numbers.
+- Prefer a dispatch, logistics, shipping, warehouse, operations, distribution, transportation, or supply chain contact when public.
+- If a named contact is not public, leave Contact Person blank.
+- For freight/shipper searches, the company must be a shipper, distributor, manufacturer, wholesaler, supplier, producer, or foodservice operator. Exclude carriers, brokers, 3PLs, couriers, freight marketplaces, job boards, and staffing agencies.
+- Confirm the company has a plausible current freight-demand signal such as shipping/logistics/warehouse hiring, a distribution/facility opening or expansion, a public delivery/freight bid, seasonal outbound freight, or supplier/distributor growth.
+- Signal must be one caller-ready sentence that clearly names the exact signal, so a caller can say "I saw you..." naturally.
+- Signal Proof URL must directly prove the Signal. Use the hiring post, bid/RFP page, press release, facility opening/expansion article, company announcement, or similar evidence page.
+- Do not use a generic homepage as Signal Proof URL unless the homepage itself directly shows the signal.
+- Do not invent contact names, emails, or phone numbers.
 - If a field is unavailable, use an empty string.
-- Source URL should support the company and/or phone. Contact Source URL should support a named contact if one is found.
-- Call Notes should tell a caller who to ask for and why.
-
-Phone and contact field rules:
-- Best Phone: the most useful number to call.
-- Phone Type: Direct, Department, Location/Main Line, or Missing.
-- Phone Status: Direct, Main Line, or Missing.
-- Contact Status: Named Contact, Role Only, or Company Only.
-- Reachability Score: High if named contact + phone, Medium if role/company + phone, Low if no phone.
+- Source URL should support the company. Signal Proof URL should support the active freight-demand signal.
+- Only return these fields: ${LEAD_LIST_COLUMNS.join(", ")}.
 
 RESPOND WITH ONLY this JSON object:
 {
   "Company Name": "${company}",
   "Contact Person": "",
-  "Target Role": "Operations Manager",
   "Best Phone": "",
-  "Phone Type": "Location/Main Line",
-  "Phone Status": "Main Line",
   "Email": "",
-  "LinkedIn": "",
-  "Contact Status": "Role Only",
-  "Reachability Score": "Medium",
-  "Industry": "",
-  "Estimated Revenue": "",
-  "Company Type": "",
   "Region": "",
-  "High-Demand Lane": "",
-  "Reason / Buying Signal": "",
   "Source URL": "",
-  "Contact Source URL": "",
-  "Call Notes": "",
-  "Confidence": "Medium"
+  "Industry": "",
+  "Company Type": "",
+  "Signal": "",
+  "Signal Proof URL": ""
 }`;
-    };
-
-    const verifyLeadListPhone = async (row) => {
-      const phone = getLeadListPhone(row);
-      if (!String(phone || "").trim()) {
-        return { ...row, "Phone Status": "Missing", "Reachability Score": "Low" };
-      }
-      try {
-        const response = await fetch("/api/twilio-lookup", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            numbers: [{ phone, countryCode: "US" }],
-          }),
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok || data.error) {
-          throw new Error(data.error || "Phone verification failed");
-        }
-        const verification = data.results?.[0];
-        if (!verification?.verified) {
-          return { ...row, "Phone Status": "Needs Review", "__verificationFailed": verification || true };
-        }
-        return {
-          ...row,
-          verified: true,
-          "Verified": true,
-          "Best Phone": verification.nationalFormat || phone,
-          "Phone Status": "Verified",
-          "__verification": verification,
-        };
-      } catch (err) {
-        return { ...row, "Phone Status": "Needs Review", "__verificationError": err?.message || "Phone verification failed" };
-      }
-    };
-
-    const enrichLeadListEmail = async (row) => {
-      const name = getLeadListContactName(row);
-      const company = getLeadListCompany(row);
-      const domain = getLeadListDomain(row);
-      const email = getFirstLeadCell(row, ["Email", "Email Address"]);
-      if (String(email || "").trim() || !String(name || "").trim() || (!String(domain || "").trim() && !String(company || "").trim())) {
-        return row;
-      }
-      try {
-        const response = await fetch("/api/hunter-email", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ leads: [{ name, company, domain }] }),
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok || data.error) return row;
-        const enrichment = data.results?.[0];
-        if (!enrichment?.email) return row;
-        const nextRow = {
-          ...row,
-          "Email": enrichment.email,
-          "__emailEnrichment": enrichment,
-        };
-        if (enrichment.confidence) nextRow["Email Confidence"] = enrichment.confidence;
-        if (enrichment.sourceUrl && !String(getFirstLeadCell(row, ["Contact Source URL"]) || "").trim()) {
-          nextRow["Contact Source URL"] = enrichment.sourceUrl;
-        }
-        return nextRow;
-      } catch {
-        return row;
-      }
     };
 
     try {
@@ -3108,7 +2992,7 @@ RESPOND WITH ONLY this JSON object:
 
         const { response, data } = await callAnthropic("Build Lead List Search", {
           model: "claude-sonnet-4-20250514",
-          max_tokens: 3500,
+          max_tokens: 1800,
           system: "You are the Lead Request Engine for a B2B sales app. Return ONLY valid JSON. For this step, discover candidate companies only; do not deeply enrich contacts.",
           messages: [{ role: "user", content: buildDiscoveryPrompt(requestBatchSize, [...excludedCompanies]) }],
           tools: [{ type: "web_search_20250305", name: "web_search" }],
@@ -3139,7 +3023,7 @@ RESPOND WITH ONLY this JSON object:
           try {
             const { response: enrichResponse, data: enrichData } = await callAnthropic("Build Lead List Company Enrichment", {
               model: "claude-sonnet-4-20250514",
-              max_tokens: 2500,
+              max_tokens: 1200,
               system: "You are a B2B lead researcher. Search the web for one company and return ONLY a raw JSON object for one lead row. Accuracy beats completeness; never fabricate contact data.",
               messages: [{ role: "user", content: buildEnrichmentPrompt(candidate, parsedJob) }],
               tools: [{ type: "web_search_20250305", name: "web_search" }],
@@ -3165,23 +3049,14 @@ RESPOND WITH ONLY this JSON object:
 
           const rowId = Date.now() + Math.random();
           const baseRow = {
-            ...row,
+            ...sanitizeLeadListRow(row),
             id: rowId,
             __columns: parsedColumns,
-            "__status": getLeadListPhone(row) ? "Verifying phone" : "Needs review",
           };
 
           acceptedRows.push(baseRow);
           setLeadListResults(prev => [...prev, baseRow]);
-          setLeadListProgress(`Verifying ${getLeadListCompany(baseRow) || company} (${acceptedRows.length}/${desiredCount} rows)`);
-
-          const verifiedRow = await verifyLeadListPhone(baseRow);
-          const emailRow = await enrichLeadListEmail(verifiedRow);
-          const finalRow = { ...emailRow, "__status": emailRow.verified ? "Phone verified" : "Needs review" };
-          const index = acceptedRows.findIndex(r => r.id === rowId);
-          if (index >= 0) acceptedRows[index] = finalRow;
-          setLeadListResults(prev => prev.map(existing => existing.id === rowId ? finalRow : existing));
-          if (acceptedRows.length < desiredCount) await sleep(LEAD_LIST_EMAIL_DELAY_MS);
+          if (acceptedRows.length < desiredCount) await sleep(LEAD_LIST_ROW_DELAY_MS);
         }
       }
 
@@ -3224,16 +3099,16 @@ RESPOND WITH ONLY this JSON object:
     setLeadListSheetStatus(null);
     try {
       const SHEET_COLUMN_MAP = [
-        { header: "Industry",          field: "Industry" },
         { header: "Company Name",      field: "Company Name" },
-        { header: "Target Role",       field: "Target Role" },
         { header: "Contact Person",    field: "Contact Person" },
-        { header: "Email",             field: "Email" },
         { header: "Phone",             field: "Best Phone" },
-        { header: "LinkedIn",          field: "LinkedIn" },
-        { header: "Annual Revenue",    field: "Estimated Revenue" },
-        { header: "Problem Solved",    field: "Reason / Buying Signal" },
-        { header: "High-Demand Lanes", field: "High-Demand Lane" },
+        { header: "Email",             field: "Email" },
+        { header: "Region",            field: "Region" },
+        { header: "Source URL",        field: "Source URL" },
+        { header: "Industry",          field: "Industry" },
+        { header: "Company Type",      field: "Company Type" },
+        { header: "Signal",            field: "Signal" },
+        { header: "Signal Proof URL",  field: "Signal Proof URL" },
       ];
       const stripCitations = v => String(v ?? "").replace(/<cite[^>]*>[\s\S]*?<\/cite>|<cite[^>]*\/>/g, "").replace(/<[^>]+>/g, "").trim();
       const headers = SHEET_COLUMN_MAP.map(c => c.header);
@@ -3267,18 +3142,17 @@ RESPOND WITH ONLY this JSON object:
     try {
       const company = getFirstLeadCell(lead, ["Company Name", "Business Name", "Company"]);
       const contact = getFirstLeadCell(lead, ["Contact Person", "Owner Name", "Name"]);
-      const role = getFirstLeadCell(lead, ["Target Role", "Title", "Role"]);
-      const signal = getFirstLeadCell(lead, ["Reason / Buying Signal", "Buying Signals", "Description"]);
       const industryValue = getFirstLeadCell(lead, ["Industry", "Niche", "Company Type"]);
       const region = getFirstLeadCell(lead, ["Region", "Location", "Address", "City"]);
+      const signal = getFirstLeadCell(lead, ["Signal"]);
 
-      const prompt = `Write a short, punchy cold outreach message to ${company || "this lead"}${contact ? ` (contact: ${contact})` : ""}${role ? `, ${role}` : ""}.
+      const prompt = `Write a short, punchy cold outreach message to ${company || "this lead"}${contact ? ` (contact: ${contact})` : ""}.
 
 Lead request context:
 - Job: ${leadListJob?.summary || leadListRequest || "General B2B lead generation"}
 - Industry/type: ${industryValue || "unknown"}
 - Region: ${region || "unknown"}
-- Buying signal: ${signal || "unknown"}
+- Freight signal: ${signal || "unknown"}
 
 Framework:
 - Hook: Reference something specific about their business
@@ -3325,7 +3199,7 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
     const industryValue = getFirstLeadCell(lead, ["Industry", "Niche", "Company Type"]);
     const region = getFirstLeadCell(lead, ["Region", "Location", "Address", "City"]);
     const source = getFirstLeadCell(lead, ["Source URL", "Website", "Source"]);
-    const signal = getFirstLeadCell(lead, ["Call Notes", "Reason / Buying Signal", "Buying Signals", "Description", "High-Demand Lane"]);
+    const signal = getFirstLeadCell(lead, ["Signal"]);
     const newLead = {
       id: Date.now() + Math.random(),
       createdAt: Date.now(),
@@ -3342,7 +3216,7 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
       description: signal || "",
       followUp: "new",
       result: { qualified: true, score: 1, total: 1, criteria: [] },
-      verified: Boolean(lead.verified),
+      verified: false,
       sourceMode: "leadlist",
       leadListRow: lead,
       searchContext: {
@@ -5530,16 +5404,14 @@ Return:
                       <div style={{ fontSize: 14, color: t.text, marginBottom: 10, lineHeight: 1.5 }}>{leadListJob.summary || "Structured lead request"}</div>
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, fontSize: 12, color: t.textMuted }}>
                         <div><strong style={{ color: t.text }}>Industries:</strong> {(leadListJob.industries || []).join(", ") || "Any"}</div>
-                        <div><strong style={{ color: t.text }}>Roles:</strong> {(leadListJob.targetRoles || []).join(", ") || "Any"}</div>
                         <div><strong style={{ color: t.text }}>Geography:</strong> {leadListJob.geography || "Not specified"}</div>
-                        <div><strong style={{ color: t.text }}>Research:</strong> {(leadListJob.specialResearchRequirements || []).join(", ") || "Standard contact research"}</div>
                       </div>
                     </div>
                   )}
 
                   <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
                     <span style={{ fontSize: 13, color: t.textDim, fontWeight: 600, flex: 1 }}>
-                      {leadListResults.length} rows · {leadListResults.filter(row => row.verified).length} verified phones · {leadListColumns.length} columns
+                      {leadListResults.length} rows · {leadListColumns.length || LEAD_LIST_COLUMNS.length} columns
                     </span>
                     <button onClick={handleExportLeadListCSV} style={btnSecondary}>↓ Export CSV</button>
                     <button onClick={handleAppendLeadListToSheets} disabled={leadListSheetLoading} style={{ ...btnSecondary, opacity: leadListSheetLoading ? 0.7 : 1 }}>
@@ -5586,32 +5458,14 @@ Return:
                               {columns.map(col => {
                                 const value = getLeadCell(lead, col);
                                 const isUrl = /^https?:\/\//i.test(String(value));
-                                const phoneCell = isPhoneColumnName(col);
                                 const companyCell = columnKey(col) === "companyname" || columnKey(col) === "businessname" || columnKey(col) === "company";
-                                const rowStatus = lead.__status || (lead.verified ? "Phone verified" : "");
                                 return (
                                   <td key={col} style={{ padding: "11px 12px", borderBottom: `1px solid ${t.border}`, color: t.textMuted, fontSize: 12, verticalAlign: "top", lineHeight: 1.45, maxWidth: 260 }}>
                                     {companyCell ? (
                                       <div>
                                         <div style={{ color: t.text, fontWeight: 700 }}>{String(value || "").trim() || "—"}</div>
-                                        {rowStatus && (
-                                          <span style={{ display: "inline-flex", marginTop: 6, fontSize: 10, fontWeight: 700, color: lead.verified ? t.green : t.accent, background: lead.verified ? t.greenBg : t.accentBg, border: `1px solid ${lead.verified ? t.greenBorder : t.borderLight}`, borderRadius: 999, padding: "2px 7px", whiteSpace: "nowrap" }}>
-                                            {rowStatus}
-                                          </span>
-                                        )}
                                       </div>
-                                    ) : isUrl ? <a href={value} target="_blank" rel="noreferrer" style={{ color: t.accent, textDecoration: "none" }}>{value}</a> : (
-                                      phoneCell && String(value || "").trim() ? (
-                                        <div style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                                          <span>{String(value || "").trim() || "—"}</span>
-                                          {lead.verified && (
-                                            <span style={{ fontSize: 11, fontWeight: 700, color: t.green, background: t.greenBg, border: `1px solid ${t.greenBorder}`, borderRadius: 999, padding: "2px 8px", whiteSpace: "nowrap" }}>
-                                              {VERIFIED_PHONE_BADGE}
-                                            </span>
-                                          )}
-                                        </div>
-                                      ) : (String(value || "").trim() || "—")
-                                    )}
+                                    ) : isUrl ? <a href={value} target="_blank" rel="noreferrer" style={{ color: t.accent, textDecoration: "none" }}>{value}</a> : (String(value || "").trim() || "—")}
                                   </td>
                                 );
                               })}
