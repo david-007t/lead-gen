@@ -2886,23 +2886,28 @@ Discovery requirements:
    - industries
    - companyFilters
    - geography
-2. Find real candidate companies that match the request and show at least one current freight-demand signal.
-3. Strong freight-demand signals include:
-   - distribution center, warehouse, plant, cold storage, or branch openings
-   - shipping, receiving, warehouse, logistics, dispatch, supply chain, CDL, forklift, or operations hiring
+2. Find real candidate companies that match the request and show at least one recent or currently active freight-demand signal.
+3. Strong freight-demand signals must be specific events or active evidence, such as:
+   - a new or expanded distribution center, warehouse, plant, cold storage site, branch, production line, or market launch
+   - current shipping, receiving, warehouse, logistics, dispatch, supply chain, CDL, driver, forklift, distribution, inventory, or operations hiring
    - public freight, delivery, courier, warehousing, drayage, or transportation bids/RFPs
-   - facility expansions, new production lines, increased distribution, or new market launches
-   - seasonal outbound freight patterns for produce, beverage, nursery, building materials, retail replenishment, medical supply, or similar goods
-   - supplier, distributor, manufacturer, wholesaler, or foodservice growth that implies truckload/LTL movement
-4. Write Signal as one practical caller-facing sentence that states the exact reason this company may be actively moving freight.
+   - a recent facility opening, expansion, production ramp, supplier/distributor growth announcement, or seasonal outbound freight event
+4. Weak/non-qualifying signals:
+   - generic "serves this region", "has delivery service", "has a warehouse", or "has operated for many years"
+   - generic company profile/database pages such as ZoomInfo, Apollo, Dun & Bradstreet, Crunchbase, Yelp, directories, or scraped profiles
+   - generic company homepages/service pages unless the exact freight-demand event is visibly stated on that page
+   - hiring for sales, customer service, office/admin, buyer/procurement, finance, engineering, or marketing unless the role directly owns physical freight movement
+   - unsupported trend claims such as "more roles than the past 6 months" unless the proof page explicitly says that
+5. Write Signal as one practical caller-facing sentence that states the exact reason this company may be actively moving freight.
    Example: "Opened a new Dallas distribution center, which likely creates new inbound and outbound freight lanes."
-5. Signal Proof URL must be a direct link to the page proving that exact signal, such as the hiring post, public bid, press release, facility opening announcement, expansion article, permit/news page, or company announcement.
-6. Source URL can be the company website or best company source, but Signal Proof URL must correspond to the Signal. Do not use a generic homepage as Signal Proof URL unless it directly contains the signal.
-7. Prefer companies with callable public main lines.
-8. For freight/shipper searches, include shippers, distributors, manufacturers, wholesalers, suppliers, producers, and foodservice operators. Exclude carriers, brokers, 3PLs, couriers, freight marketplaces, and staffing agencies.
-9. Job boards are allowed only as Signal Proof URL evidence for direct shipping, receiving, warehouse, logistics, supply chain, CDL, forklift, or operations hiring by the shipper company itself. Do not return the job board as the company.
-10. Do not find individual contacts in this step. That happens later one company at a time.
-11. Only return the fields shown in the JSON shape below. Do not add lanes, buying signals, call notes, revenue, LinkedIn, confidence, contact status, or other extra fields.
+6. Signal Proof URL must be a direct link to the page proving that exact signal, such as the hiring post, public bid, press release, facility opening announcement, expansion article, permit/news page, or company announcement.
+7. Source URL can be the company website or best company source, but Signal Proof URL must correspond to the Signal. Do not use a generic homepage as Signal Proof URL unless it directly contains the signal.
+8. Prefer companies with callable public main lines.
+9. For freight/shipper searches, include shippers, distributors, manufacturers, wholesalers, suppliers, producers, and foodservice operators. Exclude carriers, brokers, 3PLs, couriers, freight marketplaces, and staffing agencies.
+10. Job boards are allowed only as Signal Proof URL evidence for current physical freight roles by the shipper company itself: shipping, receiving, warehouse, logistics, supply chain, CDL, driver, forklift, distribution, inventory, or operations. Do not return the job board as the company.
+11. If you cannot find a direct proof URL for a strong freight-demand signal, skip the company and find another.
+12. Do not find individual contacts in this step. That happens later one company at a time.
+13. Only return the fields shown in the JSON shape below. Do not add lanes, buying signals, call notes, revenue, LinkedIn, confidence, contact status, or other extra fields.
 
 RESPOND WITH ONLY this JSON object:
 {
@@ -2949,10 +2954,15 @@ Rules:
 - Prefer a dispatch, logistics, shipping, warehouse, operations, distribution, transportation, or supply chain contact when public.
 - If a named contact is not public, leave Contact Person blank.
 - For freight/shipper searches, the company must be a shipper, distributor, manufacturer, wholesaler, supplier, producer, or foodservice operator. Exclude carriers, brokers, 3PLs, couriers, freight marketplaces, job boards, and staffing agencies.
-- Confirm the company has a plausible current freight-demand signal such as shipping/logistics/warehouse hiring, a distribution/facility opening or expansion, a public delivery/freight bid, seasonal outbound freight, or supplier/distributor growth.
+- Confirm the company has a recent or currently active freight-demand signal such as shipping/logistics/warehouse/driver hiring, a distribution/facility opening or expansion, a public delivery/freight bid, seasonal outbound freight, or supplier/distributor growth announcement.
 - Signal must be one caller-ready sentence that clearly names the exact signal, so a caller can say "I saw you..." naturally.
 - Signal Proof URL must directly prove the Signal. Use the hiring post, bid/RFP page, press release, facility opening/expansion article, company announcement, or similar evidence page.
-- Do not use a generic homepage as Signal Proof URL unless the homepage itself directly shows the signal.
+- Reject generic proof sources such as ZoomInfo, Apollo, Dun & Bradstreet, Crunchbase, Yelp, directories, or scraped company profiles.
+- Do not use a generic homepage, service-area page, or "about us" page as Signal Proof URL unless that exact page directly states the active freight-demand event.
+- Do not use generic facts like "serves this region", "offers delivery", "has a warehouse", or "has been operating for years" as the Signal.
+- Hiring only qualifies if the role directly touches physical freight movement: shipping, receiving, warehouse, logistics, supply chain, CDL, driver, forklift, distribution, inventory, or operations. Sales, customer service, office/admin, buyer/procurement, finance, engineering, and marketing roles do not qualify by themselves.
+- Do not claim growth trends, hiring spikes, or "more roles than the past 6 months" unless the proof page explicitly states that trend.
+- If the proof URL does not directly support the Signal, skip this company and return an empty object.
 - Do not invent contact names, emails, or phone numbers.
 - If a field is unavailable, use an empty string.
 - Source URL should support the company. Signal Proof URL should support the active freight-demand signal.
