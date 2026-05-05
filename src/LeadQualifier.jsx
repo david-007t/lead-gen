@@ -190,10 +190,18 @@ const FOLLOWUP_STATUSES = [
   { id: "lost", label: "Lost", color: "#f87171" },
 ];
 
+const PERSONAL_RANK_OPTIONS = [
+  { value: "5", label: "5 - Top" },
+  { value: "4", label: "4 - Strong" },
+  { value: "3", label: "3 - Maybe" },
+  { value: "2", label: "2 - Low" },
+  { value: "1", label: "1 - Skip" },
+];
+
 const EMPTY_LEAD = {
   name: "", company: "", email: "", phone: "",
   projectType: "", budget: "", location: "", zipCode: "",
-  timeline: "", description: "", source: "", followUp: "new",
+  timeline: "", description: "", source: "", followUp: "new", personalRank: "",
 };
 
 const INDEED_ROLES = [
@@ -340,6 +348,7 @@ const DEFAULT_LEAD_COLUMNS = [
 const LEAD_LIST_LOOKUP_BATCH_SIZE = 1;
 const LEAD_LIST_MAX_GENERATION_PASSES = 8;
 const LEAD_LIST_BUFFER_ROWS = 2;
+const LEAD_LIST_GENERATION_BATCH_SIZE = 3;
 const LEAD_LIST_LOOKUP_DELAY_MS = 1200;
 const LEAD_LIST_EMAIL_BATCH_SIZE = 1;
 const LEAD_LIST_EMAIL_DELAY_MS = 350;
@@ -1256,7 +1265,6 @@ export default function LeadQualifier() {
 
   const [inlineEdit, setInlineEdit] = useState(null); // { id, field, value }
 
-  const [filterStatus, setFilterStatus] = useState("all");
   const [filterFollowUp, setFilterFollowUp] = useState("all");
   const [sortBy, setSortBy] = useState("date");
   const [sortDir, setSortDir] = useState("desc");
@@ -1513,7 +1521,7 @@ export default function LeadQualifier() {
 
   const handleSaveEdit = (id) => {
     if (!editForm) return;
-    const updatedLead = { ...editForm, result: qualifyLead(editForm, criteria, ind.typeName) };
+    const updatedLead = { ...editForm };
     setLeads(prev => prev.map(l => l.id === id ? updatedLead : l));
     savePipelineLead(updatedLead, { silent: true });
     setEditingLead(null); setEditForm(null);
@@ -1533,9 +1541,8 @@ export default function LeadQualifier() {
     setLeads(prev => prev.map(l => {
       if (l.id !== id) return l;
       const updated = { ...l, [field]: value };
-      const requalified = { ...updated, result: qualifyLead(updated, criteria, ind.typeName) };
-      savePipelineLead(requalified, { silent: true });
-      return requalified;
+      savePipelineLead(updated, { silent: true });
+      return updated;
     }));
     setInlineEdit(null);
   };
@@ -1547,9 +1554,9 @@ export default function LeadQualifier() {
     reader.onload = (ev) => {
       const parsed = parseCSV(ev.target.result);
       if (parsed.length === 0) { showToast("No valid leads found in CSV", "error"); return; }
-      const qualified = parsed.map(l => ({ ...l, id: Date.now() + Math.random(), createdAt: Date.now(), result: qualifyLead(l, criteria, ind.typeName) }));
-      setLeads(prev => [...qualified, ...prev]);
-      showToast(`${parsed.length} leads imported & qualified`);
+      const imported = parsed.map(l => ({ ...l, id: Date.now() + Math.random(), createdAt: Date.now(), result: qualifyLead(l, criteria, ind.typeName), personalRank: l.personalRank || "" }));
+      setLeads(prev => [...imported, ...prev]);
+      showToast(`${parsed.length} leads imported`);
       setShowUpload(false);
     };
     reader.readAsText(file);
@@ -1567,11 +1574,11 @@ export default function LeadQualifier() {
     showToast(`${DEMO_LEADS.length} demo leads loaded`);
   };
 
-  const requalifyAll = () => {
-    setLeads(prev => prev.map(l => ({ ...l, result: qualifyLead(l, criteria, ind.typeName) })));
-    showToast("All leads re-qualified with new criteria");
-    setSettingsEdited(false);
-  };
+	  const requalifyAll = () => {
+	    setLeads(prev => prev.map(l => ({ ...l, result: qualifyLead(l, criteria, ind.typeName) })));
+	    showToast("Existing leads updated");
+	    setSettingsEdited(false);
+	  };
 
   // ─── PROSPECT SEARCH (two-step decision maker enrichment) ───
   const handleProspectSearch = async () => {
@@ -3108,7 +3115,7 @@ RESPOND WITH ONLY this JSON object:
 
       for (let pass = 0; pass < LEAD_LIST_MAX_GENERATION_PASSES && acceptedRows.length < desiredCount; pass++) {
         const remaining = desiredCount - acceptedRows.length;
-        const requestBatchSize = Math.min(Math.max(remaining + LEAD_LIST_BUFFER_ROWS, 3), remaining + LEAD_LIST_BUFFER_ROWS);
+        const requestBatchSize = Math.min(LEAD_LIST_GENERATION_BATCH_SIZE, remaining + LEAD_LIST_BUFFER_ROWS);
         setLeadListProgress(pass === 0
           ? `Researching companies (${acceptedRows.length}/${desiredCount} verified)`
           : `Finding more verified numbers (${acceptedRows.length}/${desiredCount})`);
@@ -3569,23 +3576,22 @@ Return:
         (l.location || "").toLowerCase().includes(q) || (l.zipCode || "").includes(q)
       );
     }
-    if (filterStatus === "qualified") result = result.filter(l => l.result.qualified);
-    if (filterStatus === "unqualified") result = result.filter(l => !l.result.qualified);
     if (filterFollowUp !== "all") result = result.filter(l => l.followUp === filterFollowUp);
     result.sort((a, b) => {
       let cmp = 0;
       if (sortBy === "date") cmp = (a.createdAt || 0) - (b.createdAt || 0);
       else if (sortBy === "name") cmp = (a.name || "").localeCompare(b.name || "");
       else if (sortBy === "budget") cmp = (parseFloat(a.budget) || 0) - (parseFloat(b.budget) || 0);
-      else if (sortBy === "score") cmp = (a.result.score / (a.result.total || 1)) - (b.result.score / (b.result.total || 1));
+      else if (sortBy === "rank") cmp = (parseInt(a.personalRank, 10) || 0) - (parseInt(b.personalRank, 10) || 0);
       return sortDir === "desc" ? -cmp : cmp;
     });
     return result;
-  }, [modeScopedLeads, searchQuery, filterStatus, filterFollowUp, sortBy, sortDir]);
+  }, [modeScopedLeads, searchQuery, filterFollowUp, sortBy, sortDir]);
 
   const handleExportPipelineCSV = () => {
     const columns = [
       "Company Name",
+      "Personal Rank",
       "Decision Maker Name",
       "Title",
       "Email",
@@ -3601,6 +3607,7 @@ Return:
       const prospect = lead.sourceMode === "prospects" ? prospectFromPipelineLead(lead) : null;
       return [
         prospect?.businessName || detailMap.get("Company Name") || lead.company || "",
+        lead.personalRank || "",
         prospect?.ownerName || detailMap.get("Decision Maker Name") || detailMap.get("Contact Person") || lead.name || "",
         prospect?.title || detailMap.get("Title") || detailMap.get("Target Role") || "",
         prospect?.email || detailMap.get("Email") || lead.email || "",
@@ -3692,7 +3699,7 @@ Return:
               <div style={{ textAlign: "center", animation: "fadeIn 0.4s ease" }}>
                 <div style={{ width: 64, height: 64, background: "#f59e0b", borderRadius: 16, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 28, fontWeight: 800, color: "#0c0a09", fontFamily: "'Outfit', sans-serif", marginBottom: 24 }}>LQ</div>
                 <h1 style={{ fontSize: 32, fontWeight: 800, color: "#fafaf9", fontFamily: "'Outfit', sans-serif", marginBottom: 12 }}>Lead Qualifier</h1>
-                <p style={{ color: "#a8a29e", fontSize: 16, lineHeight: 1.6, marginBottom: 32 }}>Automatically find, score, and qualify leads in seconds. Let's set up your profile.</p>
+	                <p style={{ color: "#a8a29e", fontSize: 16, lineHeight: 1.6, marginBottom: 32 }}>Find and manage leads in seconds. Let's set up your profile.</p>
                 <div style={{ marginBottom: 24 }}>
                   <label style={{ ...labelStyle, color: "#78716c", textAlign: "left" }}>Your Company Name</label>
                   <input style={{ ...inputStyle, background: "#1c1917", borderColor: "#3a3631", textAlign: "center", fontSize: 18, padding: "14px 20px" }} value={companyName} onChange={e => setCompanyName(e.target.value)} placeholder="Your company name" autoFocus />
@@ -3716,7 +3723,7 @@ Return:
             {setupStep === 1 && (
               <div style={{ animation: "fadeIn 0.4s ease" }}>
                 <h2 style={{ fontSize: 24, fontWeight: 800, color: "#fafaf9", fontFamily: "'Outfit', sans-serif", marginBottom: 8 }}>Set Your Criteria</h2>
-                <p style={{ color: "#a8a29e", fontSize: 14, marginBottom: 28 }}>Leads that match all criteria will be marked as qualified. You can always change these later.</p>
+	                <p style={{ color: "#a8a29e", fontSize: 14, marginBottom: 28 }}>Set rough defaults for incoming leads. You can always change these later.</p>
                 <div style={cardStyle}>
                   <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 16, color: "#fafaf9" }}>💰 Budget Range</h3>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
@@ -3773,8 +3780,6 @@ Return:
 
   // ─── MAIN APP ─────────────────────────────────────────────
   const modeLeads = modeScopedLeads;
-  const qualifiedCount = modeLeads.filter(l => l.result.qualified).length;
-  const unqualifiedCount = modeLeads.length - qualifiedCount;
   const sessionCost = costEvents.reduce((sum, event) => sum + Number(event.cost || 0), 0);
   const latestCostEvent = costEvents[0];
 
@@ -3806,11 +3811,12 @@ Return:
             font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: ${t.textFaint}; margin-right: 8px; display: inline;
           }
           .lead-row > div:nth-child(2)::before { content: 'Type: '; }
-          .lead-row > div:nth-child(3)::before { content: 'Budget: '; }
-          .lead-row > div:nth-child(4)::before { content: 'Timeline: '; }
-          .lead-row > div:nth-child(5)::before { content: 'ZIP: '; }
-          .lead-row > div:nth-child(6) { margin-top: 4px; }
-          .lead-row > span:last-child { justify-self: start; margin-top: 4px; }
+	          .lead-row > div:nth-child(3)::before { content: 'Budget: '; }
+	          .lead-row > div:nth-child(4)::before { content: 'Timeline: '; }
+	          .lead-row > div:nth-child(5)::before { content: 'ZIP: '; }
+	          .lead-row > div:nth-child(6)::before { content: 'Rank: '; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: ${t.textFaint}; margin-right: 8px; display: inline; }
+	          .lead-row > div:nth-child(7) { margin-top: 4px; }
+	          .lead-status-actions { justify-self: start; margin-top: 4px; }
           .mobile-hide { display: none !important; }
           .stat-row { flex-direction: column !important; gap: 16px !important; }
           .stat-row > div:not(:first-child) > div:first-child { display: none !important; }
@@ -3858,7 +3864,7 @@ Return:
                 <div style={{ width: 40, height: 40, background: t.accent, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Outfit', sans-serif", fontWeight: 800, fontSize: 17, color: "#0c0a09" }}>LQ</div>
                 <div>
                   <h1 style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.2, fontFamily: "'Outfit', sans-serif" }}>{companyName || "Lead Qualifier"}</h1>
-                  <p style={{ fontSize: 11, color: t.textDim, letterSpacing: "0.06em", textTransform: "uppercase" }}>{ind.label} · {leads.length} leads · {qualifiedCount} qualified</p>
+	                  <p style={{ fontSize: 11, color: t.textDim, letterSpacing: "0.06em", textTransform: "uppercase" }}>{ind.label} · {leads.length} leads</p>
                 </div>
               </div>
 	              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -3890,24 +3896,7 @@ Return:
 	                    ))}
 	                  </div>
 	                </details>
-	                {leads.length > 0 && (
-	                  <div style={{ display: "flex", gap: 16, marginRight: 8 }} className="header-stats">
-                    {[
-                      { val: qualifiedCount, label: "Pass", color: t.green },
-                      { val: unqualifiedCount, label: "Fail", color: t.red },
-                      { val: `${leads.length > 0 ? Math.round((qualifiedCount / leads.length) * 100) : 0}%`, label: "Rate", color: t.text },
-                    ].map((s, i) => (
-                      <div key={i} style={{ display: "flex", alignItems: "center", gap: i < 2 ? 0 : 0 }}>
-                        {i > 0 && <div style={{ width: 1, height: 36, background: t.borderLight, marginRight: 16 }} />}
-                        <div style={{ textAlign: "center" }}>
-                          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 22, fontWeight: 700, color: s.color }}>{s.val}</div>
-                          <div style={{ color: t.textFaint, fontSize: 9, textTransform: "uppercase", letterSpacing: "0.1em" }}>{s.label}</div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title="Toggle theme"
+	                <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title="Toggle theme"
                   style={{ width: 36, height: 36, borderRadius: 8, border: `1px solid ${t.borderLight}`, background: t.bgHover, cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center", color: t.text, transition: "all 0.2s" }}>
                   {theme === "dark" ? "☀" : "🌙"}
                 </button>
@@ -4436,14 +4425,15 @@ Return:
                   <div><label style={labelStyle}>Phone</label><input style={inputStyle} value={form.phone} onChange={e => setForm(p => ({ ...p, phone: e.target.value }))} placeholder="(555) 123-4567" /></div>
                   <div><label style={labelStyle}>{ind.typeName} *</label><select style={{ ...inputStyle, cursor: "pointer" }} value={form.projectType} onChange={e => setForm(p => ({ ...p, projectType: e.target.value }))}><option value="">Select…</option>{PROJECT_TYPES.map(pt => <option key={pt.id} value={pt.id}>{pt.label}</option>)}</select></div>
                   <div><label style={labelStyle}>Budget ($) *</label><input style={inputStyle} type="number" value={form.budget} onChange={e => setForm(p => ({ ...p, budget: e.target.value }))} placeholder="250000" /></div>
-                  <div><label style={labelStyle}>Location</label><input style={inputStyle} value={form.location} onChange={e => setForm(p => ({ ...p, location: e.target.value }))} placeholder="City / Area" /></div>
-                  <div><label style={labelStyle}>ZIP Code</label><input style={inputStyle} value={form.zipCode} onChange={e => setForm(p => ({ ...p, zipCode: e.target.value }))} placeholder="90210" /></div>
-                  <div><label style={labelStyle}>Timeline</label><select style={{ ...inputStyle, cursor: "pointer" }} value={form.timeline} onChange={e => setForm(p => ({ ...p, timeline: e.target.value }))}><option value="">Select…</option>{TIMELINE_OPTIONS.map(tl => <option key={tl.value} value={tl.value}>{tl.label}</option>)}</select></div>
+	                  <div><label style={labelStyle}>Location</label><input style={inputStyle} value={form.location} onChange={e => setForm(p => ({ ...p, location: e.target.value }))} placeholder="City / Area" /></div>
+	                  <div><label style={labelStyle}>ZIP Code</label><input style={inputStyle} value={form.zipCode} onChange={e => setForm(p => ({ ...p, zipCode: e.target.value }))} placeholder="90210" /></div>
+	                  <div><label style={labelStyle}>Personal Rank</label><select style={{ ...inputStyle, cursor: "pointer" }} value={form.personalRank} onChange={e => setForm(p => ({ ...p, personalRank: e.target.value }))}><option value="">Not ranked</option>{PERSONAL_RANK_OPTIONS.map(rank => <option key={rank.value} value={rank.value}>{rank.label}</option>)}</select></div>
+	                  <div><label style={labelStyle}>Timeline</label><select style={{ ...inputStyle, cursor: "pointer" }} value={form.timeline} onChange={e => setForm(p => ({ ...p, timeline: e.target.value }))}><option value="">Select…</option>{TIMELINE_OPTIONS.map(tl => <option key={tl.value} value={tl.value}>{tl.label}</option>)}</select></div>
                   <div><label style={labelStyle}>Lead Source</label><input style={inputStyle} value={form.source} onChange={e => setForm(p => ({ ...p, source: e.target.value }))} placeholder="Website, Referral…" /></div>
                 </div>
                 <div style={{ marginTop: 18 }}><label style={labelStyle}>Project Description</label><textarea style={{ ...inputStyle, minHeight: 80, resize: "vertical" }} value={form.description} onChange={e => setForm(p => ({ ...p, description: e.target.value }))} placeholder="Brief description of the project scope…" /></div>
                 <div style={{ marginTop: 24, display: "flex", gap: 12 }}>
-                  <button onClick={handleAddLead} style={{ ...btnPrimary, padding: "12px 32px" }}>Qualify & Add Lead →</button>
+                  <button onClick={handleAddLead} style={{ ...btnPrimary, padding: "12px 32px" }}>Add Lead →</button>
                   <button onClick={() => setForm({ ...EMPTY_LEAD })} style={{ ...btnSecondary, background: "transparent" }}>Clear</button>
                 </div>
               </div>
@@ -4467,14 +4457,12 @@ Return:
               ) : (
                 <>
 	                  {/* Toolbar */}
-                  <div className="toolbar-row" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 12 }}>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                      <input style={{ ...inputStyle, width: 200, padding: "8px 14px", fontSize: 13 }} placeholder="Search leads…" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
-                      {["all", "qualified", "unqualified"].map(s => (
-                        <button key={s} onClick={() => setFilterStatus(s)} style={{ padding: "6px 14px", borderRadius: 20, border: `1px solid ${filterStatus === s ? t.accent : t.borderLight}`, background: filterStatus === s ? t.accent : "transparent", color: filterStatus === s ? "#0c0a09" : t.textMuted, cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: "'DM Sans',sans-serif", textTransform: "capitalize", transition: "all 0.15s" }}>
-                          {s === "all" ? `All (${modeLeads.length})` : s === "qualified" ? `Qualified (${qualifiedCount})` : `Unqualified (${unqualifiedCount})`}
-                        </button>
-                      ))}
+	                  <div className="toolbar-row" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 12 }}>
+	                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+	                      <input style={{ ...inputStyle, width: 200, padding: "8px 14px", fontSize: 13 }} placeholder="Search leads…" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+	                      <span style={{ padding: "6px 14px", borderRadius: 20, border: `1px solid ${t.accent}`, background: t.accent, color: "#0c0a09", fontSize: 12, fontWeight: 700, fontFamily: "'DM Sans',sans-serif" }}>
+	                        All ({modeLeads.length})
+	                      </span>
 	                    </div>
 	                    <div style={{ display: "flex", gap: 8 }}>
 	                      <button onClick={handleExportPipelineCSV} style={btnSecondary}>Export CSV</button>
@@ -4495,7 +4483,7 @@ Return:
                   <div style={{ display: "flex", gap: 4, marginBottom: 8, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
                     <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                       <span style={{ fontSize: 11, color: t.textFaint, marginRight: 8, textTransform: "uppercase", letterSpacing: "0.08em" }}>Sort:</span>
-                      {[{ id: "date", label: "Date" }, { id: "name", label: "Name" }, { id: "budget", label: "Budget" }, { id: "score", label: "Score" }].map(s => (
+	                      {[{ id: "date", label: "Date" }, { id: "rank", label: "Rank" }, { id: "name", label: "Name" }, { id: "budget", label: "Budget" }].map(s => (
                         <button key={s.id} className={`sort-btn ${sortBy === s.id ? "active" : ""}`} onClick={() => { if (sortBy === s.id) setSortDir(d => d === "desc" ? "asc" : "desc"); else { setSortBy(s.id); setSortDir("desc"); } }}>
                           {s.label} {sortBy === s.id ? (sortDir === "desc" ? "↓" : "↑") : ""}
                         </button>
@@ -4505,15 +4493,15 @@ Return:
                   </div>
 
                   {/* Table header */}
-                  <div className="lead-grid-header" style={{ display: "grid", gridTemplateColumns: "2fr 1.2fr 1fr 0.8fr 0.8fr 1fr 120px", gap: 8, padding: "10px 16px", fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: t.textFaint, borderBottom: `1px solid ${t.border}` }}>
-                    <span>Name</span><span>{ind.typeName}</span><span>Budget</span><span>Timeline</span><span>ZIP</span><span>Follow-up</span><span>Status</span>
+	                  <div className="lead-grid-header" style={{ display: "grid", gridTemplateColumns: "2fr 1.2fr 1fr 0.8fr 0.8fr 0.8fr 1fr 90px", gap: 8, padding: "10px 16px", fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: t.textFaint, borderBottom: `1px solid ${t.border}` }}>
+	                    <span>Name</span><span>{ind.typeName}</span><span>Budget</span><span>Timeline</span><span>ZIP</span><span>Rank</span><span>Follow-up</span><span>Action</span>
                   </div>
 
                   {filteredLeads.length === 0 ? (
                     <div style={{ textAlign: "center", padding: "40px 20px", color: t.textFaint, fontSize: 14 }}>No leads match your filters</div>
                   ) : filteredLeads.map((lead, idx) => (
                     <div key={lead.id}>
-                      <div className="lead-row" style={{ display: "grid", gridTemplateColumns: "2fr 1.2fr 1fr 0.8fr 0.8fr 1fr 120px", gap: 8, padding: "12px 16px", fontSize: 14, cursor: "pointer", borderBottom: `1px solid ${t.border}`, transition: "background 0.15s", animation: `slideUp 0.25s ease ${Math.min(idx * 0.02, 0.3)}s both`, alignItems: "center" }}
+	                      <div className="lead-row" style={{ display: "grid", gridTemplateColumns: "2fr 1.2fr 1fr 0.8fr 0.8fr 0.8fr 1fr 90px", gap: 8, padding: "12px 16px", fontSize: 14, cursor: "pointer", borderBottom: `1px solid ${t.border}`, transition: "background 0.15s", animation: `slideUp 0.25s ease ${Math.min(idx * 0.02, 0.3)}s both`, alignItems: "center" }}
                         onClick={() => setExpandedLead(expandedLead === lead.id ? null : lead.id)}>
                         <div>
                           <InlineCell lead={lead} field="name" style={{ fontWeight: 600, fontSize: 14, display: "block" }}>
@@ -4536,21 +4524,33 @@ Return:
                             {lead.timeline ? (TIMELINE_OPTIONS.find(tl => tl.value === lead.timeline)?.label || lead.timeline) : "—"}
                           </InlineCell>
                         </div>
-                        <div>
-                          <InlineCell lead={lead} field="zipCode" style={{ color: t.textMuted, fontSize: 12 }}>
-                            {lead.zipCode || "—"}
-                          </InlineCell>
-                        </div>
-                        <div onClick={e => e.stopPropagation()}>
-                          <select value={lead.followUp || "new"} onChange={e => handleFollowUpChange(lead.id, e.target.value)}
+	                        <div>
+	                          <InlineCell lead={lead} field="zipCode" style={{ color: t.textMuted, fontSize: 12 }}>
+	                            {lead.zipCode || "—"}
+	                          </InlineCell>
+	                        </div>
+	                        <div>
+	                          <InlineCell lead={lead} field="personalRank" options={PERSONAL_RANK_OPTIONS} style={{ color: lead.personalRank ? t.accent : t.textFaint, fontSize: 12, fontWeight: 700 }}>
+	                            {lead.personalRank ? `${lead.personalRank}/5` : "Rank"}
+	                          </InlineCell>
+	                        </div>
+	                        <div onClick={e => e.stopPropagation()}>
+	                          <select value={lead.followUp || "new"} onChange={e => handleFollowUpChange(lead.id, e.target.value)}
                             style={{ padding: "4px 8px", borderRadius: 12, border: `1px solid ${(FOLLOWUP_STATUSES.find(s => s.id === lead.followUp) || FOLLOWUP_STATUSES[0]).color}44`, background: (FOLLOWUP_STATUSES.find(s => s.id === lead.followUp) || FOLLOWUP_STATUSES[0]).color + "18", color: (FOLLOWUP_STATUSES.find(s => s.id === lead.followUp) || FOLLOWUP_STATUSES[0]).color, fontSize: 11, fontWeight: 600, fontFamily: "'DM Sans',sans-serif", cursor: "pointer", outline: "none" }}>
                             {FOLLOWUP_STATUSES.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
                           </select>
                         </div>
-                        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 4, fontSize: 11, fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase", background: lead.result.qualified ? t.greenBg : t.redBg, color: lead.result.qualified ? t.green : t.red, border: `1px solid ${lead.result.qualified ? t.greenBorder : t.redBorder}` }}>
-                          <span style={{ width: 6, height: 6, borderRadius: "50%", background: lead.result.qualified ? t.green : t.red }} />
-                          {lead.result.score}/{lead.result.total}
-                        </span>
+	                        <div className="lead-status-actions" onClick={e => e.stopPropagation()} style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", minWidth: 0 }}>
+	                          <button
+                            type="button"
+                            aria-label={`Delete ${lead.company || lead.name || "lead"}`}
+                            title="Delete lead"
+                            onClick={() => handleDeleteLead(lead.id)}
+                            style={{ padding: "5px 10px", borderRadius: 6, border: `1px solid ${t.redBorder}`, background: t.redBg, color: t.red, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'DM Sans', sans-serif", whiteSpace: "nowrap" }}
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </div>
 
                       {expandedLead === lead.id && (
@@ -4558,15 +4558,16 @@ Return:
                           {editingLead === lead.id ? (
                             <div>
                               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 14 }}>
-                                {[{ key: "name", label: "Name" }, { key: "company", label: "Company" }, { key: "email", label: "Email" }, { key: "phone", label: "Phone" }, { key: "budget", label: "Budget", type: "number" }, { key: "location", label: "Location" }, { key: "zipCode", label: "ZIP" }, { key: "source", label: "Source" }].map(f => (
-                                  <div key={f.key}><label style={labelStyle}>{f.label}</label><input style={{ ...inputStyle, padding: "8px 12px", fontSize: 13 }} type={f.type || "text"} value={editForm[f.key] || ""} onChange={e => setEditForm(p => ({ ...p, [f.key]: e.target.value }))} /></div>
-                                ))}
-                                <div><label style={labelStyle}>{ind.typeName}</label><select style={{ ...inputStyle, padding: "8px 12px", fontSize: 13, cursor: "pointer" }} value={editForm.projectType} onChange={e => setEditForm(p => ({ ...p, projectType: e.target.value }))}><option value="">Select…</option>{PROJECT_TYPES.map(pt => <option key={pt.id} value={pt.id}>{pt.label}</option>)}</select></div>
+	                                {[{ key: "name", label: "Name" }, { key: "company", label: "Company" }, { key: "email", label: "Email" }, { key: "phone", label: "Phone" }, { key: "budget", label: "Budget", type: "number" }, { key: "location", label: "Location" }, { key: "zipCode", label: "ZIP" }, { key: "source", label: "Source" }].map(f => (
+	                                  <div key={f.key}><label style={labelStyle}>{f.label}</label><input style={{ ...inputStyle, padding: "8px 12px", fontSize: 13 }} type={f.type || "text"} value={editForm[f.key] || ""} onChange={e => setEditForm(p => ({ ...p, [f.key]: e.target.value }))} /></div>
+	                                ))}
+	                                <div><label style={labelStyle}>Personal Rank</label><select style={{ ...inputStyle, padding: "8px 12px", fontSize: 13, cursor: "pointer" }} value={editForm.personalRank || ""} onChange={e => setEditForm(p => ({ ...p, personalRank: e.target.value }))}><option value="">Not ranked</option>{PERSONAL_RANK_OPTIONS.map(rank => <option key={rank.value} value={rank.value}>{rank.label}</option>)}</select></div>
+	                                <div><label style={labelStyle}>{ind.typeName}</label><select style={{ ...inputStyle, padding: "8px 12px", fontSize: 13, cursor: "pointer" }} value={editForm.projectType} onChange={e => setEditForm(p => ({ ...p, projectType: e.target.value }))}><option value="">Select…</option>{PROJECT_TYPES.map(pt => <option key={pt.id} value={pt.id}>{pt.label}</option>)}</select></div>
                                 <div><label style={labelStyle}>Timeline</label><select style={{ ...inputStyle, padding: "8px 12px", fontSize: 13, cursor: "pointer" }} value={editForm.timeline} onChange={e => setEditForm(p => ({ ...p, timeline: e.target.value }))}><option value="">Select…</option>{TIMELINE_OPTIONS.map(tl => <option key={tl.value} value={tl.value}>{tl.label}</option>)}</select></div>
                               </div>
                               <div style={{ marginTop: 12 }}><label style={labelStyle}>Description</label><textarea style={{ ...inputStyle, minHeight: 60, resize: "vertical", fontSize: 13 }} value={editForm.description || ""} onChange={e => setEditForm(p => ({ ...p, description: e.target.value }))} /></div>
                               <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
-                                <button onClick={() => handleSaveEdit(lead.id)} style={{ ...btnPrimary, padding: "8px 20px", fontSize: 13 }}>Save & Re-Qualify</button>
+	                                <button onClick={() => handleSaveEdit(lead.id)} style={{ ...btnPrimary, padding: "8px 20px", fontSize: 13 }}>Save</button>
                                 <button onClick={() => { setEditingLead(null); setEditForm(null); }} style={{ ...btnSecondary, background: "transparent" }}>Cancel</button>
                               </div>
                             </div>
@@ -4622,24 +4623,7 @@ Return:
                                     </button>
                                   </div>
 
-                                  <div style={{ minWidth: 220, flex: "0 1 320px" }}>
-                                    <div style={{ display: "grid", gap: 6 }}>
-                                      {lead.result.criteria.map((c, i) => (
-                                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: t.bgHover, borderRadius: 6, borderLeft: `3px solid ${c.pass ? t.green : t.red}` }}>
-                                          <span style={{ fontSize: 12, color: c.pass ? t.green : t.red }}>{c.pass ? "✓" : "✕"}</span>
-                                          <div>
-                                            <div style={{ fontSize: 12, fontWeight: 700, color: c.pass ? t.green : t.red }}>{c.name}</div>
-                                            <div style={{ fontSize: 10, color: t.textDim }}>{c.detail}</div>
-                                          </div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                    <div style={{ marginTop: 8, padding: "8px 12px", background: lead.result.qualified ? t.greenBg : t.redBg, borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                      <span style={{ fontSize: 12, fontWeight: 700 }}>Final Score</span>
-                                      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, fontWeight: 700, color: lead.result.qualified ? t.green : t.red }}>{lead.result.score}/{lead.result.total}</span>
-                                    </div>
-                                  </div>
-                                </div>
+	                                </div>
 
                                 {lead.savedEmailDraft && (
                                   <div style={{ marginTop: 14 }}>
@@ -4711,22 +4695,7 @@ Return:
                                   </div>
                                 )}
                               </div>
-                              <div style={{ flex: "1 1 300px" }}>
-                                <h4 style={{ fontSize: 12, fontWeight: 700, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>Qualification Breakdown</h4>
-                                <div style={{ display: "grid", gap: 8 }}>
-                                  {lead.result.criteria.map((c, i) => (
-                                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", background: t.bgHover, borderRadius: 6, borderLeft: `3px solid ${c.pass ? t.green : t.red}` }}>
-                                      <span style={{ fontSize: 14, color: c.pass ? t.green : t.red }}>{c.pass ? "✓" : "✕"}</span>
-                                      <div><div style={{ fontSize: 13, fontWeight: 600, color: c.pass ? t.green : t.red }}>{c.name}</div><div style={{ fontSize: 11, color: t.textDim }}>{c.detail}</div></div>
-                                    </div>
-                                  ))}
-                                </div>
-                                <div style={{ marginTop: 12, padding: "10px 14px", background: lead.result.qualified ? t.greenBg : t.redBg, borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                  <span style={{ fontSize: 13, fontWeight: 600 }}>Final Score</span>
-                                  <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 18, fontWeight: 700, color: lead.result.qualified ? t.green : t.red }}>{lead.result.score}/{lead.result.total}</span>
-                                </div>
-                              </div>
-                              {lead.pipelineDetails?.sections?.length > 0 && (
+	                              {lead.pipelineDetails?.sections?.length > 0 && (
                                 <div style={{ flex: "1 1 100%", marginTop: 8 }}>
                                   <h4 style={{ fontSize: 12, fontWeight: 700, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 12 }}>
                                     {lead.pipelineDetails.sourceLabel || "Saved Context"}
@@ -5693,11 +5662,11 @@ Return:
             <div style={{ animation: "fadeIn 0.3s ease", maxWidth: 700 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24, flexWrap: "wrap", gap: 12 }}>
                 <div>
-                  <h2 style={{ fontSize: 18, fontWeight: 700, fontFamily: "'Outfit', sans-serif" }}>Qualification Criteria</h2>
-                  <p style={{ fontSize: 13, color: t.textDim, marginTop: 4 }}>Define rules to score incoming leads</p>
+	                  <h2 style={{ fontSize: 18, fontWeight: 700, fontFamily: "'Outfit', sans-serif" }}>Lead Preferences</h2>
+	                  <p style={{ fontSize: 13, color: t.textDim, marginTop: 4 }}>Define rough defaults for incoming leads</p>
                 </div>
                 {settingsEdited && leads.length > 0 && (
-                  <button onClick={requalifyAll} style={{ ...btnPrimary, animation: "pulse 1.5s infinite" }}>↻ Re-Qualify All ({leads.length})</button>
+	                  <button onClick={requalifyAll} style={{ ...btnPrimary, animation: "pulse 1.5s infinite" }}>Update Existing Leads ({leads.length})</button>
                 )}
               </div>
 

@@ -24,11 +24,20 @@ export default async function handler(req, res) {
       headers['anthropic-beta'] = 'web-search-2025-03-05';
     }
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 55000);
+
+    let response;
+    try {
+      response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
     // Read the response as text first so we can safely handle non-JSON bodies
     // (e.g. Anthropic maintenance pages, CDN errors) without crashing.
@@ -47,6 +56,15 @@ export default async function handler(req, res) {
 
     return res.status(response.status).json(data);
   } catch (error) {
+    if (error?.name === 'AbortError') {
+      return res.status(504).json({
+        error: {
+          type: 'upstream_timeout',
+          message: 'Anthropic web search took too long. Try a smaller geography, fewer rows, or run the search again.',
+        },
+      });
+    }
+
     return res.status(500).json({
       error: {
         type: 'fetch_error',
