@@ -1,9 +1,9 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import LeadQualifier from './LeadQualifier.jsx';
+import LeadGen from './LeadGen.jsx';
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <LeadQualifier />
+    <LeadGen />
   </React.StrictMode>
 );

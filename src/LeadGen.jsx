@@ -1275,9 +1275,9 @@ function mergePipelineLeads(localLeads, remoteLeads) {
 }
 
 // ─── MAIN COMPONENT ──────────────────────────────────────────
-export default function LeadQualifier() {
+export default function LeadGen() {
   const [loading, setLoading] = useState(true);
-  const [theme, setTheme] = useState(() => localStorage.getItem('lq-theme') || 'dark');
+  const [theme, setTheme] = useState(() => localStorage.getItem('lg-theme') || localStorage.getItem('lq-theme') || 'dark');
   const [companyName, setCompanyName] = useState("");
   const [industry, setIndustry] = useState("construction");
   const [setupComplete, setSetupComplete] = useState(false);
@@ -3620,8 +3620,8 @@ Return:
 
             {setupStep === 0 && (
               <div style={{ textAlign: "center", animation: "fadeIn 0.4s ease" }}>
-                <div style={{ width: 64, height: 64, background: "#f59e0b", borderRadius: 16, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 28, fontWeight: 800, color: "#0c0a09", fontFamily: "'Outfit', sans-serif", marginBottom: 24 }}>LQ</div>
-                <h1 style={{ fontSize: 32, fontWeight: 800, color: "#fafaf9", fontFamily: "'Outfit', sans-serif", marginBottom: 12 }}>Lead Qualifier</h1>
+                <div style={{ width: 64, height: 64, background: "#f59e0b", borderRadius: 16, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 28, fontWeight: 800, color: "#0c0a09", fontFamily: "'Outfit', sans-serif", marginBottom: 24 }}>LG</div>
+                <h1 style={{ fontSize: 32, fontWeight: 800, color: "#fafaf9", fontFamily: "'Outfit', sans-serif", marginBottom: 12 }}>Lead Gen</h1>
 	                <p style={{ color: "#a8a29e", fontSize: 16, lineHeight: 1.6, marginBottom: 32 }}>Find and manage leads in seconds. Let's set up your profile.</p>
                 <div style={{ marginBottom: 24 }}>
                   <label style={{ ...labelStyle, color: "#78716c", textAlign: "left" }}>Your Company Name</label>
@@ -3686,7 +3686,7 @@ Return:
               <div style={{ textAlign: "center", animation: "fadeIn 0.4s ease" }}>
                 <div style={{ fontSize: 48, marginBottom: 16 }}>🎉</div>
                 <h2 style={{ fontSize: 24, fontWeight: 800, color: "#fafaf9", fontFamily: "'Outfit', sans-serif", marginBottom: 8 }}>You're All Set!</h2>
-                <p style={{ color: "#a8a29e", fontSize: 14, marginBottom: 32, lineHeight: 1.6 }}>{companyName ? `${companyName} is` : "Your qualifier is"} ready to go. Want to load some sample leads to see how it works?</p>
+                <p style={{ color: "#a8a29e", fontSize: 14, marginBottom: 32, lineHeight: 1.6 }}>{companyName ? `${companyName} is` : "Your lead gen tool is"} ready to go. Want to load some sample leads to see how it works?</p>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
                   <button onClick={() => { setSetupComplete(true); setTab("prospects"); }} style={{ ...btnPrimary, width: "100%", padding: "14px 40px", fontSize: 15 }}>⚡ Find Prospects →</button>
                   <button onClick={() => { setSetupComplete(true); setTab("dashboard"); loadDemoData(); }} style={{ ...btnSecondary, width: "100%", padding: "12px 40px", background: "#1c1917" }}>Load Demo Leads & Explore</button>
@@ -3784,9 +3784,9 @@ Return:
           <div style={{ maxWidth: 1240, margin: "0 auto", padding: "20px 32px" }} className="app-header">
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 16 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                <div style={{ width: 40, height: 40, background: t.accent, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Outfit', sans-serif", fontWeight: 800, fontSize: 17, color: "#0c0a09" }}>LQ</div>
+                <div style={{ width: 40, height: 40, background: t.accent, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Outfit', sans-serif", fontWeight: 800, fontSize: 17, color: "#0c0a09" }}>LG</div>
                 <div>
-                  <h1 style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.2, fontFamily: "'Outfit', sans-serif" }}>{companyName || "Lead Qualifier"}</h1>
+                  <h1 style={{ fontSize: 20, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.2, fontFamily: "'Outfit', sans-serif" }}>{companyName || "Lead Gen"}</h1>
 	                  <p style={{ fontSize: 11, color: t.textDim, letterSpacing: "0.06em", textTransform: "uppercase" }}>{ind.label} · {leads.length} leads</p>
                 </div>
               </div>
@@ -5026,7 +5026,7 @@ Return:
 
                 <div style={{ marginBottom: 20 }}>
                   <label style={labelStyle}>Custom Role (optional)</label>
-                  <input style={inputStyle} value={indeedCustomRole} onChange={e => setIndeedCustomRole(e.target.value)} placeholder="e.g. Lead Qualifier, Cold Caller, Follow-up Specialist..." />
+                  <input style={inputStyle} value={indeedCustomRole} onChange={e => setIndeedCustomRole(e.target.value)} placeholder="e.g. Lead Finder, Cold Caller, Follow-up Specialist..." />
                 </div>
 
                 <button onClick={handleIndeedSearch} disabled={indeedLoading}

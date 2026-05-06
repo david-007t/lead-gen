@@ -1,6 +1,6 @@
-# Lead Qualifier — Ascend Solutions
+# Lead Gen — Ascend Solutions
 
-AI-powered lead qualification and discovery tool for service businesses. Find real opportunities via web search, score them against your criteria, and manage your pipeline.
+AI-powered lead generation and discovery tool for service businesses. Find real opportunities via web search, score them against your criteria, and manage your pipeline.
 
 ## Quick Deploy with Vercel
 
@@ -16,8 +16,8 @@ AI-powered lead qualification and discovery tool for service businesses. Find re
 ```bash
 git init
 git add .
-git commit -m "Initial commit — Lead Qualifier MVP"
-gh repo create lead-qualifier --private --source=. --push
+git commit -m "Initial commit — Lead Gen MVP"
+gh repo create lead-gen --private --source=. --push
 ```
 
 2. **Deploy to Vercel**
