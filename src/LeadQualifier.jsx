@@ -545,13 +545,13 @@ function sleep(ms) {
 // ─── PROSPECT CLASSIFICATION ──────────────────────────────────
 function classifyProspect(prospect) {
   const blank = (s) => !s || !s.trim() || /not found|n\/a|unknown/i.test(s.trim());
-  const hasOwner = !blank(prospect.ownerName || prospect.decisionMakerName);
   const hasPhone = !blank(prospect.phone);
   const hasEmail = !blank(prospect.email);
 
-  if (hasOwner && hasPhone && hasEmail) return { tier: "WARM", emoji: "🟢", color: "#34d399" };
-  if (hasPhone || hasEmail) return { tier: "COOL", emoji: "🟡", color: "#f59e0b" };
-  return { tier: "COLD", emoji: "🔴", color: "#f87171" };
+  if (hasPhone && hasEmail) return { tier: "BOTH", emoji: "🟢", color: "#34d399" };
+  if (hasPhone) return { tier: "PHONE", emoji: "🟡", color: "#f59e0b" };
+  if (hasEmail) return { tier: "EMAIL", emoji: "🔵", color: "#60a5fa" };
+  return { tier: "NOT ACTIONABLE", emoji: "🔴", color: "#f87171" };
 }
 
 // ─── THEME DEFINITIONS ────────────────────────────────────────
@@ -760,27 +760,25 @@ function toDetailItems(entries) {
 
 function buildProspectPipelineDetails(prospect, emailDraft = "", cityHint = "") {
   return {
-    sourceLabel: "Find My Clients",
+    sourceLabel: "Find Leads",
     sections: [
       {
-        title: "Decision Maker Snapshot",
+        title: "Company Snapshot",
         items: toDetailItems([
           ["Company Name", prospect.businessName],
-          ["Decision Maker Name", prospect.ownerName],
-          ["Title", prospect.title],
-          ["Email", prospect.email],
-          ["Email Confidence", prospect.emailConfidence],
           ["Phone", prospect.phone],
-          ["LinkedIn URL", prospect.linkedInUrl],
+          ["Email", prospect.email],
+          ["Address", prospect.address],
+          ["Website Status", prospect.websiteStatus],
           ["Source URL", prospect.sourceUrl],
+          ["Proof", prospect.proofReason],
           ["Region", cityHint || prospect.address],
         ]),
       },
       {
         title: "Sales Context",
         items: toDetailItems([
-          ["Buying Signal", prospect.buyingSignal],
-          ["Personalized First Line", prospect.personalizedFirstLine],
+          ["Pitch Angle", prospect.pitchAngle],
           ["Niche", prospect.niche],
         ]),
       },
@@ -1126,26 +1124,26 @@ function buildLeadListPipelineDetails(lead, columns = [], outreachDraft = "") {
 }
 
 function buildProspectLeadResult(prospect) {
-  const hasDecisionMaker = !!String(prospect?.ownerName || "").trim();
-  const confidence = String(prospect?.emailConfidence || "").toUpperCase();
-  const hasStrongEmail = !!String(prospect?.email || "").trim() && ["HIGH", "MEDIUM"].includes(confidence);
-  const hasSourceEvidence = !!String(prospect?.sourceUrl || "").trim() || !!String(prospect?.linkedInUrl || "").trim();
+  const hasPhone = !!String(prospect?.phone || "").trim();
+  const hasEmail = !!String(prospect?.email || "").trim();
+  const hasSourceEvidence = !!String(prospect?.sourceUrl || "").trim();
+  const hasWebsiteGap = !!String(prospect?.websiteStatus || prospect?.proofReason || "").trim();
 
   const criteria = [
     {
-      name: "Decision Maker",
-      pass: hasDecisionMaker,
-      detail: hasDecisionMaker ? "Named contact found" : "No named decision maker saved",
+      name: "Actionable Contact",
+      pass: hasPhone || hasEmail,
+      detail: hasPhone && hasEmail ? "Phone and email found" : hasPhone ? "Phone found" : hasEmail ? "Email found" : "No phone or email found",
     },
     {
-      name: "Email Quality",
-      pass: hasStrongEmail,
-      detail: hasStrongEmail ? `${confidence} confidence email found` : "No strong email found",
+      name: "Website Gap",
+      pass: hasWebsiteGap,
+      detail: hasWebsiteGap ? (prospect.websiteStatus || prospect.proofReason) : "No website-gap proof saved",
     },
     {
       name: "Source Evidence",
       pass: hasSourceEvidence,
-      detail: hasSourceEvidence ? "Public source or profile saved" : "No source evidence saved",
+      detail: hasSourceEvidence ? "Public source saved" : "No source evidence saved",
     },
   ];
 
@@ -1155,7 +1153,7 @@ function buildProspectLeadResult(prospect) {
     criteria,
     score,
     total,
-    qualified: score >= 2,
+    qualified: (hasPhone || hasEmail) && hasWebsiteGap && hasSourceEvidence,
   };
 }
 
@@ -1661,28 +1659,30 @@ export default function LeadQualifier() {
         const p = {
           id: Date.now() + i + Math.random(),
           businessName: clean(r.businessName || r.companyName || r["Company Name"]),
-          ownerName: clean(r.decisionMakerName || r.ownerName || r.name || r["Decision Maker Name"]),
-          title: clean(r.title || r["Title"]),
+          ownerName: "",
+          title: "",
+          phone: clean(r.phone || r["Phone"] || r["Best Phone"]),
           email: clean(r.email || r["Email"]),
-          emailConfidence: clean(r.emailConfidence || r["Email Confidence"] || r["Email Confidence (HIGH / MEDIUM / LOW)"]).toUpperCase(),
-          linkedInUrl: clean(r.linkedInUrl || r.linkedinUrl || r.linkedIn || r.linkedin || r["LinkedIn URL"]),
-          sourceUrl: clean(r.sourceUrl || r.source || r["Source URL"]),
-          buyingSignal: clean(r.buyingSignal || r["Buying Signal"]),
-          personalizedFirstLine: clean(r.personalizedFirstLine || r["Personalized First Line"]),
+          emailConfidence: "",
+          linkedInUrl: "",
+          address: clean(r.address || r["Address"] || r.region || r["Region"]),
+          sourceUrl: clean(r.sourceUrl || r.source || r["Source URL"] || r["Proof URL"]),
+          websiteStatus: clean(r.websiteStatus || r["Website Status"]),
+          proofReason: clean(r.proofReason || r.proof || r["Proof"] || r["Proof / Reason"]),
+          pitchAngle: clean(r.pitchAngle || r["Pitch Angle"]),
+          buyingSignal: clean(r.websiteStatus || r["Website Status"] || r.proofReason || r.proof || r["Proof"]),
+          personalizedFirstLine: clean(r.pitchAngle || r["Pitch Angle"]),
           niche: prospectNiche,
-          phone: "",
-          address: "",
           buyingSignals: [],
           opportunities: [],
           classification: null,
         };
-        if (!["HIGH", "MEDIUM", "LOW"].includes(p.emailConfidence)) p.emailConfidence = isPlausibleEmail(p.email) ? "MEDIUM" : "";
         p.buyingSignals = p.buyingSignal ? [p.buyingSignal] : [];
         p.opportunities = p.personalizedFirstLine ? [p.personalizedFirstLine] : [];
         p.classification = classifyProspect(p);
         return p;
       })
-      .filter(p => p.businessName && p.ownerName);
+      .filter(p => p.businessName && (p.phone || isPlausibleEmail(p.email)));
 
     const runAnthropicSearch = async ({ maxTokens, system, prompt, action }) => {
       const { response: resp, data } = await callAnthropic(action || "Find My Clients Search", {
@@ -1707,9 +1707,17 @@ export default function LeadQualifier() {
         maxTokens: 1200,
         action: "Find My Clients Company Search",
         system: "You are a B2B company researcher. Use web search to find real independent businesses. Return ONLY a raw JSON array. No markdown, no explanation, no placeholder text.",
-        prompt: `Find ${batchSize} real boutique or independent ${prospectNiche} businesses in ${prospectCity.trim()}.
+        prompt: `Find ${batchSize} real local ${prospectNiche} businesses in ${prospectCity.trim()} that do not have a usable standalone website.
 
-Exclude national chains, franchises, marketplaces, directories, and lead sellers.
+Practical no-website definition:
+- No website listed on public sources.
+- Or only a Facebook, Instagram, Yelp, directory, booking page, marketplace profile, or Google Business Profile.
+- Or the listed website is broken, parked, dead, empty, under construction, or a generic placeholder.
+
+Exclude:
+- Companies with a normal usable standalone website.
+- National chains, franchises, marketplaces, directories, and lead sellers.
+- Companies without a phone number or email address.
 ${existingNames ? `Do not repeat these companies: ${existingNames}.` : ""}
 
 Return exactly this JSON array schema:
@@ -1718,15 +1726,22 @@ Return exactly this JSON array schema:
     "Company Name": "",
     "Address": "",
     "Phone": "",
-    "Website Domain": "",
-    "Buying Signal": ""
+    "Email": "",
+    "Source URL": "",
+    "Website Status": "No website found",
+    "Proof": "",
+    "Pitch Angle": ""
   }
 ]
 
 Hard rules:
 - No placeholder text like "Not found", "N/A", "Unknown", or "None".
-- The buying signal must be one specific sentence explaining why this company is a good prospect.
-- Return real companies only.
+- Source URL must be a public page proving the business exists or showing its limited web presence, such as Google Business Profile, Yelp, Facebook, Instagram, chamber/directory page, or another public listing.
+- Website Status must be one of: "No website found", "Social-only presence", "Directory-only presence", "Broken website", "Placeholder website".
+- Proof must explain why this qualifies as a practical no-website lead.
+- Pitch Angle must be one caller-ready sentence about helping the business get a real website.
+- Return only actionable companies with phone and/or email.
+- Return real local businesses only.
 
 This is discovery batch ${batchIndex}.`,
       });
@@ -1863,92 +1878,43 @@ This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
 
     try {
       const targetCount = prospectCount;
-      const minimumRows = Math.max(1, Math.ceil(targetCount * 0.67));
       const DISCOVERY_BATCH_SIZE = 5;
       const discoveryBatches = Math.ceil(targetCount / DISCOVERY_BATCH_SIZE);
-      let companies = [];
+      let results = [];
 
       for (let discoveryIndex = 0; discoveryIndex < discoveryBatches; discoveryIndex++) {
-        setProspectProgress({ phase: "discovery", current: companies.length, total: targetCount, batchIndex: discoveryIndex + 1, totalBatches: discoveryBatches });
+        setProspectProgress({ phase: "discovery", current: results.length, total: targetCount, batchIndex: discoveryIndex + 1, totalBatches: discoveryBatches });
         try {
-          const remaining = targetCount - companies.length;
+          const remaining = targetCount - results.length;
           const batch = await runCompanyDiscoveryBatch({
             batchSize: Math.min(DISCOVERY_BATCH_SIZE, remaining),
             batchIndex: discoveryIndex + 1,
-            existingCompanies: companies,
+            existingCompanies: results.map(p => ({ "Company Name": p.businessName })),
           });
-          const seen = new Set(companies.map(company => columnKey(company["Company Name"] || company.companyName || company.businessName)));
-          const fresh = batch.filter(company => {
-            const key = columnKey(company["Company Name"] || company.companyName || company.businessName);
+          const seen = new Set(results.map(p => columnKey(p.businessName)));
+          const fresh = normalizeProspectResults(batch).filter(prospect => {
+            const key = columnKey(prospect.businessName);
             if (!key || seen.has(key)) return false;
             seen.add(key);
             return true;
           });
-          companies = [...companies, ...fresh].slice(0, targetCount);
+          results = [...results, ...fresh].slice(0, targetCount);
+          setProspects(results);
+          if (results.length >= targetCount) break;
         } catch (err) {
-          if (companies.length === 0) throw err;
+          if (results.length === 0) throw err;
           break;
         }
       }
 
-      if (!companies.length) {
-        setProspectError(`No independent ${prospectNiche} companies found in ${prospectCity.trim()}. Try a broader city or niche.`);
+      if (!results.length) {
+        setProspectError(`No actionable no-website ${prospectNiche} leads found in ${prospectCity.trim()}. Try a broader city, state, or niche.`);
         setProspectLoading(false); setProspectProgress(null); return;
       }
 
-      const ENRICH_BATCH_SIZE = 2;
-      const batches = [];
-      for (let i = 0; i < companies.length; i += ENRICH_BATCH_SIZE) {
-        batches.push(companies.slice(i, i + ENRICH_BATCH_SIZE));
-      }
-
-      let results = [];
-      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-        setProspectProgress({
-          phase: "enriching",
-          current: results.length,
-          total: Math.min(targetCount, companies.length),
-          batchIndex: batchIndex + 1,
-          totalBatches: batches.length,
-        });
-
-        let batchResults = [];
-        try {
-          batchResults = await runDecisionMakerBatch(batches[batchIndex], batchIndex + 1, 1);
-          const batchMinimumRows = Math.max(1, Math.ceil(batches[batchIndex].length * 0.67));
-          if (!qualityPasses(batchResults, batchMinimumRows)) {
-            setProspectProgress({ phase: "retrying", current: results.length, total: Math.min(targetCount, companies.length), batchIndex: batchIndex + 1, totalBatches: batches.length });
-            const retryResults = await runDecisionMakerBatch(batches[batchIndex], batchIndex + 1, 2);
-            if (qualityPasses(retryResults, batchMinimumRows) || retryResults.length > batchResults.length) {
-              batchResults = retryResults;
-            }
-          }
-          batchResults = await enrichProspectEmails(batchResults, batches[batchIndex], {
-            current: results.length,
-            total: Math.min(targetCount, companies.length),
-            batchIndex: batchIndex + 1,
-            totalBatches: batches.length,
-          });
-        } catch (err) {
-          if (results.length === 0) throw err;
-          setProspectError(`Loaded ${results.length} decision makers so far. One enrichment batch timed out, so partial results are shown.`);
-          continue;
-        }
-
-        results = [...results, ...batchResults].slice(0, targetCount);
-        setProspects(results);
-        if (results.length >= targetCount) break;
-      }
-
-      if (results.length === 0) {
-        setProspectError(`No decision-maker leads found for ${prospectNiche} in ${prospectCity.trim()}. Try a broader city or niche.`);
-        setProspectLoading(false); setProspectProgress(null); return;
-      }
-
+      const withPhone = results.filter(row => String(row.phone || "").trim()).length;
       const withEmail = results.filter(row => isPlausibleEmail(row.email)).length;
-      const qualityNote = qualityPasses(results, minimumRows) ? "" : " Quality is below the 70% email target.";
-      if (qualityNote) setProspectError(`Returned ${results.length} decision makers with ${withEmail} plausible emails.${qualityNote}`);
-      showToast(`Found ${results.length} decision makers · ${withEmail} with plausible emails`);
+      showToast(`Found ${results.length} no-website leads · ${withPhone} phone · ${withEmail} email`);
     } catch (err) {
       setProspectError("Search failed — " + (err?.message || "unexpected error. Please try again."));
     }
@@ -3332,13 +3298,13 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
     savePipelineLead(newLead);
   };
 
-  // ─── ADD FIND MY CLIENTS RESULT TO PIPELINE ───────────────
+  // ─── ADD FIND LEADS RESULT TO PIPELINE ────────────────────
   const handleAddProspectToPipeline = (prospect) => {
     const savedDraft = emailDrafts[prospect.id] || "";
     const newLead = {
       id: Date.now() + Math.random(),
       createdAt: Date.now(),
-      name: prospect.ownerName || prospect.businessName,
+      name: prospect.businessName,
       company: prospect.businessName || "Unknown Company",
       email: prospect.email || "",
       phone: prospect.phone || "",
@@ -3347,13 +3313,11 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
       location: prospectCity || "",
       zipCode: "",
       timeline: "",
-      source: prospect.sourceUrl || "Find My Clients",
+      source: prospect.sourceUrl || "Find Leads",
       description: [
-        prospect.title ? `Title: ${prospect.title}` : "",
-        prospect.emailConfidence ? `Email confidence: ${prospect.emailConfidence}` : "",
-        prospect.linkedInUrl ? `LinkedIn: ${prospect.linkedInUrl}` : "",
-        prospect.buyingSignal || "",
-        prospect.personalizedFirstLine ? `First line: ${prospect.personalizedFirstLine}` : "",
+        prospect.websiteStatus ? `Website status: ${prospect.websiteStatus}` : "",
+        prospect.proofReason ? `Proof: ${prospect.proofReason}` : "",
+        prospect.pitchAngle ? `Pitch angle: ${prospect.pitchAngle}` : "",
       ].filter(Boolean).join("\n"),
       followUp: "new",
       result: buildProspectLeadResult(prospect),
@@ -3870,8 +3834,7 @@ Return:
             <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: t.textFaint, marginRight: 4, whiteSpace: "nowrap" }}>Mode:</span>
             {[
               { id: "leadlist",  tab: "leadlist",  label: "🎯 Build a Lead List" },
-              { id: "indeed",    tab: "indeed",    label: "⚡ Find AI Prospects" },
-              { id: "prospects", tab: "prospects", label: "🔍 Find My Clients" },
+              { id: "prospects", tab: "prospects", label: "🔍 Find Leads" },
               { id: "shiplist",  tab: "shiplist",  label: "📋 Ship List" },
             ].map(m => {
               const active = mode === m.id;
@@ -3887,8 +3850,7 @@ Return:
           <div style={{ maxWidth: 1240, margin: "0 auto", padding: "0 32px", display: "flex", gap: 2, overflowX: "auto" }} className="tab-bar">
             {({
               leadlist:  [{ id: "leadlist",  label: "Build a Lead List",   count: leadListResults.length || undefined }, { id: "leads", label: "Pipeline", count: mode === "leadlist" ? modeLeads.length || undefined : leads.filter(l => (l.sourceMode || "leadlist") === "leadlist").length || undefined }, { id: "dashboard", label: "Dashboard" }],
-              indeed:    [{ id: "indeed",    label: "Find AI Prospects" }, { id: "queue", label: "Outreach" }, { id: "leads", label: "Pipeline", count: leads.filter(l => l.sourceMode === "indeed").length || undefined }, { id: "dashboard", label: "Dashboard" }],
-              prospects: [{ id: "prospects", label: "Find My Clients" }, { id: "leads", label: "Pipeline", count: mode === "prospects" ? modeLeads.length || undefined : leads.filter(l => l.sourceMode === "prospects").length || undefined }, { id: "dashboard", label: "Dashboard" }],
+              prospects: [{ id: "prospects", label: "Find Leads" }, { id: "leads", label: "Pipeline", count: mode === "prospects" ? modeLeads.length || undefined : leads.filter(l => l.sourceMode === "prospects").length || undefined }, { id: "dashboard", label: "Dashboard" }],
               shiplist:  [{ id: "shiplist",  label: "Ship List",           count: shipListResults.length || undefined }, { id: "leads", label: "Pipeline", count: leads.filter(l => l.sourceMode === "shiplist").length || undefined }, { id: "dashboard", label: "Dashboard" }],
             }[mode] || []).map(tb => (
               <button key={tb.id} onClick={() => setTab(tb.id)} style={{ padding: "12px 20px", background: tab === tb.id ? t.accent : "transparent", color: tab === tb.id ? "#0c0a09" : t.textMuted, border: "none", borderBottom: tab === tb.id ? `3px solid ${t.accent}` : "3px solid transparent", cursor: "pointer", fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: tab === tb.id ? 700 : 500, letterSpacing: "0.02em", transition: "all 0.2s", display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}>
@@ -4718,15 +4680,15 @@ Return:
           {tab === "prospects" && (
             <div style={{ animation: "fadeIn 0.3s ease" }}>
               <div style={{ marginBottom: 24 }}>
-                <h2 style={{ fontSize: 20, fontWeight: 700, fontFamily: "'Outfit', sans-serif", marginBottom: 6 }}>🎯 Prospect Search</h2>
-                <p style={{ color: t.textDim, fontSize: 14, lineHeight: 1.5 }}>Find independent businesses, enrich one decision maker, and return a focused outreach-ready list.</p>
+                <h2 style={{ fontSize: 20, fontWeight: 700, fontFamily: "'Outfit', sans-serif", marginBottom: 6 }}>🔍 Find Leads</h2>
+                <p style={{ color: t.textDim, fontSize: 14, lineHeight: 1.5 }}>Find local businesses without a usable website, with phone or email so they are actually actionable.</p>
               </div>
 
               <div style={cardStyle}>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
                   <div>
-                    <label style={labelStyle}>City or Region *</label>
-                    <input style={{ ...inputStyle }} value={prospectCity} onChange={e => setProspectCity(e.target.value)} placeholder="Austin TX" />
+                    <label style={labelStyle}>City + State *</label>
+                    <input style={{ ...inputStyle }} value={prospectCity} onChange={e => setProspectCity(e.target.value)} placeholder="Austin, TX" />
                   </div>
                   <div>
                     <label style={labelStyle}>Business Niche *</label>
@@ -4746,43 +4708,24 @@ Return:
                   </div>
                 </div>
 
-                <div style={{ marginBottom: 20 }}>
-                  <label style={labelStyle}>Filter by Buying Signals (optional)</label>
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8, marginTop: 8 }}>
-                    {[
-                      { key: "hiringOnIndeed", label: "☑ Hiring on Indeed" },
-                      { key: "badWebsite", label: "☑ No/bad website" },
-                      { key: "lowReviews", label: "☑ Low Google reviews" },
-                      { key: "noSocial", label: "☑ No social media" },
-                      { key: "runningAds", label: "☑ Running ads" },
-                      { key: "recentlyStarted", label: "☑ Recently started" },
-                    ].map(f => (
-                      <label key={f.key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: t.bgHover, borderRadius: 6, cursor: "pointer", fontSize: 13 }}>
-                        <input type="checkbox" checked={prospectFilters[f.key]} onChange={e => setProspectFilters(p => ({ ...p, [f.key]: e.target.checked }))} style={{ cursor: "pointer" }} />
-                        <span>{f.label}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
                 <button onClick={handleProspectSearch} disabled={prospectLoading} style={{ ...btnPrimary, padding: "12px 32px", fontSize: 15, opacity: prospectLoading ? 0.6 : 1, cursor: prospectLoading ? "wait" : "pointer" }}>
                   {prospectLoading
                     ? (prospectProgress?.phase === "discovery"
-                        ? "⏳ Finding businesses..."
+                        ? "⏳ Finding no-website leads..."
                         : prospectProgress?.phase === "enriching"
                           ? `⏳ Enriching ${prospectProgress.current}/${prospectProgress.total}...`
                           : prospectProgress?.phase === "retrying"
                             ? "⏳ Retrying for better quality..."
                             : "⏳ Searching...")
-                    : "🔍 Search Prospects"}
+                    : "🔍 Find Leads"}
                 </button>
               </div>
 
               {prospectLoading && (
                 <div style={{ ...cardStyle, textAlign: "center", padding: "48px 24px" }}>
                   <div style={{ fontSize: 36, marginBottom: 16, animation: "pulse 1.2s infinite" }}>🔍</div>
-                  <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Finding {prospectNiche} businesses in {prospectCity}...</div>
-                  <div style={{ fontSize: 13, color: t.textDim }}>Finding companies, decision makers, emails, and specific first lines</div>
+                  <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Finding {prospectNiche} businesses without websites in {prospectCity}...</div>
+                  <div style={{ fontSize: 13, color: t.textDim }}>Checking public sources for phone, email, source proof, and website status</div>
                 </div>
               )}
 
@@ -4796,8 +4739,8 @@ Return:
                 <div style={{ marginTop: 20 }}>
                   <div style={{ marginBottom: 16, fontSize: 15, fontWeight: 700 }}>
                     {prospectLoading
-                      ? `${prospects.length} prospects loaded so far...`
-                      : `Found ${prospects.length} prospects`}
+                      ? `${prospects.length} leads loaded so far...`
+                      : `Found ${prospects.length} leads`}
                   </div>
                   <div style={{ display: "grid", gap: 16 }}>
                     {prospects.map(p => {
@@ -4828,14 +4771,13 @@ Return:
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 12 }}>
                           {[
                             ["Company Name", p.businessName],
-                            ["Decision Maker Name", p.ownerName],
-                            ["Title", p.title],
+                            ["Phone", p.phone],
                             ["Email", p.email],
-                            ["Email Confidence", p.emailConfidence],
-                            ["LinkedIn URL", p.linkedInUrl],
+                            ["Address", p.address],
+                            ["Website Status", p.websiteStatus],
                             ["Source URL", p.sourceUrl],
-                            ["Buying Signal", p.buyingSignal],
-                            ["Personalized First Line", p.personalizedFirstLine],
+                            ["Proof", p.proofReason],
+                            ["Pitch Angle", p.pitchAngle],
                           ].map(([label, value]) => (
                             <div key={label} style={{ minWidth: 0 }}>
                               <div style={{ fontSize: 10, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 4 }}>{label}</div>
@@ -4854,15 +4796,6 @@ Return:
                             disabled={inPipeline}
                             style={{ ...btnPrimary, fontSize: 12, padding: "8px 16px", opacity: inPipeline ? 0.75 : 1, cursor: inPipeline ? "default" : "pointer" }}>
                             {inPipeline ? "✓ In Pipeline" : "+ Add to Pipeline"}
-                          </button>
-                          <button onClick={() => handleDraftEmail(p)} disabled={draftingEmail === p.id} style={{ ...btnSecondary, fontSize: 12 }}>
-                            {draftingEmail === p.id ? "Drafting..." : emailDrafts[p.id] ? "Re-draft Email" : "Draft Email"}
-                          </button>
-                          <button
-                            onClick={() => handleSendProspectEmail(p)}
-                            disabled={!canSend || sendingProspectId === p.id}
-                            style={{ ...btnSecondary, fontSize: 12, opacity: !canSend && sendingProspectId !== p.id ? 0.6 : 1 }}>
-                            {sent ? "✓ Sent" : sendingProspectId === p.id ? "Sending..." : "Send"}
                           </button>
                         </div>
 
