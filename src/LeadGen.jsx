@@ -3688,9 +3688,7 @@ Return:
                 <h2 style={{ fontSize: 24, fontWeight: 800, color: "#fafaf9", fontFamily: "'Outfit', sans-serif", marginBottom: 8 }}>You're All Set!</h2>
                 <p style={{ color: "#a8a29e", fontSize: 14, marginBottom: 32, lineHeight: 1.6 }}>{companyName ? `${companyName} is` : "Your lead gen tool is"} ready to go. Want to load some sample leads to see how it works?</p>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <button onClick={() => { setSetupComplete(true); setTab("prospects"); }} style={{ ...btnPrimary, width: "100%", padding: "14px 40px", fontSize: 15 }}>⚡ Find Prospects →</button>
-                  <button onClick={() => { setSetupComplete(true); setTab("dashboard"); loadDemoData(); }} style={{ ...btnSecondary, width: "100%", padding: "12px 40px", background: "#1c1917" }}>Load Demo Leads & Explore</button>
-                  <button onClick={() => { setSetupComplete(true); setTab("add"); }} style={{ ...btnSecondary, width: "100%", padding: "12px 40px", background: "#1c1917" }}>Start Empty — I'll Add My Own</button>
+                  <button onClick={() => { setSetupComplete(true); setMode("prospects"); setTab("prospects"); }} style={{ ...btnPrimary, width: "100%", padding: "14px 40px", fontSize: 15 }}>Find Leads →</button>
                   <button onClick={() => setSetupStep(1)} style={{ background: "transparent", border: "none", color: "#78716c", cursor: "pointer", fontSize: 13, fontFamily: "'DM Sans', sans-serif", padding: 8 }}>← Back to Criteria</button>
                 </div>
               </div>
@@ -4317,7 +4315,6 @@ Return:
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24, flexWrap: "wrap", gap: 12 }}>
                 <h2 style={{ fontSize: 18, fontWeight: 700, fontFamily: "'Outfit', sans-serif" }}>New Lead Entry</h2>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <button onClick={loadDemoData} style={btnSecondary}>Load Demo Data</button>
                   <button onClick={() => setShowUpload(!showUpload)} style={btnSecondary}>{showUpload ? "✕ Close Upload" : "↑ CSV Upload"}</button>
                 </div>
               </div>
@@ -4368,11 +4365,9 @@ Return:
                 <div style={{ textAlign: "center", padding: "80px 20px" }}>
                   <div style={{ fontSize: 48, marginBottom: 16, opacity: 0.3 }}>🏗</div>
                   <h3 style={{ fontSize: 18, fontWeight: 600, color: t.textMuted, marginBottom: 8 }}>No leads yet</h3>
-                  <p style={{ color: t.textFaint, fontSize: 14, marginBottom: 24 }}>Find real opportunities or add leads manually</p>
+                  <p style={{ color: t.textFaint, fontSize: 14, marginBottom: 24 }}>Find actionable companies without usable websites</p>
                   <div style={{ display: "flex", gap: 12, justifyContent: "center", flexWrap: "wrap" }}>
-                    <button onClick={() => setTab("prospects")} style={btnPrimary}>⚡ Find Prospects</button>
-                    <button onClick={() => setTab("add")} style={btnSecondary}>+ Add Manually</button>
-                    <button onClick={loadDemoData} style={btnSecondary}>Load Demo Data</button>
+                    <button onClick={() => { setMode("prospects"); setTab("prospects"); }} style={btnPrimary}>Find Leads</button>
                   </div>
                 </div>
               ) : (
