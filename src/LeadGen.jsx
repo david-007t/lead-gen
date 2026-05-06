@@ -1618,14 +1618,25 @@ export default function LeadGen() {
 
   // ─── PROSPECT SEARCH (two-step decision maker enrichment) ───
   const handleProspectSearch = async () => {
-    if (!prospectCity.trim()) { showToast("Enter a city or region", "error"); return; }
+    const locationText = prospectCity.trim();
+    if (!locationText) { showToast("Enter a city and state", "error"); return; }
+    if (!/,\s*[A-Za-z]{2}\b/.test(locationText)) {
+      showToast("Enter city and state, e.g. San Jose, CA", "error");
+      return;
+    }
     setProspectLoading(true);
     setProspectError(null);
     setProspects([]);
     setProspectProgress({ phase: "searching" });
     const searchNiche = prospectNiche.trim();
-    const searchTarget = searchNiche || "local service businesses such as contractors, cleaners, landscapers, salons, auto shops, restaurants, dentists, and other local operators";
+    const isGeneralSearch = !searchNiche;
     const displayTarget = searchNiche || "local businesses";
+    const generalLeadFocusAreas = [
+      "home service businesses such as roofers, plumbers, HVAC companies, electricians, painters, and landscapers",
+      "personal service businesses such as salons, barbers, med spas, cleaners, tutors, and fitness studios",
+      "street-level local operators such as auto repair shops, restaurants, food trucks, laundromats, and small retailers",
+      "professional local practices such as dentists, chiropractors, therapists, accountants, and small law offices",
+    ];
 
     const parseProspectJSON = (fullText) => {
       let parsed = null;
@@ -1700,16 +1711,19 @@ export default function LeadGen() {
       return parseProspectJSON(text) || [];
     };
 
-    const runCompanyDiscoveryBatch = async ({ batchSize, batchIndex, existingCompanies }) => {
+    const runCompanyDiscoveryBatch = async ({ batchSize, batchIndex, existingCompanies, focusArea }) => {
       const existingNames = existingCompanies
         .map(company => clean(company["Company Name"] || company.companyName || company.businessName))
         .filter(Boolean)
         .join(", ");
+      const batchTarget = searchNiche || focusArea || generalLeadFocusAreas[0];
       return runAnthropicSearch({
-        maxTokens: 1200,
+        maxTokens: 900,
         action: "Find My Clients Company Search",
         system: "You are a B2B company researcher. Use web search to find real independent businesses. Return ONLY a raw JSON array. No markdown, no explanation, no placeholder text.",
-        prompt: `Find ${batchSize} real ${searchTarget} in ${prospectCity.trim()} that do not have a usable standalone website.
+        prompt: `Find ${batchSize} real ${batchTarget} in ${locationText} that do not have a usable standalone website.
+
+Search only this focused category for this batch. Do not broaden to every business type in the city.
 
 Practical no-website definition:
 - No website listed on public sources.
@@ -1880,7 +1894,7 @@ This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
 
     try {
       const targetCount = prospectCount;
-      const DISCOVERY_BATCH_SIZE = 5;
+      const DISCOVERY_BATCH_SIZE = isGeneralSearch ? 2 : 3;
       const discoveryBatches = Math.ceil(targetCount / DISCOVERY_BATCH_SIZE);
       let results = [];
 
@@ -1892,6 +1906,7 @@ This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
             batchSize: Math.min(DISCOVERY_BATCH_SIZE, remaining),
             batchIndex: discoveryIndex + 1,
             existingCompanies: results.map(p => ({ "Company Name": p.businessName })),
+            focusArea: generalLeadFocusAreas[discoveryIndex % generalLeadFocusAreas.length],
           });
           const seen = new Set(results.map(p => columnKey(p.businessName)));
           const fresh = normalizeProspectResults(batch).filter(prospect => {
@@ -1910,7 +1925,7 @@ This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
       }
 
       if (!results.length) {
-        setProspectError(`No actionable no-website ${displayTarget} leads found in ${prospectCity.trim()}. Try a broader city, state, or niche.`);
+        setProspectError(`No actionable no-website ${displayTarget} leads found in ${locationText}. Try a nearby city, fewer rows, or a specific niche.`);
         setProspectLoading(false); setProspectProgress(null); return;
       }
 
@@ -1918,7 +1933,11 @@ This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
       const withEmail = results.filter(row => isPlausibleEmail(row.email)).length;
       showToast(`Found ${results.length} no-website leads · ${withPhone} phone · ${withEmail} email`);
     } catch (err) {
-      setProspectError("Search failed — " + (err?.message || "unexpected error. Please try again."));
+      const message = String(err?.message || "");
+      const timedOut = /timed? out|took too long|timeout|504/i.test(message);
+      setProspectError(timedOut
+        ? "Search took too long. Try 5 results, add a niche, or use a smaller nearby city."
+        : "Search failed — " + (message || "unexpected error. Please try again."));
     }
 
     setProspectProgress(null);
