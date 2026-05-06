@@ -1619,11 +1619,13 @@ export default function LeadGen() {
   // ─── PROSPECT SEARCH (two-step decision maker enrichment) ───
   const handleProspectSearch = async () => {
     if (!prospectCity.trim()) { showToast("Enter a city or region", "error"); return; }
-    if (!prospectNiche.trim()) { showToast("Enter a business niche", "error"); return; }
     setProspectLoading(true);
     setProspectError(null);
     setProspects([]);
     setProspectProgress({ phase: "searching" });
+    const searchNiche = prospectNiche.trim();
+    const searchTarget = searchNiche || "local service businesses such as contractors, cleaners, landscapers, salons, auto shops, restaurants, dentists, and other local operators";
+    const displayTarget = searchNiche || "local businesses";
 
     const parseProspectJSON = (fullText) => {
       let parsed = null;
@@ -1672,7 +1674,7 @@ export default function LeadGen() {
           pitchAngle: clean(r.pitchAngle || r["Pitch Angle"]),
           buyingSignal: clean(r.websiteStatus || r["Website Status"] || r.proofReason || r.proof || r["Proof"]),
           personalizedFirstLine: clean(r.pitchAngle || r["Pitch Angle"]),
-          niche: prospectNiche,
+          niche: searchNiche,
           buyingSignals: [],
           opportunities: [],
           classification: null,
@@ -1707,7 +1709,7 @@ export default function LeadGen() {
         maxTokens: 1200,
         action: "Find My Clients Company Search",
         system: "You are a B2B company researcher. Use web search to find real independent businesses. Return ONLY a raw JSON array. No markdown, no explanation, no placeholder text.",
-        prompt: `Find ${batchSize} real local ${prospectNiche} businesses in ${prospectCity.trim()} that do not have a usable standalone website.
+        prompt: `Find ${batchSize} real ${searchTarget} in ${prospectCity.trim()} that do not have a usable standalone website.
 
 Practical no-website definition:
 - No website listed on public sources.
@@ -1908,7 +1910,7 @@ This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
       }
 
       if (!results.length) {
-        setProspectError(`No actionable no-website ${prospectNiche} leads found in ${prospectCity.trim()}. Try a broader city, state, or niche.`);
+        setProspectError(`No actionable no-website ${displayTarget} leads found in ${prospectCity.trim()}. Try a broader city, state, or niche.`);
         setProspectLoading(false); setProspectProgress(null); return;
       }
 
@@ -4686,8 +4688,8 @@ Return:
                     <input style={{ ...inputStyle }} value={prospectCity} onChange={e => setProspectCity(e.target.value)} placeholder="Austin, TX" />
                   </div>
                   <div>
-                    <label style={labelStyle}>Business Niche *</label>
-                    <input style={{ ...inputStyle }} value={prospectNiche} onChange={e => setProspectNiche(e.target.value)} placeholder="HVAC, roofing, plumbing..." />
+                    <label style={labelStyle}>Business Niche <span style={{ color: t.textFaint, fontWeight: 400, textTransform: "none", fontSize: 10 }}>(optional)</span></label>
+                    <input style={{ ...inputStyle }} value={prospectNiche} onChange={e => setProspectNiche(e.target.value)} placeholder="HVAC, roofing, plumbing... or leave blank" />
                   </div>
                 </div>
 
@@ -4719,7 +4721,7 @@ Return:
               {prospectLoading && (
                 <div style={{ ...cardStyle, textAlign: "center", padding: "48px 24px" }}>
                   <div style={{ fontSize: 36, marginBottom: 16, animation: "pulse 1.2s infinite" }}>🔍</div>
-                  <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Finding {prospectNiche} businesses without websites in {prospectCity}...</div>
+                  <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Finding {prospectNiche.trim() || "local"} businesses without websites in {prospectCity}...</div>
                   <div style={{ fontSize: 13, color: t.textDim }}>Checking public sources for phone, email, source proof, and website status</div>
                 </div>
               )}
