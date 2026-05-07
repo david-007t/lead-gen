@@ -548,10 +548,20 @@ function classifyProspect(prospect) {
   const hasPhone = !blank(prospect.phone);
   const hasEmail = !blank(prospect.email);
 
-  if (hasPhone && hasEmail) return { tier: "BOTH", emoji: "🟢", color: "#34d399" };
-  if (hasPhone) return { tier: "PHONE", emoji: "🟡", color: "#f59e0b" };
-  if (hasEmail) return { tier: "EMAIL", emoji: "🔵", color: "#60a5fa" };
+  if (hasPhone && hasEmail) return { tier: "Phone + email", emoji: "🟢", color: "#34d399" };
+  if (hasPhone) return { tier: "Phone-only", emoji: "🟡", color: "#f59e0b" };
+  if (hasEmail) return { tier: "Email-only", emoji: "🔵", color: "#60a5fa" };
   return { tier: "NOT ACTIONABLE", emoji: "🔴", color: "#f87171" };
+}
+
+function getAddressDetail(address) {
+  const value = String(address || "").trim();
+  if (!value) return "";
+  if (/^\d+\s+\S+/.test(value)) return "Street address";
+  if (/\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b/i.test(value) || /^[A-Za-z .'-]+,\s*[A-Z]{2}\b/i.test(value)) {
+    return "City-level only";
+  }
+  return "Partial address";
 }
 
 // ─── THEME DEFINITIONS ────────────────────────────────────────
@@ -769,6 +779,8 @@ function buildProspectPipelineDetails(prospect, emailDraft = "", cityHint = "") 
           ["Phone", prospect.phone],
           ["Email", prospect.email],
           ["Address", prospect.address],
+          ["Address Detail", prospect.addressDetail],
+          ["Website URL Checked", prospect.websiteUrl],
           ["Website Status", prospect.websiteStatus],
           ["Source URL", prospect.sourceUrl],
           ["Proof", prospect.proofReason],
@@ -1679,6 +1691,8 @@ export default function LeadGen() {
           emailConfidence: "",
           linkedInUrl: "",
           address: clean(r.address || r["Address"] || r.region || r["Region"]),
+          addressDetail: "",
+          websiteUrl: clean(r.websiteUrl || r["Website URL"] || r.website || r["Website"]),
           sourceUrl: clean(r.sourceUrl || r.source || r["Source URL"] || r["Proof URL"]),
           websiteStatus: clean(r.websiteStatus || r["Website Status"]),
           proofReason: clean(r.proofReason || r.proof || r["Proof"] || r["Proof / Reason"]),
@@ -1690,6 +1704,7 @@ export default function LeadGen() {
           opportunities: [],
           classification: null,
         };
+        p.addressDetail = getAddressDetail(p.address);
         p.buyingSignals = p.buyingSignal ? [p.buyingSignal] : [];
         p.opportunities = p.personalizedFirstLine ? [p.personalizedFirstLine] : [];
         p.classification = classifyProspect(p);
@@ -1743,6 +1758,7 @@ Return exactly this JSON array schema:
     "Address": "",
     "Phone": "",
     "Email": "",
+    "Website URL": "",
     "Source URL": "",
     "Website Status": "No website found",
     "Proof": "",
@@ -1754,6 +1770,7 @@ Hard rules:
 - No placeholder text like "Not found", "N/A", "Unknown", or "None".
 - Source URL must be a public page proving the business exists or showing its limited web presence, such as Google Business Profile, Yelp, Facebook, Instagram, chamber/directory page, or another public listing.
 - Website Status must be one of: "No website found", "Social-only presence", "Directory-only presence", "Broken website", "Placeholder website".
+- If Website Status is "Broken website", Website URL must be the exact standalone website URL that appears broken. Do not infer broken status without a URL.
 - Proof must explain why this qualifies as a practical no-website lead.
 - Pitch Angle must be one caller-ready sentence about helping the business get a real website.
 - Return only actionable companies with phone and/or email.
@@ -1761,6 +1778,43 @@ Hard rules:
 
 This is discovery batch ${batchIndex}.`,
       });
+    };
+
+    const verifyWebsiteClaims = async (rows) => {
+      const needsCheck = rows.filter(row => /broken|placeholder/i.test(row.websiteStatus || "") && row.websiteUrl);
+      const unverifiable = rows.filter(row => /broken/i.test(row.websiteStatus || "") && !row.websiteUrl);
+      if (needsCheck.length === 0) {
+        return rows.filter(row => !unverifiable.some(item => item.id === row.id));
+      }
+
+      try {
+        const response = await fetch("/api/website-check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ urls: needsCheck.map(row => row.websiteUrl) }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.error) throw new Error(data.error || "Website check failed");
+
+        const checksByUrl = new Map((data.results || []).map(result => [String(result.url || "").trim(), result]));
+        return rows
+          .filter(row => {
+            if (!/broken/i.test(row.websiteStatus || "")) return true;
+            if (!row.websiteUrl) return false;
+            const check = checksByUrl.get(String(row.websiteUrl || "").trim());
+            return check && !check.reachable;
+          })
+          .map(row => {
+            if (!/broken/i.test(row.websiteStatus || "") || !row.websiteUrl) return row;
+            const check = checksByUrl.get(String(row.websiteUrl || "").trim());
+            return {
+              ...row,
+              proofReason: `${row.proofReason || "Website appears unreachable."} Verified website check failed (${check?.error || `HTTP ${check?.status || "unknown"}`}).`,
+            };
+          });
+      } catch {
+        return rows.filter(row => !/broken/i.test(row.websiteStatus || ""));
+      }
     };
 
     const runDecisionMakerBatch = async (companies, batchIndex, attempt = 1) => {
@@ -1909,7 +1963,7 @@ This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
             focusArea: generalLeadFocusAreas[discoveryIndex % generalLeadFocusAreas.length],
           });
           const seen = new Set(results.map(p => columnKey(p.businessName)));
-          const fresh = normalizeProspectResults(batch).filter(prospect => {
+          const fresh = (await verifyWebsiteClaims(normalizeProspectResults(batch))).filter(prospect => {
             const key = columnKey(prospect.businessName);
             if (!key || seen.has(key)) return false;
             seen.add(key);
@@ -4777,7 +4831,7 @@ Return:
                           <div>
                             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
                               <h3 style={{ fontSize: 18, fontWeight: 700 }}>{p.businessName}</h3>
-                              <span style={{ padding: "4px 10px", background: p.classification.color + "22", color: p.classification.color, borderRadius: 12, fontSize: 11, fontWeight: 700 }}>
+                              <span title="Contact method: phone-only means the lead is actionable by phone but no usable email was found." style={{ padding: "4px 10px", background: p.classification.color + "22", color: p.classification.color, borderRadius: 12, fontSize: 11, fontWeight: 700 }}>
                                 {p.classification.emoji} {p.classification.tier}
                               </span>
                             </div>
@@ -4787,14 +4841,17 @@ Return:
                         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 12 }}>
                           {[
                             ["Company Name", p.businessName],
+                            ["Contact Method", p.classification.tier],
                             ["Phone", p.phone],
-                            ["Email", p.email],
+                            ...(p.email ? [["Email", p.email]] : []),
                             ["Address", p.address],
+                            ["Address Detail", p.addressDetail],
+                            ...(p.websiteUrl ? [["Website URL Checked", p.websiteUrl]] : []),
                             ["Website Status", p.websiteStatus],
                             ["Source URL", p.sourceUrl],
                             ["Proof", p.proofReason],
                             ["Pitch Angle", p.pitchAngle],
-                          ].map(([label, value]) => (
+                          ].filter(([, value]) => String(value || "").trim()).map(([label, value]) => (
                             <div key={label} style={{ minWidth: 0 }}>
                               <div style={{ fontSize: 10, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 4 }}>{label}</div>
                               {String(value || "").startsWith("http") ? (
