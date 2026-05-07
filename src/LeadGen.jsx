@@ -1745,6 +1745,12 @@ Practical no-website definition:
 - Or only a Facebook, Instagram, Yelp, directory, booking page, marketplace profile, or Google Business Profile.
 - Or the listed website is broken, parked, dead, empty, under construction, or a generic placeholder.
 
+Website verification research required for every candidate:
+1. Search for the exact query: "[business name] ${locationText} official website".
+2. If Yelp, Google Business, Facebook, Instagram, or a directory listing shows a candidate business URL/domain, extract it into Website URL.
+3. Search the exact candidate domain again to see if it has a real indexed presence for that business.
+4. Only use "No website found" if those checks do not reveal a usable standalone website.
+
 Exclude:
 - Companies with a normal usable standalone website.
 - National chains, franchises, marketplaces, directories, and lead sellers.
@@ -1769,7 +1775,7 @@ Return exactly this JSON array schema:
 Hard rules:
 - No placeholder text like "Not found", "N/A", "Unknown", or "None".
 - Source URL must be a public page proving the business exists or showing its limited web presence, such as Google Business Profile, Yelp, Facebook, Instagram, chamber/directory page, or another public listing.
-- Website Status must be one of: "No website found", "Social-only presence", "Directory-only presence", "Broken website", "Placeholder website".
+- Website Status must be one of: "No website found", "Social-only presence", "Directory-only presence", "Broken website", "Placeholder website", "Parked domain".
 - If Website Status is "Broken website", Website URL must be the exact standalone website URL that appears broken. Do not infer broken status without a URL.
 - Proof must explain why this qualifies as a practical no-website lead.
 - Pitch Angle must be one caller-ready sentence about helping the business get a real website.
@@ -1781,39 +1787,35 @@ This is discovery batch ${batchIndex}.`,
     };
 
     const verifyWebsiteClaims = async (rows) => {
-      const needsCheck = rows.filter(row => /broken|placeholder/i.test(row.websiteStatus || "") && row.websiteUrl);
-      const unverifiable = rows.filter(row => /broken/i.test(row.websiteStatus || "") && !row.websiteUrl);
-      if (needsCheck.length === 0) {
-        return rows.filter(row => !unverifiable.some(item => item.id === row.id));
-      }
+      if (rows.length === 0) return rows;
 
       try {
         const response = await fetch("/api/website-check", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ urls: needsCheck.map(row => row.websiteUrl) }),
+          body: JSON.stringify({
+            leads: rows.map(row => ({
+              businessName: row.businessName,
+              websiteUrl: row.websiteUrl,
+            })),
+          }),
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || data.error) throw new Error(data.error || "Website check failed");
 
-        const checksByUrl = new Map((data.results || []).map(result => [String(result.url || "").trim(), result]));
-        return rows
-          .filter(row => {
-            if (!/broken/i.test(row.websiteStatus || "")) return true;
-            if (!row.websiteUrl) return false;
-            const check = checksByUrl.get(String(row.websiteUrl || "").trim());
-            return check && !check.reachable;
-          })
-          .map(row => {
-            if (!/broken/i.test(row.websiteStatus || "") || !row.websiteUrl) return row;
-            const check = checksByUrl.get(String(row.websiteUrl || "").trim());
-            return {
-              ...row,
-              proofReason: `${row.proofReason || "Website appears unreachable."} Verified website check failed (${check?.error || `HTTP ${check?.status || "unknown"}`}).`,
-            };
-          });
+        return rows.map((row, index) => {
+          const verification = data.results?.[index];
+          if (!verification?.keep) return null;
+          return {
+            ...row,
+            websiteStatus: verification.status || row.websiteStatus,
+            websiteUrl: verification.websiteUrl || row.websiteUrl,
+            proofReason: [row.proofReason, verification.proof].filter(Boolean).join(" Verified: "),
+            websiteVerification: verification,
+          };
+        }).filter(Boolean);
       } catch {
-        return rows.filter(row => !/broken/i.test(row.websiteStatus || ""));
+        return rows.filter(row => !/broken|placeholder/i.test(row.websiteStatus || ""));
       }
     };
 
