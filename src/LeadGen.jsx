@@ -1747,7 +1747,7 @@ Practical no-website definition:
 
 Website verification research required for every candidate:
 1. Search for the exact query: "[business name] ${locationText} official website".
-2. If Yelp, Google Business, Facebook, Instagram, or a directory listing shows a candidate business URL/domain, extract it into Website URL.
+2. MANDATORY: If the business appears on Yelp, Google Business Profile, Facebook, Instagram, or any directory listing, you must inspect that listing for a 'Website' field, link, or URL pointing to the business's own domain. If found, you MUST put the exact URL into the 'Website URL' field of the JSON response, even if you suspect the site may be broken or low-quality. Do not leave 'Website URL' blank if a candidate URL appears anywhere in directory listings or search results. The verifier will check whether the URL actually works — your job is only to extract it.
 3. Search the exact candidate domain again to see if it has a real indexed presence for that business.
 4. Only use "No website found" if those checks do not reveal a usable standalone website.
 
@@ -1776,6 +1776,7 @@ Hard rules:
 - No placeholder text like "Not found", "N/A", "Unknown", or "None".
 - Source URL must be a public page proving the business exists or showing its limited web presence, such as Google Business Profile, Yelp, Facebook, Instagram, chamber/directory page, or another public listing.
 - Website Status must be one of: "No website found", "Social-only presence", "Directory-only presence", "Broken website", "Placeholder website", "Parked domain".
+- If the business has any candidate website URL visible in directory listings, social pages, or search results, Website URL must contain that URL. Leaving Website URL blank is only acceptable when no URL appears anywhere across the sources you checked.
 - If Website Status is "Broken website", Website URL must be the exact standalone website URL that appears broken. Do not infer broken status without a URL.
 - Proof must explain why this qualifies as a practical no-website lead.
 - Pitch Angle must be one caller-ready sentence about helping the business get a real website.

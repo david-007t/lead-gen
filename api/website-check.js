@@ -26,14 +26,20 @@ function hostnameFromUrl(value) {
   }
 }
 
-function businessTokens(name) {
-  return String(name || "")
+function normalizeMatchText(value) {
+  return String(value || "")
     .toLowerCase()
+    .replace(/['’]s\b/g, "")
     .replace(/&/g, " and ")
+    .replace(/[^a-z0-9\s-]/g, " ");
+}
+
+function businessTokens(name) {
+  return normalizeMatchText(name)
     .replace(/\b(inc|llc|ltd|co|company|corp|corporation|the)\b/g, " ")
-    .replace(/[^a-z0-9\s-]/g, " ")
     .split(/\s+/)
     .map(token => token.trim())
+    .map(token => token.length >= 4 && token.endsWith("s") ? token.slice(0, -1) : token)
     .filter(token => token.length >= 2);
 }
 
@@ -42,21 +48,24 @@ function candidateDomains(name, provided = []) {
   const compact = tokens.join("");
   const dashed = tokens.join("-");
   const candidates = [
-    ...provided,
-    compact && `${compact}.com`,
-    dashed && `${dashed}.com`,
-    compact && `${compact}.net`,
-    compact && `${compact}.co`,
-    compact && `${compact}services.com`,
-    compact && `${compact}service.com`,
+    ...provided.map(value => ({ value, source: "provided" })),
+    compact && { value: `${compact}.com`, source: "guessed" },
+    dashed && { value: `${dashed}.com`, source: "guessed" },
+    compact && { value: `${compact}.net`, source: "guessed" },
+    compact && { value: `${compact}.co`, source: "guessed" },
+    compact && { value: `${compact}services.com`, source: "guessed" },
+    compact && { value: `${compact}service.com`, source: "guessed" },
   ].filter(Boolean);
 
   const seen = new Set();
   return candidates
-    .map(value => hostnameFromUrl(value) || String(value).toLowerCase().replace(/^www\./, ""))
-    .filter(value => {
-      if (!value || seen.has(value)) return false;
-      seen.add(value);
+    .map(candidate => ({
+      domain: hostnameFromUrl(candidate.value) || String(candidate.value).toLowerCase().replace(/^www\./, ""),
+      source: candidate.source,
+    }))
+    .filter(candidate => {
+      if (!candidate.domain || seen.has(candidate.domain)) return false;
+      seen.add(candidate.domain);
       return true;
     })
     .slice(0, 8);
@@ -67,12 +76,31 @@ function pageLooksParked(html, finalUrl = "") {
   return PARKED_PATTERNS.some(pattern => pattern.test(text) || pattern.test(finalUrl));
 }
 
+function extractTitleAndMeta(html) {
+  const raw = String(html || "");
+  const title = raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "";
+  const metaDescriptions = [...raw.matchAll(/<meta[^>]+(?:name|property)=["'](?:description|og:description)["'][^>]*content=["']([^"']*)["'][^>]*>/gi)]
+    .map(match => match[1])
+    .join(" ");
+  return `${title} ${metaDescriptions}`;
+}
+
+function visibleTextLength(html) {
+  return normalizeMatchText(String(html || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]*>/g, " "))
+    .trim()
+    .length;
+}
+
 function pageMatchesBusiness(html, businessName) {
-  const text = String(html || "").toLowerCase();
+  const searchableText = normalizeMatchText(`${extractTitleAndMeta(html)} ${html}`);
   const tokens = businessTokens(businessName).filter(token => token.length >= 3);
   if (tokens.length === 0) return false;
-  const needed = Math.min(2, tokens.length);
-  return tokens.filter(token => text.includes(token)).length >= needed;
+  const sparsePage = visibleTextLength(html) < 1500;
+  const needed = Math.min(sparsePage ? 1 : 2, tokens.length);
+  return tokens.filter(token => searchableText.includes(token)).length >= needed;
 }
 
 async function fetchUrl(rawUrl, businessName) {
@@ -141,7 +169,10 @@ async function verifyLead(lead) {
     };
   }
 
-  const checks = await Promise.all(domains.map(domain => fetchUrl(domain, businessName)));
+  const checks = await Promise.all(domains.map(async candidate => {
+    const check = await fetchUrl(candidate.domain, businessName);
+    return { ...check, candidateSource: candidate.source };
+  }));
   const working = checks.find(check => check.hasRealContent);
   if (working) {
     return {
@@ -178,7 +209,7 @@ async function verifyLead(lead) {
     };
   }
 
-  const failed = checks.find(check => !check.reachable);
+  const failed = checks.find(check => check.candidateSource === "provided" && !check.reachable);
   if (failed) {
     return {
       businessName,
