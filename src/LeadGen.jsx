@@ -1,6 +1,20 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { createClient } from "@supabase/supabase-js";
+import {
+  COST_EVENTS_KEY,
+  COST_RUNS_KEY,
+  buildCostStats,
+  calculateAnthropicCost,
+  createCallId,
+  createRunId,
+  estimateTokensFromText,
+  formatCost,
+  formatDuration,
+  formatRelativeTime,
+  normalizeLegacyCostEvents,
+  summarizeParams,
+} from "./lib/costTracking";
 // NOTE: Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in the Vercel dashboard under Project Settings > Environment Variables
 const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
@@ -587,47 +601,7 @@ const themes = {
 };
 
 // ─── STORAGE HELPERS ──────────────────────────────────────────
-const SK = { leads: "lq-leads-v2", criteria: "lq-criteria-v2", settings: "lq-settings-v2", costEvents: "lq-cost-events-v1", prospectSendStatus: "lq-prospect-send-status-v1" };
-
-const MODEL_PRICING_PER_MTOK = {
-  sonnet: { input: 3, output: 15, cacheWrite5m: 3.75, cacheRead: 0.3 },
-  haiku: { input: 0.8, output: 4, cacheWrite5m: 1, cacheRead: 0.08 },
-  opus: { input: 15, output: 75, cacheWrite5m: 18.75, cacheRead: 1.5 },
-};
-const WEB_SEARCH_COST = 0.01;
-
-function getModelPricing(model = "") {
-  const name = String(model).toLowerCase();
-  if (name.includes("haiku")) return MODEL_PRICING_PER_MTOK.haiku;
-  if (name.includes("opus")) return MODEL_PRICING_PER_MTOK.opus;
-  return MODEL_PRICING_PER_MTOK.sonnet;
-}
-
-function estimateTokensFromText(text) {
-  return Math.ceil(String(text || "").length / 4);
-}
-
-function calculateAnthropicCost(model, usage = {}, fallbackInputTokens = 0, fallbackOutputTokens = 0) {
-  const pricing = getModelPricing(model);
-  const inputTokens = Number(usage.input_tokens ?? fallbackInputTokens ?? 0);
-  const outputTokens = Number(usage.output_tokens ?? fallbackOutputTokens ?? 0);
-  const cacheCreationTokens = Number(usage.cache_creation_input_tokens ?? 0);
-  const cacheReadTokens = Number(usage.cache_read_input_tokens ?? 0);
-  const webSearchRequests = Number(usage.server_tool_use?.web_search_requests ?? 0);
-  const cost =
-    (inputTokens * pricing.input / 1_000_000) +
-    (outputTokens * pricing.output / 1_000_000) +
-    (cacheCreationTokens * pricing.cacheWrite5m / 1_000_000) +
-    (cacheReadTokens * pricing.cacheRead / 1_000_000) +
-    (webSearchRequests * WEB_SEARCH_COST);
-  return { inputTokens, outputTokens, cacheCreationTokens, cacheReadTokens, webSearchRequests, cost };
-}
-
-function formatCost(cost) {
-  const value = Number(cost || 0);
-  if (value < 0.01) return `$${value.toFixed(4)}`;
-  return `$${value.toFixed(2)}`;
-}
+const SK = { leads: "lq-leads-v2", criteria: "lq-criteria-v2", settings: "lq-settings-v2", costEvents: COST_EVENTS_KEY, costRuns: COST_RUNS_KEY, prospectSendStatus: "lq-prospect-send-status-v1" };
 
 async function loadData(key) {
   try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : null; }
