@@ -4047,8 +4047,13 @@ Return:
 
   // ─── MAIN APP ─────────────────────────────────────────────
   const modeLeads = modeScopedLeads;
-  const sessionCost = costEvents.reduce((sum, event) => sum + Number(event.cost || 0), 0);
-  const latestCostEvent = costEvents[0];
+  const costStats = buildCostStats(costRuns, costEvents);
+  const costEventsById = new Map(costEvents.map(event => [event.id, event]));
+  const unassociatedCostEvents = costStats.unassociated;
+  const sessionCost = costStats.lifetime;
+  const latestCostRun = costRuns[0];
+  const recentRuns = costRuns.slice(0, 5);
+  const toggleCostRunExpanded = (runId) => setExpandedCostRuns(prev => ({ ...prev, [runId]: !prev[runId] }));
 
   return (
     <>
@@ -4140,27 +4145,49 @@ Return:
 	                    <div style={{ fontSize: 9, color: t.textFaint, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>AI Cost</div>
 	                    <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700, color: t.accent }}>{formatCost(sessionCost)}</div>
 	                    <div style={{ fontSize: 10, color: t.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 180 }}>
-	                      {latestCostEvent ? `${latestCostEvent.action}: ${formatCost(latestCostEvent.cost)}` : "No paid calls yet"}
+	                      {latestCostRun ? `${latestCostRun.action}: ${formatCost(latestCostRun.totalCost)}` : unassociatedCostEvents[0] ? `${unassociatedCostEvents[0].action}: ${formatCost(unassociatedCostEvents[0].cost)}` : "No paid calls yet"}
 	                    </div>
 	                  </summary>
 	                  <div style={{ position: "absolute", right: 0, top: "calc(100% + 8px)", width: 360, maxWidth: "80vw", background: t.cardBg, border: `1px solid ${t.border}`, borderRadius: 8, padding: 12, zIndex: 20, boxShadow: theme === "dark" ? "0 18px 40px rgba(0,0,0,0.45)" : "0 18px 40px rgba(41,37,36,0.16)" }}>
-	                    <div style={{ fontSize: 11, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 8 }}>Recent Paid Calls</div>
-	                    {costEvents.length === 0 ? (
-	                      <div style={{ fontSize: 12, color: t.textMuted }}>No paid AI calls tracked yet.</div>
-	                    ) : costEvents.slice(0, 8).map(event => (
-	                      <div key={event.id} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, padding: "7px 0", borderTop: `1px solid ${t.border}` }}>
-	                        <div style={{ minWidth: 0 }}>
-	                          <div style={{ fontSize: 12, fontWeight: 700, color: t.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{event.action}</div>
-	                          <div style={{ fontSize: 10, color: t.textDim }}>
-	                            {event.inputTokens || 0} in / {event.outputTokens || 0} out{event.webSearchRequests ? ` / ${event.webSearchRequests} searches` : ""}{event.usedProviderUsage ? "" : " / estimated"}
-	                          </div>
-	                        </div>
-	                        <div style={{ textAlign: "right" }}>
-	                          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 700, color: event.status === "failed" ? t.red : t.accent }}>{formatCost(event.cost)}</div>
-	                          <div style={{ fontSize: 9, color: t.textFaint, textTransform: "uppercase" }}>{event.status}</div>
-	                        </div>
+	                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+	                      <div style={{ fontSize: 11, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>Recent Runs</div>
+	                      <button onClick={() => { setTab("dashboard"); setDashboardView("cost"); }} style={{ background: "transparent", border: "none", color: t.accent, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>View all</button>
+	                    </div>
+	                    {recentRuns.length === 0 ? (
+	                      <div style={{ fontSize: 12, color: t.textMuted }}>
+	                        No grouped runs yet{unassociatedCostEvents.length ? ` · ${unassociatedCostEvents.length} unassociated calls tracked` : "."}
 	                      </div>
-	                    ))}
+	                    ) : recentRuns.map(run => {
+	                      const runCalls = (run.callIds || []).map(id => costEventsById.get(id)).filter(Boolean);
+	                      const expanded = !!expandedCostRuns[run.id];
+	                      return (
+	                        <div key={run.id} style={{ padding: "8px 0", borderTop: `1px solid ${t.border}` }}>
+	                          <button onClick={() => toggleCostRunExpanded(run.id)} style={{ width: "100%", display: "grid", gridTemplateColumns: "1fr auto", gap: 8, background: "transparent", border: "none", padding: 0, cursor: "pointer", textAlign: "left", color: t.text }}>
+	                            <div style={{ minWidth: 0 }}>
+	                              <div style={{ display: "flex", gap: 6, alignItems: "center", minWidth: 0 }}>
+	                                <span style={{ fontSize: 9, color: "#0c0a09", background: t.accent, borderRadius: 999, padding: "2px 6px", fontWeight: 800, textTransform: "uppercase" }}>{run.mode}</span>
+	                                <span style={{ fontSize: 12, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{run.action}</span>
+	                              </div>
+	                              <div style={{ fontSize: 10, color: t.textDim, marginTop: 3 }}>{formatDuration(run.durationMs)} · {run.resultCount || 0} results · {(run.callIds || []).length} calls</div>
+	                            </div>
+	                            <div style={{ textAlign: "right" }}>
+	                              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 700, color: run.status === "error" ? t.red : t.accent }}>{formatCost(run.totalCost)}</div>
+	                              <div style={{ fontSize: 9, color: t.textFaint, textTransform: "uppercase" }}>{run.status}</div>
+	                            </div>
+	                          </button>
+	                          {expanded && (
+	                            <div style={{ marginTop: 8, padding: 8, borderRadius: 6, background: t.bg }}>
+	                              {runCalls.length === 0 ? <div style={{ fontSize: 11, color: t.textDim }}>No call details found.</div> : runCalls.map(event => (
+	                                <div key={event.id} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 8, padding: "5px 0", borderTop: `1px solid ${t.border}` }}>
+	                                  <div style={{ fontSize: 11, color: t.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{event.action}</div>
+	                                  <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: t.text }}>{formatCost(event.cost)}</div>
+	                                </div>
+	                              ))}
+	                            </div>
+	                          )}
+	                        </div>
+	                      );
+	                    })}
 	                  </div>
 	                </details>
 	                <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title="Toggle theme"
@@ -4573,12 +4600,130 @@ Return:
 
             const recentLeads = [...indeedResults].reverse().slice(0, 5);
             const hasData = indeedResults.length > 0 || leads.length > 0;
+            const renderDashboardTabs = () => (
+              <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+                {[
+                  { id: "overview", label: "Overview" },
+                  { id: "cost", label: "Cost History" },
+                ].map(view => (
+                  <button key={view.id} onClick={() => setDashboardView(view.id)} style={{
+                    padding: "8px 14px",
+                    borderRadius: 999,
+                    border: `1px solid ${dashboardView === view.id ? t.accent : t.borderLight}`,
+                    background: dashboardView === view.id ? t.accent : t.bgHover,
+                    color: dashboardView === view.id ? "#0c0a09" : t.textMuted,
+                    fontSize: 12,
+                    fontWeight: 800,
+                    cursor: "pointer",
+                  }}>{view.label}</button>
+                ))}
+              </div>
+            );
+
+            if (dashboardView === "cost") {
+              const runRows = costRuns;
+              return (
+                <div style={{ animation: "fadeIn 0.3s ease" }}>
+                  <div style={{ marginBottom: 24 }}>
+                    <h2 style={{ fontSize: 20, fontWeight: 700, fontFamily: "'Outfit', sans-serif", marginBottom: 6 }}>📊 Dashboard</h2>
+                    <p style={{ color: t.textDim, fontSize: 14 }}>Cost history is tracked per browser for Anthropic calls only.</p>
+                    {renderDashboardTabs()}
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 16, marginBottom: 24 }}>
+                    {[
+                      { val: formatCost(costStats.lifetime), label: "Total Spent", sub: "lifetime" },
+                      { val: formatCost(costStats.thisWeek), label: "This Week", sub: "last 7 days" },
+                      { val: formatCost(costStats.averagePerRun), label: "Avg / Run", sub: `${costRuns.length} grouped runs` },
+                      { val: formatCost(costStats.averagePerResult), label: "Avg / Result", sub: "returned rows" },
+                    ].map((s, i) => (
+                      <div key={i} style={{ ...cardStyle, marginBottom: 0, textAlign: "center", padding: "20px 16px" }}>
+                        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 30, fontWeight: 700, color: t.accent, lineHeight: 1 }}>{s.val}</div>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: t.text, marginTop: 8, textTransform: "uppercase", letterSpacing: "0.08em" }}>{s.label}</div>
+                        <div style={{ fontSize: 11, color: t.textFaint, marginTop: 3 }}>{s.sub}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div style={cardStyle}>
+                    <h3 style={{ fontSize: 13, fontWeight: 700, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 14 }}>Run History</h3>
+                    {runRows.length === 0 ? (
+                      <div style={{ color: t.textMuted, fontSize: 14 }}>No grouped runs yet. Run a Ship List search to populate this table.</div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {runRows.map(run => {
+                          const runCalls = (run.callIds || []).map(id => costEventsById.get(id)).filter(Boolean);
+                          const expanded = !!expandedCostRuns[run.id];
+                          return (
+                            <div key={run.id} style={{ border: `1px solid ${t.border}`, borderRadius: 8, overflow: "hidden", background: t.bg }}>
+                              <button onClick={() => toggleCostRunExpanded(run.id)} style={{ width: "100%", display: "grid", gridTemplateColumns: "120px 90px 1.1fr 1.4fr 90px 90px 90px", gap: 10, alignItems: "center", padding: "12px 14px", background: "transparent", border: "none", color: t.text, textAlign: "left", cursor: "pointer", fontFamily: "'DM Sans', sans-serif" }}>
+                                <div style={{ fontSize: 12, color: t.textMuted }}>{formatRelativeTime(run.startedAt)}</div>
+                                <div style={{ fontSize: 11, color: "#0c0a09", background: t.accent, borderRadius: 999, padding: "3px 8px", fontWeight: 800, textAlign: "center", textTransform: "uppercase" }}>{run.mode}</div>
+                                <div style={{ fontSize: 13, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{run.action}</div>
+                                <div style={{ fontSize: 12, color: t.textDim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{summarizeParams(run.params)}</div>
+                                <div style={{ fontSize: 12, color: t.textMuted }}>{formatDuration(run.durationMs)}</div>
+                                <div style={{ fontSize: 12, color: t.textMuted }}>{run.resultCount || 0}</div>
+                                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 13, fontWeight: 800, color: run.status === "error" ? t.red : t.accent, textAlign: "right" }}>{formatCost(run.totalCost)}</div>
+                              </button>
+                              {expanded && (
+                                <div style={{ padding: 14, borderTop: `1px solid ${t.border}`, background: t.bgAlt }}>
+                                  <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 1fr) minmax(260px, 1.2fr)", gap: 16 }}>
+                                    <div>
+                                      <div style={{ fontSize: 11, color: t.textFaint, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 800, marginBottom: 8 }}>Params</div>
+                                      <pre style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: 11, color: t.textMuted, background: t.bg, border: `1px solid ${t.border}`, borderRadius: 6, padding: 10, fontFamily: "'JetBrains Mono', monospace" }}>{JSON.stringify(run.params || {}, null, 2)}</pre>
+                                    </div>
+                                    <div>
+                                      <div style={{ fontSize: 11, color: t.textFaint, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 800, marginBottom: 8 }}>Anthropic Calls</div>
+                                      {runCalls.length === 0 ? <div style={{ color: t.textMuted, fontSize: 12 }}>No call details found.</div> : runCalls.map(event => (
+                                        <div key={event.id} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 12, padding: "8px 0", borderTop: `1px solid ${t.border}` }}>
+                                          <div>
+                                            <div style={{ fontSize: 12, fontWeight: 800 }}>{event.action}</div>
+                                            <div style={{ fontSize: 11, color: t.textDim }}>{event.model} · {event.inputTokens || 0} in / {event.outputTokens || 0} out{event.webSearchRequests ? ` · ${event.webSearchRequests} searches` : ""}{event.usedProviderUsage ? "" : " · estimated"}</div>
+                                          </div>
+                                          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 800, color: event.status === "failed" ? t.red : t.accent }}>{formatCost(event.cost)}</div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={cardStyle}>
+                    <button onClick={() => setExpandedUnassociatedCosts(v => !v)} style={{ width: "100%", background: "transparent", border: "none", color: t.text, display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", fontFamily: "'DM Sans', sans-serif" }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em" }}>Unassociated Calls ({unassociatedCostEvents.length})</span>
+                      <span style={{ color: t.accent, fontWeight: 800 }}>{expandedUnassociatedCosts ? "Hide" : "Show"}</span>
+                    </button>
+                    {expandedUnassociatedCosts && (
+                      <div style={{ marginTop: 12 }}>
+                        {unassociatedCostEvents.length === 0 ? <div style={{ color: t.textMuted, fontSize: 13 }}>No legacy or ungrouped calls.</div> : unassociatedCostEvents.map(event => (
+                          <div key={event.id} style={{ display: "grid", gridTemplateColumns: "140px 1fr auto", gap: 12, padding: "8px 0", borderTop: `1px solid ${t.border}` }}>
+                            <div style={{ fontSize: 12, color: t.textMuted }}>{formatRelativeTime(event.createdAt)}</div>
+                            <div>
+                              <div style={{ fontSize: 12, fontWeight: 800 }}>{event.action}</div>
+                              <div style={{ fontSize: 11, color: t.textDim }}>{event.model} · {event.inputTokens || 0} in / {event.outputTokens || 0} out{event.webSearchRequests ? ` · ${event.webSearchRequests} searches` : ""}</div>
+                            </div>
+                            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, fontWeight: 800, color: event.status === "failed" ? t.red : t.accent }}>{formatCost(event.cost)}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            }
 
             return (
               <div style={{ animation: "fadeIn 0.3s ease" }}>
                 <div style={{ marginBottom: 24 }}>
                   <h2 style={{ fontSize: 20, fontWeight: 700, fontFamily: "'Outfit', sans-serif", marginBottom: 6 }}>📊 Dashboard</h2>
                   <p style={{ color: t.textDim, fontSize: 14 }}>Lead generation overview — run a search in LeadGen to populate this.</p>
+                  {renderDashboardTabs()}
                 </div>
 
                 {/* Stats row */}
