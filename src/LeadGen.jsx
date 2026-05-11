@@ -1379,6 +1379,10 @@ export default function LeadGen() {
   const [settingsEdited, setSettingsEdited] = useState(false);
   const [confirmAction, setConfirmAction] = useState(null);
   const [costEvents, setCostEvents] = useState([]);
+  const [costRuns, setCostRuns] = useState([]);
+  const [expandedCostRuns, setExpandedCostRuns] = useState({});
+  const [expandedUnassociatedCosts, setExpandedUnassociatedCosts] = useState(false);
+  const [dashboardView, setDashboardView] = useState("overview");
 
   const [inlineEdit, setInlineEdit] = useState(null); // { id, field, value }
 
@@ -1475,6 +1479,7 @@ export default function LeadGen() {
   const [generatingLeadListOutreach, setGeneratingLeadListOutreach] = useState(null);
 
   const fileRef = useRef();
+  const activeCostRunRef = useRef(null);
   const t = themes[theme];
   const ind = INDUSTRIES[industry] || INDUSTRIES.construction;
   const PROJECT_TYPES = ind.types;
@@ -1486,10 +1491,18 @@ export default function LeadGen() {
         loadData(SK.leads), loadData(SK.criteria), loadData(SK.settings),
       ]);
       const savedCostEvents = await loadData(SK.costEvents);
+      const savedCostRuns = await loadData(SK.costRuns);
       const savedProspectSendStatus = await loadData(SK.prospectSendStatus);
       if (savedLeads) setLeads(savedLeads.map(upgradeLegacyLeadDraft));
       if (savedCriteria) setCriteria(savedCriteria);
-      if (savedCostEvents) setCostEvents(savedCostEvents);
+      if (savedCostEvents) {
+        const normalizedEvents = normalizeLegacyCostEvents(savedCostEvents);
+        if (normalizedEvents.some((event, index) => event.id !== savedCostEvents[index]?.id || event.createdAt !== savedCostEvents[index]?.createdAt)) {
+          console.log(`[CostTracking] Migrated ${normalizedEvents.length} legacy cost events to new format`);
+        }
+        setCostEvents(normalizedEvents);
+      }
+      if (savedCostRuns) setCostRuns(Array.isArray(savedCostRuns) ? savedCostRuns : []);
       if (savedProspectSendStatus) setProspectSendStatus(savedProspectSendStatus);
       if (savedSettings) {
         if (savedSettings.companyName) setCompanyName(savedSettings.companyName);
@@ -1509,7 +1522,8 @@ export default function LeadGen() {
   // ─── PERSIST ON CHANGE ────────────────────────────────────
   useEffect(() => { if (!loading) saveData(SK.leads, leads); }, [leads, loading]);
   useEffect(() => { if (!loading) saveData(SK.criteria, criteria); }, [criteria, loading]);
-  useEffect(() => { if (!loading) saveData(SK.costEvents, costEvents.slice(0, 100)); }, [costEvents, loading]);
+  useEffect(() => { if (!loading) saveData(SK.costEvents, costEvents.slice(0, 500)); }, [costEvents, loading]);
+  useEffect(() => { if (!loading) saveData(SK.costRuns, costRuns.slice(0, 150)); }, [costRuns, loading]);
   useEffect(() => { if (!loading) saveData(SK.prospectSendStatus, prospectSendStatus); }, [prospectSendStatus, loading]);
   useEffect(() => { if (!loading) saveData(SK.settings, { companyName, theme, industry, setupComplete, shipListStripeLink, shipListSenderName }); }, [companyName, theme, industry, setupComplete, shipListStripeLink, shipListSenderName, loading]);
   useEffect(() => { localStorage.setItem('lq-theme', theme); }, [theme]);
@@ -1534,7 +1548,64 @@ export default function LeadGen() {
   };
 
   const recordCostEvent = (event) => {
-    setCostEvents(prev => [{ id: Date.now() + Math.random(), createdAt: Date.now(), ...event }, ...prev].slice(0, 100));
+    const activeRun = activeCostRunRef.current;
+    const costEvent = {
+      id: createCallId(),
+      createdAt: Date.now(),
+      runId: activeRun?.id || null,
+      ...event,
+    };
+    if (activeRun) activeRun.calls.push(costEvent);
+    setCostEvents(prev => [costEvent, ...prev].slice(0, 500));
+    return costEvent;
+  };
+
+  const startCostRun = ({ mode: runMode, action, params = {} }) => {
+    if (activeCostRunRef.current) {
+      console.warn(`[CostTracking] Starting run while ${activeCostRunRef.current.id} is still active; nested/concurrent runs are not fully supported.`);
+    }
+    const run = {
+      id: createRunId(),
+      mode: runMode,
+      action,
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+      durationMs: 0,
+      params,
+      resultCount: 0,
+      totalCost: 0,
+      callIds: [],
+      status: "running",
+      calls: [],
+    };
+    activeCostRunRef.current = run;
+    console.log(`[CostTracking] Started run ${run.id} (mode: ${runMode})`);
+    return run.id;
+  };
+
+  const endCostRun = (runId, { resultCount = 0, status = "success", notes = "" } = {}) => {
+    const activeRun = activeCostRunRef.current;
+    if (!activeRun || activeRun.id !== runId) {
+      console.warn(`[CostTracking] Could not end run ${runId}; no matching active run`);
+      return null;
+    }
+    const endedAt = new Date().toISOString();
+    const durationMs = Date.parse(endedAt) - Date.parse(activeRun.startedAt);
+    const finalized = {
+      ...activeRun,
+      endedAt,
+      durationMs,
+      resultCount,
+      totalCost: activeRun.calls.reduce((sum, event) => sum + Number(event.cost || 0), 0),
+      callIds: activeRun.calls.map(event => event.id),
+      status,
+      notes,
+    };
+    delete finalized.calls;
+    activeCostRunRef.current = null;
+    setCostRuns(prev => [finalized, ...prev.filter(run => run.id !== runId)].slice(0, 150));
+    console.log(`[CostTracking] Ended run ${runId}: ${formatCost(finalized.totalCost)} in ${durationMs}ms, ${finalized.callIds.length} calls, ${resultCount} results`);
+    return finalized;
   };
 
   const callAnthropic = async (action, body) => {
@@ -1713,6 +1784,18 @@ export default function LeadGen() {
     const searchNiche = prospectNiche.trim();
     const isGeneralSearch = !searchNiche;
     const displayTarget = searchNiche || "local businesses";
+    const costRunId = startCostRun({
+      mode: "prospects",
+      action: "Find Leads",
+      params: {
+        city: locationText,
+        niche: searchNiche || "general",
+        requestedCount: prospectCount,
+        filters: prospectFilters,
+      },
+    });
+    let prospectRunResultCount = 0;
+    let prospectRunEnded = false;
     const generalLeadFocusAreas = [
       "home service businesses such as roofers, plumbers, HVAC companies, electricians, painters, and landscapers",
       "personal service businesses such as salons, barbers, med spas, cleaners, tutors, and fitness studios",
@@ -2053,20 +2136,28 @@ This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
 
       if (!results.length) {
         setProspectError(`No actionable no-website ${displayTarget} leads found in ${locationText}. Try a nearby city, fewer rows, or a specific niche.`);
+        endCostRun(costRunId, { resultCount: 0, status: "partial", notes: "No actionable prospects found" });
+        prospectRunEnded = true;
         setProspectLoading(false); setProspectProgress(null); return;
       }
 
+      prospectRunResultCount = results.length;
       const withPhone = results.filter(row => String(row.phone || "").trim()).length;
       const withEmail = results.filter(row => isPlausibleEmail(row.email)).length;
       showToast(`Found ${results.length} no-website leads · ${withPhone} phone · ${withEmail} email`);
+      endCostRun(costRunId, { resultCount: results.length, status: results.length < targetCount ? "partial" : "success" });
+      prospectRunEnded = true;
     } catch (err) {
       const message = String(err?.message || "");
       const timedOut = /timed? out|took too long|timeout|504/i.test(message);
       setProspectError(timedOut
         ? "Search took too long. Try 5 results, add a niche, or use a smaller nearby city."
         : "Search failed — " + (message || "unexpected error. Please try again."));
+      endCostRun(costRunId, { resultCount: prospectRunResultCount, status: "error", notes: message || "Find Leads failed" });
+      prospectRunEnded = true;
     }
 
+    if (!prospectRunEnded) endCostRun(costRunId, { resultCount: prospectRunResultCount, status: "partial", notes: "Find Leads stopped before completion" });
     setProspectProgress(null);
     setProspectLoading(false);
   };
@@ -2180,6 +2271,18 @@ ${senderName}`;
       growth: "50-150 employees. Series A or Series B, or bootstrapped equivalent with similar scale.",
       mixed: "20-200 employees. Seed, Series A, Series B, or bootstrapped equivalent. Bias toward smaller companies.",
     }[shipListSizeBand] || "20-200 employees. Seed, Series A, Series B, or bootstrapped equivalent. Bias toward smaller companies.";
+    const costRunId = startCostRun({
+      mode: "shiplist",
+      action: "Ship List Search",
+      params: {
+        city: cityFilter,
+        sizeBand: shipListSizeBand,
+        includeServices: shipListIncludeServices,
+        requestedCount: shipListCount,
+        savedExclusions: savedNames.length,
+      },
+    });
+    let costRunEnded = false;
 
     const parseShipListResponse = (fullText) => {
       let parsed = null;
@@ -2372,6 +2475,8 @@ JSON shape:
         setShipListError("No candidate companies found. Try a broader region or a different size band.");
         setShipListLoading(false);
         setShipListProgress(null);
+        endCostRun(costRunId, { resultCount: 0, status: "partial", notes: "Phase 1 returned zero candidates" });
+        costRunEnded = true;
         return;
       }
 
@@ -2391,9 +2496,14 @@ JSON shape:
       console.log(`[ShipList] Phase 3: ${finalResults.length} final`);
       setShipListResults(finalResults);
       showToast(`Found ${finalResults.length} companies for the Ship List`);
+      endCostRun(costRunId, { resultCount: finalResults.length, status: "success" });
+      costRunEnded = true;
     } catch (err) {
       setShipListError("Search failed — " + (err?.message || "please try again."));
+      endCostRun(costRunId, { resultCount: 0, status: "error", notes: err?.message || "Ship List search failed" });
+      costRunEnded = true;
     }
+    if (!costRunEnded) endCostRun(costRunId, { resultCount: shipListResults.length, status: "partial", notes: "Ship List search stopped before completion" });
     setShipListLoading(false);
     setShipListProgress(null);
   };
@@ -3129,6 +3239,17 @@ Respond with ONLY a JSON object:
 
     const desiredCount = Math.min(50, Math.max(1, inferRequestedRowCount(requestText, leadListCount)));
     const initialPipelineExclusions = leads.map(l => l.company).filter(Boolean);
+    const costRunId = startCostRun({
+      mode: "leadlist",
+      action: "Build Lead List",
+      params: {
+        city: leadListCity.trim(),
+        niche: leadListNiche.trim(),
+        requestedCount: desiredCount,
+        request: requestText.slice(0, 240),
+      },
+    });
+    let costRunEnded = false;
 
     const fallbackJob = {
       summary: requestText.slice(0, 160),
@@ -3350,6 +3471,8 @@ RESPOND WITH ONLY this JSON object:
         setLeadListError("No usable company rows returned. Try broadening the geography or simplifying the request.");
         setLeadListLoading(false);
         setLeadListProgress(null);
+        endCostRun(costRunId, { resultCount: 0, status: "partial", notes: "No usable company rows returned" });
+        costRunEnded = true;
         return;
       }
 
@@ -3358,9 +3481,14 @@ RESPOND WITH ONLY this JSON object:
       } else {
         showToast(`Built ${acceptedRows.length} lead rows`);
       }
+      endCostRun(costRunId, { resultCount: acceptedRows.length, status: acceptedRows.length < desiredCount ? "partial" : "success" });
+      costRunEnded = true;
     } catch (err) {
       setLeadListError(`Search failed — ${err?.message || "please try again."}`);
+      endCostRun(costRunId, { resultCount: leadListResults.length, status: "error", notes: err?.message || "Build Lead List failed" });
+      costRunEnded = true;
     }
+    if (!costRunEnded) endCostRun(costRunId, { resultCount: leadListResults.length, status: "partial", notes: "Build Lead List stopped before completion" });
     setLeadListLoading(false);
     setLeadListProgress(null);
   };
