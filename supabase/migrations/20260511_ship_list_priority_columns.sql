@@ -1,0 +1,11 @@
+ALTER TABLE ship_list_companies
+  ADD COLUMN IF NOT EXISTS buyer_fit INTEGER,
+  ADD COLUMN IF NOT EXISTS social_gap INTEGER,
+  ADD COLUMN IF NOT EXISTS priority INTEGER,
+  ADD COLUMN IF NOT EXISTS priority_label TEXT,
+  ADD COLUMN IF NOT EXISTS priority_reasons JSONB,
+  ADD COLUMN IF NOT EXISTS last_funding_date TEXT,
+  ADD COLUMN IF NOT EXISTS industry TEXT,
+  ADD COLUMN IF NOT EXISTS founded TEXT,
+  ADD COLUMN IF NOT EXISTS head_of_content_present BOOLEAN,
+  ADD COLUMN IF NOT EXISTS hiring_marketing_roles BOOLEAN;

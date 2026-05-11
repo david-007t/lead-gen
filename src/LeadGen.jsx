@@ -739,6 +739,101 @@ david@sankotechsystems.com`,
   };
 }
 
+function clampNumber(value, min = 0, max = 100) {
+  return Math.min(max, Math.max(min, Number(value) || 0));
+}
+
+function parseEmployeeCount(value) {
+  const text = String(value || "");
+  const numbers = text.match(/\d[\d,]*/g)?.map(n => Number(n.replace(/,/g, ""))).filter(Number.isFinite) || [];
+  if (numbers.length === 0) return null;
+  return Math.max(...numbers);
+}
+
+function isRecentlyFunded(lastFundingDate, months) {
+  if (!lastFundingDate) return false;
+  const date = new Date(`${String(lastFundingDate).slice(0, 7)}-01T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return false;
+  const now = new Date();
+  const diffMonths = (now.getUTCFullYear() - date.getUTCFullYear()) * 12 + (now.getUTCMonth() - date.getUTCMonth());
+  return diffMonths >= 0 && diffMonths <= months;
+}
+
+function getShipListPriorityLabel(priority) {
+  if (priority >= 80) return "Hot Lead";
+  if (priority >= 60) return "Strong Fit";
+  if (priority >= 40) return "Possible Fit";
+  return "Low Fit";
+}
+
+function scoreShipListCompany(company) {
+  const employeeUpper = parseEmployeeCount(company.employeeCount);
+  let buyerFit = 50;
+  const priorityReasons = [];
+
+  if (employeeUpper !== null) {
+    if (employeeUpper < 50) {
+      buyerFit += 20;
+      priorityReasons.push("Small team likely to outsource content work.");
+    } else if (employeeUpper <= 99) {
+      buyerFit += 15;
+      priorityReasons.push("Lean team with enough scale to need content support.");
+    } else if (employeeUpper <= 149) {
+      buyerFit += 5;
+      priorityReasons.push("Mid-size team may still need specialist agency capacity.");
+    } else if (employeeUpper <= 299) {
+      buyerFit -= 10;
+      priorityReasons.push("Larger team may have more in-house marketing capacity.");
+    } else {
+      buyerFit -= 30;
+      priorityReasons.push("300+ employees lowers outsource likelihood.");
+    }
+  }
+
+  if (isRecentlyFunded(company.lastFundingDate, 18)) {
+    buyerFit += 15;
+    priorityReasons.push("Funded in the last 18 months, so budget may be available.");
+  } else if (isRecentlyFunded(company.lastFundingDate, 36)) {
+    buyerFit += 5;
+    priorityReasons.push("Funded in the last 36 months.");
+  } else {
+    buyerFit -= 5;
+    priorityReasons.push("Recent funding is unknown or older.");
+  }
+
+  if (company.headOfContentPresent) {
+    buyerFit -= 25;
+    priorityReasons.push("Content leadership detected, which may mean in-house ownership.");
+  } else {
+    priorityReasons.push("No in-house content lead detected.");
+  }
+
+  if (company.hiringMarketingRoles) {
+    buyerFit += 10;
+    priorityReasons.push("Hiring marketing/content roles suggests unmet content need.");
+  }
+
+  const socials = company.socials || {};
+  const platformsPresent = ["linkedin", "twitter", "instagram", "tiktok", "youtube", "facebook"]
+    .reduce((count, key) => count + (socials[key] ? 1 : 0), 0);
+  const socialGap = clampNumber(100 - platformsPresent * 17);
+  if (platformsPresent === 0) priorityReasons.push("No official social platforms found.");
+  else priorityReasons.push(`Only ${platformsPresent} official social platform${platformsPresent === 1 ? "" : "s"} found.`);
+
+  buyerFit = clampNumber(buyerFit);
+  const priority = Math.round(buyerFit * 0.7 + socialGap * 0.3);
+
+  return {
+    ...company,
+    buyerFit,
+    socialGap,
+    priority,
+    priorityLabel: getShipListPriorityLabel(priority),
+    priorityReasons,
+    platformsPresent,
+  };
+}
+
 function cleanBusinessObservation(text, fallback) {
   const source = String(text || fallback || "").trim();
   if (!source) return "I know finding new clients consistently gets harder when your agency already has a lot of moving parts to manage.";
@@ -1373,9 +1468,10 @@ export default function LeadGen() {
   const [shipListLoading, setShipListLoading] = useState(false);
   const [shipListError, setShipListError] = useState(null);
   const [shipListCount, setShipListCount] = useState(10);
-  const [shipListCompanyType, setShipListCompanyType] = useState("all");
+  const [shipListSizeBand, setShipListSizeBand] = useState("startup");
+  const [shipListIncludeServices, setShipListIncludeServices] = useState(true);
   const [shipListCity, setShipListCity] = useState("San Francisco");
-  const [shipListTierFilter, setShipListTierFilter] = useState("all");
+  const [shipListPriorityFilter, setShipListPriorityFilter] = useState("all");
   const [shipListProgress, setShipListProgress] = useState(null);
   const [shipListStripeLink, setShipListStripeLink] = useState("");
   const [shipListSenderName, setShipListSenderName] = useState(DEFAULT_EMAIL_SIGNATURE);
@@ -2100,182 +2196,229 @@ ${senderName}`;
     setShipListLoading(true);
     setShipListError(null);
     setShipListResults([]);
-    setShipListProgress(null);
+    setShipListProgress("Finding companies...");
 
-    // Build global exclusion list from DB + already-found results
-    const savedNames = savedCompanies.map(c => c.company_name);
-
+    const savedNames = savedCompanies.map(c => c.company_name).filter(Boolean);
     const cityFilter = shipListCity.trim() || "San Francisco, San Jose, Oakland, Palo Alto";
-    const typeFilter = shipListCompanyType === "saas"
-      ? "SaaS companies (Series B or later, or well-funded startups)"
-      : shipListCompanyType === "professional_services"
-      ? "established professional services firms (law, finance, consulting, recruiting)"
-      : "SaaS companies (Series B+) and established professional services firms";
-
-    const BATCH_SIZE = 5;
-    const totalBatches = Math.ceil(shipListCount / BATCH_SIZE);
-    const allResults = [];
+    const candidateTarget = Math.max(shipListCount * 2, shipListCount + 5);
+    const sizeBand = {
+      startup: "20-80 employees. Seed, Series A, or bootstrapped equivalent. Bias toward under 50 employees.",
+      growth: "50-150 employees. Series A or Series B, or bootstrapped equivalent with similar scale.",
+      mixed: "20-200 employees. Seed, Series A, Series B, or bootstrapped equivalent. Bias toward smaller companies.",
+    }[shipListSizeBand] || "20-200 employees. Seed, Series A, Series B, or bootstrapped equivalent. Bias toward smaller companies.";
 
     const parseShipListResponse = (fullText) => {
       let parsed = null;
-      const fenceMatch = fullText.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
-      if (fenceMatch) { try { parsed = JSON.parse(fenceMatch[1]); } catch {} }
+      const fencedArray = fullText.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
+      if (fencedArray) { try { parsed = JSON.parse(fencedArray[1]); } catch {} }
       if (!parsed) {
-        const allArrays = [...fullText.matchAll(/\[[\s\S]*?\](?=\s*$|\s*```|\s*\n\n)/g)];
-        for (let i = allArrays.length - 1; i >= 0; i--) {
-          try { const c = JSON.parse(allArrays[i][0]); if (Array.isArray(c) && c.length > 0 && c[0].companyName) { parsed = c; break; } } catch {}
-        }
+        const fencedObject = fullText.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+        if (fencedObject) { try { parsed = JSON.parse(fencedObject[1]); } catch {} }
       }
-      if (!parsed) {
-        const greedyMatch = fullText.match(/\[\s*\{[\s\S]*\}\s*\]/);
-        if (greedyMatch) {
-          try { parsed = JSON.parse(greedyMatch[0]); } catch {
-            try { parsed = JSON.parse(greedyMatch[0].replace(/,\s*(?=[}\]])/g, '')); } catch {}
-          }
-        }
-      }
+      if (!parsed) parsed = extractJSONValue(fullText);
       return parsed;
     };
 
-    try {
-      for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
-        setShipListProgress({ current: batchIndex + 1, total: totalBatches });
+    const shipValue = (row, names, fallback = "") => {
+      for (const name of names) {
+        const key = Object.keys(row || {}).find(k => columnKey(k) === columnKey(name));
+        const value = key ? row[key] : "";
+        if (value !== undefined && value !== null && String(value).trim() !== "") return value;
+      }
+      return fallback;
+    };
 
-        const excludeList = [...savedNames, ...allResults.map(r => r.companyName)];
-        const excludeClause = excludeList.length > 0
-          ? `\nEXCLUSION LIST (do NOT return these — already in database or found this session): ${excludeList.join(", ")}\n`
-          : "";
+    const extractShipText = data => (data.content || [])
+      .filter(block => block.type === "text" && block.text)
+      .map(block => block.text)
+      .join("\n");
 
-        const prompt = `You are a content agency researcher building a "Ship List" of Bay Area companies for a visual storytelling / content agency.
+    const logRaw = (label, text) => console.log(`[ShipList] ${label} raw response`, text);
+    const logParseWarning = (label, text) => console.warn(`[ShipList] ${label} JSON parse failed`, String(text || "").slice(0, 300));
 
-STRICT GEOGRAPHY: Companies must be headquartered in ${cityFilter}, CALIFORNIA, USA. Do NOT return UK, Canadian, or non-US companies. If a company name is ambiguous, verify the Bay Area / California location before including it.
+    const normalizePhaseOneRows = parsed => (getParsedRows(parsed) || [])
+      .map((row, index) => ({
+        id: Date.now() + index + Math.random(),
+        companyName: shipValue(row, ["companyName", "company name", "company", "name"], ""),
+        website: shipValue(row, ["website", "websiteUrl", "website url", "url"], ""),
+        city: shipValue(row, ["city", "location", "hq", "headquarters"], cityFilter),
+        country: shipValue(row, ["country"], "US"),
+        isActive: shipValue(row, ["isActive", "is active", "active"], true) !== false,
+        activeNote: shipValue(row, ["activeNote", "active note"], ""),
+        employeeCount: shipValue(row, ["employeeCount", "employee count", "employees", "size"], ""),
+        fundingStage: shipValue(row, ["fundingStage", "funding stage", "funding"], ""),
+        lastFundingDate: shipValue(row, ["lastFundingDate", "last funding date", "last funding"], ""),
+        estimatedRevenue: shipValue(row, ["estimatedRevenue", "estimated revenue", "revenue"], ""),
+        companyType: shipValue(row, ["companyType", "company type", "type", "industry"], ""),
+        industry: shipValue(row, ["industry", "vertical"], ""),
+        founded: shipValue(row, ["founded", "foundedYear", "founded year"], ""),
+        description: shipValue(row, ["description", "summary"], ""),
+        headOfContentPresent: shipValue(row, ["headOfContentPresent", "head of content present", "content lead present"], false) === true,
+        hiringMarketingRoles: shipValue(row, ["hiringMarketingRoles", "hiring marketing roles", "marketing hiring"], false) === true,
+        socials: { linkedin: null, twitter: null, instagram: null, tiktok: null, youtube: null, facebook: null },
+      }))
+      .filter(row => row.companyName);
 
-COMPANY PROFILE:
-- Size: 100+ employees
-- Financial: ${typeFilter}
-- Must be ACTIVELY OPERATING as of 2025 — skip any company that is shut down, acquired-and-dissolved, or announced closure
-${excludeClause}
-SOCIAL MEDIA RESEARCH (search each company individually):
-For every company, find ALL of the following (use empty string "" if not found):
-- YouTube channel URL
-- Instagram URL + estimated posts per month
-- TikTok URL + estimated posts per month
-- LinkedIn company page URL (MUST be the Bay Area company, not a UK or other country homonym — verify by checking the LinkedIn page shows California/US location). CRITICAL: LinkedIn company URL must be for a Bay Area, CA company. If you find multiple companies with the same name, always use the one headquartered in San Francisco, Oakland, San Jose, or surrounding Bay Area cities. Verify the company location before including the LinkedIn URL.
-- Twitter/X URL
-- Facebook page URL
+    const normalizeSocialAudit = (company, parsed) => {
+      const source = Array.isArray(parsed) ? parsed[0] : parsed || {};
+      const socials = source.socials || source.Socials || {};
+      const pickSocial = (key, aliases = []) => {
+        const value = shipValue({ ...source, ...socials }, [key, ...aliases], "");
+        return /^https?:\/\//i.test(String(value || "")) ? String(value).trim() : null;
+      };
+      return {
+        ...company,
+        socials: {
+          linkedin: pickSocial("linkedin", ["linkedIn", "linked in"]),
+          twitter: pickSocial("twitter", ["x", "twitterUrl", "xUrl"]),
+          instagram: pickSocial("instagram", ["instagramUrl"]),
+          tiktok: pickSocial("tiktok", ["tikTok", "tiktokUrl"]),
+          youtube: pickSocial("youtube", ["youtubeUrl"]),
+          facebook: pickSocial("facebook", ["facebookUrl"]),
+        },
+      };
+    };
 
-SOCIAL MEDIA URL CONFIDENCE: For all social media URLs, only include them if you are highly confident they belong to this specific Bay Area company. If uncertain, omit the field rather than guess.
+    const runShipListPrompt = async (promptText, action, maxTokens = 3000) => {
+      const { data } = await callAnthropic(action, {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: maxTokens,
+        system: "You are a business research assistant. Search the web for real companies. Respond with strict JSON only. No prose, no markdown.",
+        messages: [{ role: "user", content: promptText }],
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
+      });
+      return data;
+    };
 
-TIER CLASSIFICATION (assign one tier per company):
-- Tier 1 — Ghost: 0–1 social platforms, minimal/no presence. Small company that never built social. HIGH opportunity.
-- Tier 2 — Underutilized: Has some presence (decent IG following etc.) but not maximized. Could level up. MEDIUM opportunity.
-- Tier 3 — Broken Strategy: Bigger company (500+ employees or Series C+), has multiple platforms and followers, BUT content is low-quality/not working (e.g. Notion-style: big company, bad content). Strategy overhaul opportunity. HIGH opportunity.
-- Tier 4 — Established: Thriving social media everywhere, great engagement, working strategy. SKIP — not a fit.
+    const auditCompanySocials = async (company, index, total) => {
+      setShipListProgress(`Auditing socials: ${index + 1}/${total}...`);
+      const prompt = `Find official social profile URLs for this company.
 
-IMPORTANT: Return Tier 1, 2, and 3 companies ONLY. Do NOT return Tier 4 companies.
+Company:
+${JSON.stringify({
+  companyName: company.companyName,
+  website: company.website,
+  city: company.city,
+  industry: company.industry || company.companyType,
+}, null, 2)}
 
-CONTENT SCORE (1–10): Rate the opportunity for a content agency. Higher = bigger gap/opportunity.
-- Tier 1: 7–10
-- Tier 2: 4–7
-- Tier 3: 7–9
-- Tier 4: 1–3 (excluded anyway)
+Rules:
+- Return only URLs you are confident belong to this exact company.
+- A URL is confident if it is linked from the company's website, clearly named after the company, or confirmed via the company's LinkedIn/profile context.
+- Do not estimate posting frequency. Do not judge quality.
+- If uncertain, use null.
+- Return strict JSON only.
 
-RESPOND WITH A JSON ARRAY ONLY. No markdown, no explanation. Each object MUST have:
+JSON shape:
 {
-  "companyName": "Acme Corp",
-  "website": "https://acmecorp.com",
-  "city": "San Francisco",
-  "country": "US",
-  "isActive": true,
-  "activeNote": "",
-  "employeeCount": "250-500",
-  "fundingStage": "Series C",
-  "estimatedRevenue": "$20M-50M ARR",
-  "companyType": "SaaS",
-  "youtube": "",
-  "instagram": "https://instagram.com/acmecorp",
-  "instagramPostsPerMonth": 0.5,
-  "tiktok": "",
-  "tiktokPostsPerMonth": 0,
-  "linkedIn": "https://linkedin.com/company/acmecorp",
-  "twitter": "",
-  "facebook": "",
-  "tier": 1,
-  "tierLabel": "Ghost",
-  "tierReason": "No YouTube, no Twitter, Instagram posts once every 2 months",
-  "contentScore": 9,
-  "contentGap": ["No YouTube channel", "Instagram: 0.5 posts/month (below threshold)", "No Twitter/X presence"]
-}
+  "socials": {
+    "linkedin": null,
+    "twitter": null,
+    "instagram": null,
+    "tiktok": null,
+    "youtube": null,
+    "facebook": null
+  }
+}`;
 
-Return 5 companies. ONLY Tier 1, 2, or 3. Verify Bay Area California location for each.`;
+      try {
+        const data = await runShipListPrompt(prompt, "Ship List Social Audit", 800);
+        if (data.error) throw new Error(data.error.message || "Social audit failed");
+        const raw = extractShipText(data);
+        logRaw(`Phase 2 ${company.companyName}`, raw);
+        const parsed = parseShipListResponse(raw);
+        if (!parsed) logParseWarning(`Phase 2 ${company.companyName}`, raw);
+        return normalizeSocialAudit(company, parsed);
+      } catch (error) {
+        console.warn(`[ShipList] Phase 2 failed for ${company.companyName}`, error?.message || error);
+        return company;
+      }
+    };
 
-        const { data } = await callAnthropic("Ship List Search", {
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 4000,
-          system: "You are a business research assistant. Search the web for real companies. Respond with ONLY a raw JSON array. No markdown, no explanation — just [ ... ].",
-          messages: [{ role: "user", content: prompt }],
-          tools: [{ type: "web_search_20250305", name: "web_search" }],
-        });
-        if (data.error) {
-          const msg = data.error.message || "API error.";
-          const isRateLimit = msg.toLowerCase().includes("rate limit") || data.error.type === "rate_limit_error";
-          setShipListError(isRateLimit
-            ? `Rate limit hit — ${allResults.length > 0 ? `showing ${allResults.length} companies found so far. Wait 60s and try again for more.` : "please wait 60 seconds and try again."}`
-            : msg);
-          setShipListLoading(false);
-          setShipListProgress(null);
-          return;
-        }
+    try {
+      const includeServicesText = shipListIncludeServices
+        ? "Also include boutique professional services firms: law, consulting, recruiting, finance, and marketing agencies."
+        : "Exclude professional services firms; focus on B2B SaaS, fintech, devtools, and AI/ML startups.";
+      const excludeClause = savedNames.length
+        ? `Do not return these previously saved companies: ${savedNames.join(", ")}.`
+        : "";
+      const discoveryPrompt = `Find ${candidateTarget} candidate companies for a Bay Area visual storytelling content agency.
 
-        const textParts = [];
-        (data.content || []).forEach(block => { if (block.type === "text" && block.text) textParts.push(block.text); });
-        const fullText = textParts.join("\n");
+ICP:
+- Headquartered in ${cityFilter}, California, USA. Verify location and exclude UK, Canada, or other US homonyms.
+- ${sizeBand}
+- Founded 2017 or later when data is available.
+- Currently operating in 2026.
+- Always include B2B SaaS, fintech, devtools, and AI/ML startups.
+- ${includeServicesText}
 
-        const parsed = parseShipListResponse(fullText);
-        if (parsed && Array.isArray(parsed) && parsed.length > 0) {
-          const batchResults = parsed.map((r, i) => ({
-            id: Date.now() + batchIndex * 100 + i + Math.random(),
-            companyName: r.companyName || "Unknown Company",
-            website: r.website || "",
-            city: r.city || "",
-            country: r.country || "US",
-            isActive: r.isActive !== false,
-            activeNote: r.activeNote || "",
-            employeeCount: r.employeeCount || "",
-            fundingStage: r.fundingStage || "",
-            estimatedRevenue: r.estimatedRevenue || "",
-            companyType: r.companyType || "",
-            youtube: r.youtube || "",
-            instagram: r.instagram || "",
-            instagramPostsPerMonth: r.instagramPostsPerMonth ?? 0,
-            tiktok: r.tiktok || "",
-            tiktokPostsPerMonth: r.tiktokPostsPerMonth ?? 0,
-            linkedIn: r.linkedIn || "",
-            twitter: r.twitter || "",
-            facebook: r.facebook || "",
-            tier: r.tier || 1,
-            tierLabel: r.tierLabel || "Ghost",
-            tierReason: r.tierReason || "",
-            contentScore: r.contentScore || 5,
-            contentGap: r.contentGap || [],
-          }));
-          allResults.push(...batchResults);
-          setShipListResults(prev => [...prev, ...batchResults]);
-        }
+Exclude:
+- Public companies, unicorns, companies valued at $1B+, or 300+ employee companies.
+- Companies with Head of Content, Creative Director, or VP Brand listed on their team/about pages.
+- Big-name consultancies such as Bain, McKinsey, Deloitte, Accenture, PwC, EY, KPMG.
+${excludeClause}
 
-        // Pause between batches to avoid rate limit (450k tokens/min)
-        if (batchIndex < totalBatches - 1) {
-          await new Promise(r => setTimeout(r, 3000));
-        }
+Positive signals to detect but not require:
+- Funded in the last 18 months.
+- Actively hiring marketing/content roles.
+- No in-house content lead detected.
+
+Do not research social media in this phase.
+Return strict JSON only. No prose. No markdown fences.
+
+JSON shape:
+{
+  "companies": [
+    {
+      "companyName": "",
+      "website": "",
+      "city": "",
+      "employeeCount": "30-50",
+      "fundingStage": "Seed",
+      "lastFundingDate": "2025-08",
+      "industry": "",
+      "founded": "2021",
+      "description": "",
+      "headOfContentPresent": false,
+      "hiringMarketingRoles": false
+    }
+  ]
+}`;
+
+      const discoveryData = await runShipListPrompt(discoveryPrompt, "Ship List Phase 1 Discovery", 3500);
+      if (discoveryData.error) throw new Error(discoveryData.error.message || "Discovery failed");
+      const discoveryRaw = extractShipText(discoveryData);
+      logRaw("Phase 1", discoveryRaw);
+      const discoveryParsed = parseShipListResponse(discoveryRaw);
+      if (!discoveryParsed) logParseWarning("Phase 1", discoveryRaw);
+      const candidates = normalizePhaseOneRows(discoveryParsed);
+      console.log(`[ShipList] Phase 1: ${candidates.length} candidates`);
+
+      if (candidates.length === 0) {
+        setShipListError("No candidate companies found. Try a broader region or a different size band.");
+        setShipListLoading(false);
+        setShipListProgress(null);
+        return;
       }
 
-      if (allResults.length === 0) {
-        setShipListError("No qualifying companies found. Try adjusting your filters.");
-      } else {
-        showToast(`Found ${allResults.length} companies for the Ship List`);
+      const audited = [];
+      const SOCIAL_BATCH_SIZE = 3;
+      for (let i = 0; i < candidates.length; i += SOCIAL_BATCH_SIZE) {
+        const batch = candidates.slice(i, i + SOCIAL_BATCH_SIZE);
+        const batchResults = await Promise.all(batch.map((company, offset) => auditCompanySocials(company, i + offset, candidates.length)));
+        audited.push(...batchResults);
       }
+      console.log(`[ShipList] Phase 2: ${audited.length} audited`);
+
+      const finalResults = audited
+        .map(scoreShipListCompany)
+        .sort((a, b) => b.priority - a.priority)
+        .slice(0, shipListCount);
+      console.log(`[ShipList] Phase 3: ${finalResults.length} final`);
+      setShipListResults(finalResults);
+      showToast(`Found ${finalResults.length} companies for the Ship List`);
     } catch (err) {
-      setShipListError("Search failed — please try again.");
+      setShipListError("Search failed — " + (err?.message || "please try again."));
     }
     setShipListLoading(false);
     setShipListProgress(null);
@@ -2293,22 +2436,21 @@ Return 5 companies. ONLY Tier 1, 2, or 3. Verify Bay Area California location fo
   };
 
   const saveCompanyToDB = async (company) => {
-    const payload = {
+    const contact = shipListContacts[company.id] || {};
+    const basePayload = {
       company_name: company.companyName,
       website: company.website,
       city: company.city,
       employee_count: company.employeeCount,
       funding_stage: company.fundingStage,
       estimated_revenue: company.estimatedRevenue,
-      company_type: company.companyType,
-      youtube: company.youtube,
-      instagram: company.instagram,
-      instagram_posts_per_month: company.instagramPostsPerMonth,
-      tiktok: company.tiktok,
-      tiktok_posts_per_month: company.tiktokPostsPerMonth,
-      linked_in: company.linkedIn,
-      twitter: company.twitter || "",
-      facebook: company.facebook || "",
+      company_type: company.companyType || company.industry,
+      youtube: company.socials?.youtube || company.youtube || "",
+      instagram: company.socials?.instagram || company.instagram || "",
+      tiktok: company.socials?.tiktok || company.tiktok || "",
+      linked_in: company.socials?.linkedin || company.linkedIn || "",
+      twitter: company.socials?.twitter || company.twitter || "",
+      facebook: company.socials?.facebook || company.facebook || "",
       tier: company.tier || null,
       tier_label: company.tierLabel || null,
       tier_reason: company.tierReason || null,
@@ -2317,19 +2459,43 @@ Return 5 companies. ONLY Tier 1, 2, or 3. Verify Bay Area California location fo
       active_note: company.activeNote || "",
       country: company.country || "US",
       content_gap: company.contentGap,
-      contact_name: shipListContacts[company.id]?.name || "",
-      contact_title: shipListContacts[company.id]?.title || "",
-      contact_linkedin: shipListContacts[company.id]?.linkedin || "",
-      contact_email: shipListContacts[company.id]?.email || "",
-      outreach_platform: shipListContacts[company.id]?.platform || "",
+      contact_name: contact.name || "",
+      contact_title: contact.title || "",
+      contact_linkedin: contact.linkedin || "",
+      contact_email: contact.email || "",
+      outreach_platform: contact.platform || "",
       outreach_draft: shipListOutreach[company.id] || "",
       status: "new",
     };
-    const { data, error } = await supabase
+    const payload = {
+      ...basePayload,
+      buyer_fit: company.buyerFit ?? null,
+      social_gap: company.socialGap ?? null,
+      priority: company.priority ?? null,
+      priority_label: company.priorityLabel || null,
+      priority_reasons: company.priorityReasons || [],
+      last_funding_date: company.lastFundingDate || null,
+      industry: company.industry || company.companyType || null,
+      founded: company.founded || null,
+      head_of_content_present: company.headOfContentPresent ?? null,
+      hiring_marketing_roles: company.hiringMarketingRoles ?? null,
+    };
+
+    let { data, error } = await supabase
       .from("ship_list_companies")
       .upsert(payload, { onConflict: "company_name" })
       .select()
       .single();
+
+    if (error && /column|schema|cache/i.test(error.message || "")) {
+      console.warn("[ShipList] Save with priority columns failed; retrying legacy payload", error.message);
+      ({ data, error } = await supabase
+        .from("ship_list_companies")
+        .upsert(basePayload, { onConflict: "company_name" })
+        .select()
+        .single());
+    }
+
     if (!error && data) {
       setSavedCompanies(prev => {
         const exists = prev.find(c => c.company_name === data.company_name);
@@ -3944,7 +4110,7 @@ Return:
             <div style={{ animation: "fadeIn 0.3s ease" }}>
               <div style={{ marginBottom: 24 }}>
                 <h2 style={{ fontSize: 20, fontWeight: 700, fontFamily: "'Outfit', sans-serif", marginBottom: 6 }}>📋 Ship List</h2>
-                <p style={{ color: t.textDim, fontSize: 14 }}>Find Bay Area companies (100+ employees, Series B+ SaaS or professional services) with content gaps — no YouTube, or Instagram/TikTok under 1 post/month.</p>
+                <p style={{ color: t.textDim, fontSize: 14 }}>Find small Bay Area companies likely to outsource visual storytelling and content work.</p>
               </div>
 
               {/* Controls */}
@@ -3982,21 +4148,20 @@ Return:
                     </select>
                   </div>
                   <div>
-                    <label style={labelStyle}>Company Type</label>
-                    <select style={{ ...inputStyle, cursor: "pointer" }} value={shipListCompanyType} onChange={e => setShipListCompanyType(e.target.value)}>
-                      <option value="all">All (SaaS + Prof. Services)</option>
-                      <option value="saas">SaaS Only (Series B+)</option>
-                      <option value="professional_services">Professional Services Only</option>
+                    <label style={labelStyle}>Size Band</label>
+                    <select style={{ ...inputStyle, cursor: "pointer" }} value={shipListSizeBand} onChange={e => setShipListSizeBand(e.target.value)}>
+                      <option value="startup">Startup — 20-80 emp</option>
+                      <option value="growth">Growth — 50-150 emp</option>
+                      <option value="mixed">Mixed — 20-200 emp</option>
                     </select>
                   </div>
                   <div>
-                    <label style={labelStyle}>Show Tiers</label>
-                    <select style={{ ...inputStyle, cursor: "pointer" }} value={shipListTierFilter} onChange={e => setShipListTierFilter(e.target.value)}>
-                      <option value="all">All (T1 + T2 + T3)</option>
-                      <option value="1">T1 Only — Ghost</option>
-                      <option value="2">T2 Only — Underutilized</option>
-                      <option value="3">T3 Only — Broken Strategy</option>
-                      <option value="13">T1 + T3 (High Priority)</option>
+                    <label style={labelStyle}>Show Priority</label>
+                    <select style={{ ...inputStyle, cursor: "pointer" }} value={shipListPriorityFilter} onChange={e => setShipListPriorityFilter(e.target.value)}>
+                      <option value="all">All results</option>
+                      <option value="80">Hot Leads only</option>
+                      <option value="60">Strong Fit and up</option>
+                      <option value="40">Possible Fit and up</option>
                     </select>
                   </div>
                   <div>
@@ -4006,9 +4171,18 @@ Return:
                     </select>
                   </div>
                   <button onClick={handleShipListSearch} disabled={shipListLoading} style={{ ...btnPrimary, whiteSpace: "nowrap", opacity: shipListLoading ? 0.7 : 1 }}>
-                    {shipListLoading ? (shipListProgress ? `⏳ Batch ${shipListProgress.current}/${shipListProgress.total}...` : "⏳ Searching...") : "⚡ Build Ship List"}
+                    {shipListLoading ? "⏳ Searching..." : "⚡ Build Ship List"}
                   </button>
                 </div>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, color: t.textMuted, fontSize: 13, cursor: "pointer" }}>
+                  <input type="checkbox" checked={shipListIncludeServices} onChange={e => setShipListIncludeServices(e.target.checked)} />
+                  Include boutique professional services
+                </label>
+                {shipListLoading && shipListProgress && (
+                  <div style={{ marginTop: 14, padding: "10px 12px", borderRadius: 8, background: t.bgHover, border: `1px solid ${t.borderLight}`, color: t.textMuted, fontSize: 13 }}>
+                    {shipListProgress}
+                  </div>
+                )}
               </div>
 
               {shipListError && (
@@ -4020,13 +4194,13 @@ Return:
               {shipListResults.length > 0 && (
                 <>
                   <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center" }}>
-                    <span style={{ fontSize: 13, color: t.textMuted, flex: 1 }}>{shipListResults.length} companies with content gaps</span>
+                    <span style={{ fontSize: 13, color: t.textMuted, flex: 1 }}>{shipListResults.length} prioritized companies</span>
                     <button onClick={() => {
-                      const headers = ["Company Name", "Website", "City", "Employee Count", "Funding Stage", "Est. Revenue", "Company Type", "YouTube", "Instagram", "Instagram Posts/Mo", "TikTok", "TikTok Posts/Mo", "LinkedIn", "Content Gaps"];
+                      const headers = ["Company Name", "Website", "City", "Employee Count", "Funding Stage", "Last Funding Date", "Industry", "Founded", "Priority", "Buyer Fit", "Social Gap", "Platforms Present", "Priority Reasons", "YouTube", "Instagram", "TikTok", "LinkedIn", "Twitter", "Facebook"];
                       const rows = shipListResults.map(r => [
-                        r.companyName, r.website, r.city, r.employeeCount, r.fundingStage, r.estimatedRevenue, r.companyType,
-                        r.youtube || "none", r.instagram || "none", r.instagramPostsPerMonth, r.tiktok || "none", r.tiktokPostsPerMonth,
-                        r.linkedIn || "none", r.contentGap.join("; ")
+                        r.companyName, r.website, r.city, r.employeeCount, r.fundingStage, r.lastFundingDate, r.industry || r.companyType, r.founded,
+                        r.priority, r.buyerFit, r.socialGap, r.platformsPresent, (r.priorityReasons || []).join("; "),
+                        r.socials?.youtube || "none", r.socials?.instagram || "none", r.socials?.tiktok || "none", r.socials?.linkedin || "none", r.socials?.twitter || "none", r.socials?.facebook || "none"
                       ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(","));
                       const csv = [headers.join(","), ...rows].join("\n");
                       const blob = new Blob([csv], { type: "text/csv" });
@@ -4043,30 +4217,27 @@ Return:
 
                   <div style={{ display: "grid", gap: 14 }}>
                     {shipListResults.filter(r => {
-                      if (shipListTierFilter === "all") return true;
-                      if (shipListTierFilter === "13") return r.tier === 1 || r.tier === 3;
-                      return r.tier === parseInt(shipListTierFilter);
+                      if (shipListPriorityFilter === "all") return true;
+                      return (r.priority || 0) >= Number(shipListPriorityFilter);
                     }).map(r => (
-                      <div key={r.id} style={{ ...cardStyle, marginBottom: 0, opacity: r.isActive === false ? 0.6 : 1, borderLeft: r.tier === 1 ? "3px solid #f87171" : r.tier === 2 ? "3px solid #fbbf24" : r.tier === 3 ? "3px solid #a78bfa" : `3px solid ${t.border}` }}>
+                      <div key={r.id} style={{ ...cardStyle, marginBottom: 0, opacity: r.isActive === false ? 0.6 : 1, borderLeft: r.priority >= 80 ? "3px solid #34d399" : r.priority >= 60 ? "3px solid #f59e0b" : r.priority >= 40 ? "3px solid #fbbf24" : `3px solid ${t.border}` }}>
                         {/* Header row */}
                         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, flexWrap: "wrap" }}>
                           {/* Company info */}
                           <div style={{ flex: 1, minWidth: 220 }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
                               <span style={{ fontSize: 15, fontWeight: 700, color: t.text }}>{r.companyName}</span>
-                              {/* Tier badge */}
                               <span style={{
                                 fontSize: 10, fontWeight: 800, padding: "2px 8px", borderRadius: 6, letterSpacing: "0.06em", textTransform: "uppercase",
-                                background: r.tier === 1 ? "#7f1d1d44" : r.tier === 2 ? "#78350f44" : r.tier === 3 ? "#4c1d9544" : t.bgHover,
-                                color: r.tier === 1 ? "#fca5a5" : r.tier === 2 ? "#fcd34d" : r.tier === 3 ? "#c4b5fd" : t.textMuted,
+                                background: r.priority >= 80 ? "#15532e44" : r.priority >= 60 ? "#78350f44" : r.priority >= 40 ? "#713f1244" : t.bgHover,
+                                color: r.priority >= 80 ? "#86efac" : r.priority >= 60 ? "#fcd34d" : r.priority >= 40 ? "#fde68a" : t.textMuted,
                               }}>
-                                T{r.tier} · {r.tierLabel || "Unknown"}
+                                {r.priority >= 80 ? "Hot Lead" : r.priority >= 60 ? "Strong Fit" : r.priority >= 40 ? "Possible Fit" : "Low Fit"}
                               </span>
-                              {/* Content score */}
-                              <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 6, background: r.contentScore >= 8 ? "#15532e44" : r.contentScore >= 5 ? "#78350f44" : t.bgHover, color: r.contentScore >= 8 ? "#86efac" : r.contentScore >= 5 ? "#fcd34d" : t.textMuted }}>
-                                Score: {r.contentScore}/10
+                              <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 6, background: t.bgHover, color: t.textMuted }}>
+                                Priority: {r.priority}
                               </span>
-                              {r.companyType && <span style={{ fontSize: 10, background: "#1d4ed822", color: "#93c5fd", padding: "2px 6px", borderRadius: 4 }}>{r.companyType}</span>}
+                              {(r.industry || r.companyType) && <span style={{ fontSize: 10, background: "#1d4ed822", color: "#93c5fd", padding: "2px 6px", borderRadius: 4 }}>{r.industry || r.companyType}</span>}
                               {r.country && r.country !== "US" && <span style={{ fontSize: 10, background: "#7f1d1d33", color: "#fca5a5", padding: "2px 6px", borderRadius: 4 }}>⚠ {r.country}</span>}
                             </div>
                             {!r.isActive && <div style={{ fontSize: 11, color: "#fca5a5", marginBottom: 4 }}>⚠ {r.activeNote || "Company may be inactive"}</div>}
@@ -4075,48 +4246,44 @@ Return:
                               {r.employeeCount && <span>{r.employeeCount} emp · </span>}
                               {r.fundingStage && <span style={{ color: t.accent }}>{r.fundingStage}</span>}
                             </div>
-                            {r.estimatedRevenue && <div style={{ fontSize: 12, color: t.textFaint }}>{r.estimatedRevenue}</div>}
-                            {r.tierReason && <div style={{ fontSize: 11, color: t.textFaint, marginTop: 4, fontStyle: "italic" }}>"{r.tierReason}"</div>}
-                            {/* All links row */}
+                            <div style={{ fontSize: 12, color: t.textFaint }}>
+                              Fit: {r.buyerFit} · Gap: {r.socialGap}{r.lastFundingDate ? ` · Last funding: ${r.lastFundingDate}` : ""}{r.founded ? ` · Founded: ${r.founded}` : ""}
+                            </div>
+                            {r.priorityReasons?.length > 0 && (
+                              <ul style={{ margin: "8px 0 0 18px", color: t.textFaint, fontSize: 11, lineHeight: 1.5 }}>
+                                {r.priorityReasons.map((reason, ri) => <li key={ri}>{reason}</li>)}
+                              </ul>
+                            )}
                             <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
                               {r.website && <a href={r.website} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: t.accent, textDecoration: "none" }}>🌐 Site</a>}
-                              {r.linkedIn && <a href={r.linkedIn} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#60a5fa", textDecoration: "none" }}>💼 LinkedIn</a>}
-                              {r.instagram && <a href={r.instagram} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#f472b6", textDecoration: "none" }}>📸 IG</a>}
-                              {r.youtube && <a href={r.youtube} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#f87171", textDecoration: "none" }}>▶ YT</a>}
-                              {r.tiktok && <a href={r.tiktok} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#e879f9", textDecoration: "none" }}>🎵 TT</a>}
-                              {r.twitter && <a href={r.twitter} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#93c5fd", textDecoration: "none" }}>𝕏 Twitter</a>}
-                              {r.facebook && <a href={r.facebook} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#818cf8", textDecoration: "none" }}>fb Facebook</a>}
+                              {r.socials?.linkedin && <a href={r.socials.linkedin} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#60a5fa", textDecoration: "none" }}>💼 LinkedIn</a>}
+                              {r.socials?.instagram && <a href={r.socials.instagram} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#f472b6", textDecoration: "none" }}>📸 IG</a>}
+                              {r.socials?.youtube && <a href={r.socials.youtube} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#f87171", textDecoration: "none" }}>▶ YT</a>}
+                              {r.socials?.tiktok && <a href={r.socials.tiktok} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#e879f9", textDecoration: "none" }}>🎵 TT</a>}
+                              {r.socials?.twitter && <a href={r.socials.twitter} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#93c5fd", textDecoration: "none" }}>𝕏 Twitter</a>}
+                              {r.socials?.facebook && <a href={r.socials.facebook} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#818cf8", textDecoration: "none" }}>fb Facebook</a>}
                             </div>
                           </div>
 
                           {/* Social platform status badges */}
                           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "flex-start" }}>
                             {[
-                              { label: "YT", icon: "▶", present: !!r.youtube, freq: null },
-                              { label: "IG", icon: "📸", present: !!r.instagram, freq: r.instagramPostsPerMonth },
-                              { label: "TT", icon: "🎵", present: !!r.tiktok, freq: r.tiktokPostsPerMonth },
-                              { label: "LI", icon: "💼", present: !!r.linkedIn, freq: null },
-                              { label: "𝕏", icon: "𝕏", present: !!r.twitter, freq: null },
-                              { label: "FB", icon: "fb", present: !!r.facebook, freq: null },
+                              { label: "YT", icon: "▶", present: !!r.socials?.youtube },
+                              { label: "IG", icon: "📸", present: !!r.socials?.instagram },
+                              { label: "TT", icon: "🎵", present: !!r.socials?.tiktok },
+                              { label: "LI", icon: "💼", present: !!r.socials?.linkedin },
+                              { label: "𝕏", icon: "𝕏", present: !!r.socials?.twitter },
+                              { label: "FB", icon: "fb", present: !!r.socials?.facebook },
                             ].map(p => (
-                              <div key={p.label} style={{ background: p.present && (p.freq === null || p.freq >= 1) ? "#15532e44" : "#7f1d1d33", border: `1px solid ${p.present && (p.freq === null || p.freq >= 1) ? "#16a34a44" : "#b91c1c44"}`, borderRadius: 8, padding: "5px 8px", minWidth: 44, textAlign: "center" }}>
+                              <div key={p.label} style={{ background: p.present ? "#15532e44" : "#7f1d1d33", border: `1px solid ${p.present ? "#16a34a44" : "#b91c1c44"}`, borderRadius: 8, padding: "5px 8px", minWidth: 44, textAlign: "center" }}>
                                 <div style={{ fontSize: 13 }}>{p.icon}</div>
-                                <div style={{ fontSize: 9, fontWeight: 700, color: p.present && (p.freq === null || p.freq >= 1) ? "#86efac" : "#fca5a5", marginTop: 1 }}>
-                                  {p.freq !== null ? (p.present ? `${p.freq}/mo` : "none") : (p.present ? "✓" : "✗")}
+                                <div style={{ fontSize: 9, fontWeight: 700, color: p.present ? "#86efac" : "#fca5a5", marginTop: 1 }}>
+                                  {p.present ? "✓" : "✗"}
                                 </div>
                               </div>
                             ))}
                           </div>
                         </div>
-
-                        {/* Content gaps */}
-                        {r.contentGap && r.contentGap.length > 0 && (
-                          <div style={{ marginTop: 10, display: "flex", gap: 6, flexWrap: "wrap" }}>
-                            {r.contentGap.map((gap, gi) => (
-                              <span key={gi} style={{ background: "#7f1d1d22", border: "1px solid #b91c1c33", color: "#fca5a5", fontSize: 11, padding: "3px 8px", borderRadius: 6 }}>⚠ {gap}</span>
-                            ))}
-                          </div>
-                        )}
 
                         {/* Save / status row */}
                         <div style={{ marginTop: 12 }}>
@@ -4208,7 +4375,7 @@ Return:
                 <div style={{ textAlign: "center", padding: "60px 20px", color: t.textFaint }}>
                   <div style={{ fontSize: 40, marginBottom: 12 }}>📋</div>
                   <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 6, color: t.textMuted }}>No Ship List yet</div>
-                  <div style={{ fontSize: 13 }}>Configure your filters above and click "Build Ship List" to find content-cold companies.</div>
+                  <div style={{ fontSize: 13 }}>Configure your filters above and click "Build Ship List" to find priority companies.</div>
                 </div>
               )}
 
@@ -4228,13 +4395,22 @@ Return:
                             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
                               <span style={{ fontSize: 14, fontWeight: 700, color: t.text }}>{c.company_name}</span>
                               {c.company_type && <span style={{ fontSize: 10, background: "#1d4ed822", color: "#93c5fd", padding: "1px 6px", borderRadius: 4 }}>{c.company_type}</span>}
+                              {c.priority ? (
+                                <span style={{ fontSize: 10, background: c.priority >= 80 ? "#15532e44" : c.priority >= 60 ? "#78350f44" : t.bgHover, color: c.priority >= 80 ? "#86efac" : c.priority >= 60 ? "#fcd34d" : t.textMuted, padding: "1px 6px", borderRadius: 4 }}>
+                                  {c.priority_label || getShipListPriorityLabel(c.priority)} · {c.priority}
+                                </span>
+                              ) : c.tier ? (
+                                <span style={{ fontSize: 10, background: t.bgHover, color: t.textDim, padding: "1px 6px", borderRadius: 4 }}>
+                                  Legacy T{c.tier}
+                                </span>
+                              ) : null}
                               <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 10, fontWeight: 700,
                                 background: c.status === "won" ? "#15532e44" : c.status === "contacted" ? "#1d4ed844" : c.status === "replied" ? "#4c1d9544" : c.status === "lost" || c.status === "skipped" ? "#7f1d1d33" : t.bgHover,
                                 color: c.status === "won" ? "#86efac" : c.status === "contacted" ? "#93c5fd" : c.status === "replied" ? "#c4b5fd" : c.status === "lost" || c.status === "skipped" ? "#fca5a5" : t.textMuted }}>
                                 {c.status}
                               </span>
                             </div>
-                            <div style={{ fontSize: 11, color: t.textFaint }}>{c.city} · {c.funding_stage} · {c.employee_count} employees</div>
+                            <div style={{ fontSize: 11, color: t.textFaint }}>{c.city} · {c.funding_stage} · {c.employee_count} employees{c.buyer_fit ? ` · Fit ${c.buyer_fit} / Gap ${c.social_gap}` : ""}</div>
                             {c.contact_name && <div style={{ fontSize: 11, color: t.textMuted, marginTop: 2 }}>👤 {c.contact_name} ({c.contact_title}){c.contact_linkedin ? <a href={c.contact_linkedin} target="_blank" rel="noopener noreferrer" style={{ color: "#60a5fa", marginLeft: 6 }}>LinkedIn</a> : ""}</div>}
                           </div>
                           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
