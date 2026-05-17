@@ -302,7 +302,7 @@ function csvValue(value) {
   return `"${String(value || "").replace(/"/g, '""')}"`;
 }
 
-const LEAD_REQUEST_EXAMPLE = `Act as a freight broker in the US. Identify shippers with current freight-demand signals: distribution or warehouse openings, shipping/logistics/warehouse hiring, public freight or delivery bids, facility expansions, seasonal outbound freight, or active supplier/distributor growth. Return only company name, contact person, best phone, email, region, source URL, industry, company type, signal, and signal proof URL.`;
+const LEAD_REQUEST_EXAMPLE = `Act as a freight broker in the US. Identify small-to-medium shippers moving general freight suitable for dry van or flatbed. Prioritize companies that are not big enough to have mature in-house logistics teams: regional manufacturers, wholesalers, suppliers, distributors, building materials, packaging, furniture, food/beverage producers, industrial suppliers, and similar physical-goods companies. Exclude enterprise shippers, carriers, brokers, 3PLs, companies with private fleets, and companies that clearly already have established logistics/supply-chain teams. Search nationwide with priority around the Pacific Northwest, Chicago/Midwest industrial markets, Texas, California, Florida/Georgia/Southeast, and the broader East Coast. Return only company name, contact person, best phone, email, region, source URL, industry, company type, signal, and signal proof URL.`;
 
 const GENERATED_LEADS_SHEET_NAME = "Generated Leads";
 const GENERATED_LEADS_SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1N8l7_rJhwmvm4kz6HvjiAP9uI3togYBxSd3th-KMvHc/edit?gid=1737529281#gid=1737529281";
@@ -429,6 +429,14 @@ function getUrlPath(value) {
   }
 }
 
+function isLargeFreightShipperContext(text) {
+  return /\b(fortune\s*\d+|publicly traded|nyse|nasdaq|global leader|multinational|enterprise|national network|hundreds of locations|thousands of employees|over\s+\d{1,3},?\d{3}\s+employees|[1-9]\d{2,}\s+(?:locations|branches|distribution centers|warehouses|facilities)|private fleet|own fleet|dedicated fleet|fleet of\s+\d{2,}|in-house logistics|internal logistics|logistics department|supply chain department|transportation department|managed transportation|established 3pl|preferred carrier network|tms|transportation management system)\b/i.test(text);
+}
+
+function hasDryVanOrFlatbedFit(text) {
+  return /\b(dry\s*van|flatbed|truckload|ftl|ltl|pallet|palletized|boxed|carton|packaged|general freight|building materials?|lumber|steel|metal|machinery|equipment|parts|packaging|paper|plastics?|furniture|fixtures?|consumer goods|food|beverage|ingredients?|supplies|wholesale|distribution|manufacturer|manufacturing|supplier|producer|fabricator|industrial|construction materials?)\b/i.test(text);
+}
+
 function validateLeadListRow(row) {
   const company = getLeadListCompany(row);
   const signal = stripLeadListMarkup(getLeadCell(row, "Signal"));
@@ -458,6 +466,14 @@ function validateLeadListRow(row) {
 
   if (/(carrier|broker|3pl|third[-\s]?party logistics|freight forwarder|forwarder|trucking company|trucking service|courier|stevedore|marine logistics|load board|freight marketplace)/i.test(contextText)) {
     return { ok: false, reason: "not a shipper/manufacturer/distributor" };
+  }
+
+  if (isLargeFreightShipperContext(contextText)) {
+    return { ok: false, reason: "too large or likely has established logistics" };
+  }
+
+  if (!hasDryVanOrFlatbedFit(contextText)) {
+    return { ok: false, reason: "no clear dry van or flatbed freight fit" };
   }
 
   if (/(serv(es|ing)|delivery service|service area|has a warehouse|operates a warehouse|for over \d+ years|since \d{4}|been around|reliable delivery|proudly serving)/i.test(signal)) {
@@ -745,22 +761,48 @@ function scoreShipListCompany(company) {
   let buyerFit = 50;
   const priorityReasons = [];
 
+  const isEvents = company.isEventsBusiness === true;
+  const isLuxury = company.isLuxury === true;
+
+  // Luxury signal — highest spend category
+  if (isLuxury) {
+    buyerFit += 30;
+    priorityReasons.push("Luxury brand positioning — strong indicator of high-spend video budget.");
+  }
+
+  // Events/experiential signal — recurring shoot opportunities
+  if (isEvents) {
+    buyerFit += 25;
+    priorityReasons.push("Events or experiential business — recurring shoot and highlight reel opportunities.");
+  }
+
+  // Employee count — relax the penalty for events/luxury where small teams still spend big
   if (employeeUpper !== null) {
-    if (employeeUpper < 50) {
-      buyerFit += 20;
-      priorityReasons.push("Small team likely to outsource content work.");
-    } else if (employeeUpper <= 99) {
-      buyerFit += 15;
-      priorityReasons.push("Lean team with enough scale to need content support.");
-    } else if (employeeUpper <= 149) {
-      buyerFit += 5;
-      priorityReasons.push("Mid-size team may still need specialist agency capacity.");
-    } else if (employeeUpper <= 299) {
-      buyerFit -= 10;
-      priorityReasons.push("Larger team may have more in-house marketing capacity.");
+    if (isEvents || isLuxury) {
+      if (employeeUpper < 200) {
+        buyerFit += 15;
+        priorityReasons.push("Boutique team in a high-spend category — size is not a limiting factor.");
+      } else {
+        buyerFit -= 10;
+        priorityReasons.push("Larger team may have more in-house creative capacity.");
+      }
     } else {
-      buyerFit -= 30;
-      priorityReasons.push("300+ employees lowers outsource likelihood.");
+      if (employeeUpper < 50) {
+        buyerFit += 20;
+        priorityReasons.push("Small team likely to outsource content work.");
+      } else if (employeeUpper <= 99) {
+        buyerFit += 15;
+        priorityReasons.push("Lean team with enough scale to need content support.");
+      } else if (employeeUpper <= 149) {
+        buyerFit += 5;
+        priorityReasons.push("Mid-size team may still need specialist agency capacity.");
+      } else if (employeeUpper <= 299) {
+        buyerFit -= 10;
+        priorityReasons.push("Larger team may have more in-house marketing capacity.");
+      } else {
+        buyerFit -= 30;
+        priorityReasons.push("300+ employees lowers outsource likelihood.");
+      }
     }
   }
 
@@ -787,15 +829,49 @@ function scoreShipListCompany(company) {
     priorityReasons.push("Hiring marketing/content roles suggests unmet content need.");
   }
 
+  const physicalProductFit = String(company.physicalProductFit || "").trim();
+  const videoShotPotential = String(company.videoShotPotential || "").trim();
+  if (company.hasPhysicalProduct === true) {
+    buyerFit += 25;
+    priorityReasons.push(physicalProductFit || "Physical product or tangible experience gives video something concrete to shoot.");
+  } else if (physicalProductFit) {
+    buyerFit += 15;
+    priorityReasons.push(physicalProductFit);
+  } else if (!isEvents && !isLuxury) {
+    buyerFit -= 20;
+    priorityReasons.push("No clear physical product, space, or filmable process found.");
+  }
+  if (videoShotPotential) {
+    buyerFit += 10;
+    priorityReasons.push(`Video angle: ${videoShotPotential}`);
+  }
+  if (company.isSoftwareOnly === true && !isEvents && !isLuxury) {
+    buyerFit -= 35;
+    priorityReasons.push("Software-only company deprioritized because there is less to film.");
+  }
+
   const socials = company.socials || {};
   const platformsPresent = ["linkedin", "twitter", "instagram", "tiktok", "youtube", "facebook"]
     .reduce((count, key) => count + (socials[key] ? 1 : 0), 0);
   const socialGap = clampNumber(100 - platformsPresent * 17);
   if (platformsPresent === 0) priorityReasons.push("No official social platforms found.");
-  else priorityReasons.push(`Only ${platformsPresent} official social platform${platformsPresent === 1 ? "" : "s"} found.`);
+  else priorityReasons.push(`${platformsPresent} official social platform${platformsPresent === 1 ? "" : "s"} found.`);
 
   buyerFit = clampNumber(buyerFit);
   const priority = Math.round(buyerFit * 0.7 + socialGap * 0.3);
+
+  // Budget signal — likelihood they'd spend $4–5K+ on a single shoot
+  let budgetSignal;
+  if (isLuxury) {
+    budgetSignal = "High";
+  } else if (isEvents) {
+    budgetSignal = "Medium";
+  } else if (buyerFit >= 70) {
+    budgetSignal = "Medium";
+  } else {
+    budgetSignal = "Low";
+  }
+  if (isLuxury && isEvents) budgetSignal = "High";
 
   return {
     ...company,
@@ -805,6 +881,7 @@ function scoreShipListCompany(company) {
     priorityLabel: getShipListPriorityLabel(priority),
     priorityReasons,
     platformsPresent,
+    budgetSignal,
   };
 }
 
@@ -1279,7 +1356,7 @@ function prospectFromPipelineLead(lead) {
   };
 }
 
-function buildLeadListOfferEmail(lead, prospects, senderName, stripeLink) {
+function buildLeadListOfferEmail(lead, prospects) {
   const detailMap = getPipelineDetailMap(lead);
   const prospect = lead.sourceMode === "prospects" ? prospectFromPipelineLead(lead) : null;
 
@@ -1295,8 +1372,6 @@ function buildLeadListOfferEmail(lead, prospects, senderName, stripeLink) {
     ? cleanBusinessObservation(firstLine, `${company} already has real momentum in ${location}`)
     : cleanBusinessObservation(signal, `${company} looks like a strong fit for more consistent outbound prospecting`);
   const sampleLeads = formatSampleLeads(prospects, location, niche, prospect?.id || lead.id);
-  const signature = String(senderName || "").trim() || DEFAULT_EMAIL_SIGNATURE;
-
   return `Subject: Found 5 ${location} businesses that need coverage
 
 Hi ${firstName},
@@ -1312,7 +1387,7 @@ The full list of 50 is $200. Delivered within 24 hours.
 
 Interested?
 
-${signature}`;
+${DEFAULT_EMAIL_SIGNATURE}`;
 }
 
 const DEFAULT_EMAIL_SIGNATURE = `David Osei-Tutu
@@ -1450,9 +1525,8 @@ export default function LeadGen() {
   const [shipListIncludeServices, setShipListIncludeServices] = useState(true);
   const [shipListCity, setShipListCity] = useState("San Francisco");
   const [shipListPriorityFilter, setShipListPriorityFilter] = useState("all");
+  const [shipListIndustryFocus, setShipListIndustryFocus] = useState("all");
   const [shipListProgress, setShipListProgress] = useState(null);
-  const [shipListStripeLink, setShipListStripeLink] = useState("");
-  const [shipListSenderName, setShipListSenderName] = useState(DEFAULT_EMAIL_SIGNATURE);
 
   // Ship List DB state
   const [savedCompanies, setSavedCompanies] = useState([]); // companies saved to Supabase
@@ -1507,8 +1581,6 @@ export default function LeadGen() {
       if (savedSettings) {
         if (savedSettings.companyName) setCompanyName(savedSettings.companyName);
         if (savedSettings.theme) setTheme(savedSettings.theme);
-        if (savedSettings.shipListStripeLink) setShipListStripeLink(savedSettings.shipListStripeLink);
-        if (savedSettings.shipListSenderName) setShipListSenderName(savedSettings.shipListSenderName);
         if (savedSettings.industry) {
           setIndustry(savedSettings.industry);
         }
@@ -1525,7 +1597,7 @@ export default function LeadGen() {
   useEffect(() => { if (!loading) saveData(SK.costEvents, costEvents.slice(0, 500)); }, [costEvents, loading]);
   useEffect(() => { if (!loading) saveData(SK.costRuns, costRuns.slice(0, 150)); }, [costRuns, loading]);
   useEffect(() => { if (!loading) saveData(SK.prospectSendStatus, prospectSendStatus); }, [prospectSendStatus, loading]);
-  useEffect(() => { if (!loading) saveData(SK.settings, { companyName, theme, industry, setupComplete, shipListStripeLink, shipListSenderName }); }, [companyName, theme, industry, setupComplete, shipListStripeLink, shipListSenderName, loading]);
+  useEffect(() => { if (!loading) saveData(SK.settings, { companyName, theme, industry, setupComplete }); }, [companyName, theme, industry, setupComplete, loading]);
   useEffect(() => { localStorage.setItem('lq-theme', theme); }, [theme]);
 
   // ─── KEYBOARD SHORTCUTS ───────────────────────────────────
@@ -2174,7 +2246,6 @@ This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
         `${prospect.businessName || "Your agency"} already has real momentum in ${city}`
       );
       const sampleLeads = formatSampleLeads(prospects, city, niche, prospect.id);
-      const senderName = shipListSenderName.trim() || DEFAULT_EMAIL_SIGNATURE;
       const emailText = `Subject: Found 5 ${city} businesses that need coverage
 
 Hi ${firstName},
@@ -2190,7 +2261,7 @@ The full list of 50 is $200. Delivered within 24 hours.
 
 Interested?
 
-${senderName}`;
+${DEFAULT_EMAIL_SIGNATURE}`;
       setEmailDrafts(prev => ({ ...prev, [prospect.id]: emailText }));
       updatePipelineLead(
         lead => pipelineUniqueKey(lead) === pipelineUniqueKey({
@@ -2265,7 +2336,7 @@ ${senderName}`;
 
     const savedNames = savedCompanies.map(c => c.company_name).filter(Boolean);
     const cityFilter = shipListCity.trim() || "San Francisco, San Jose, Oakland, Palo Alto";
-    const candidateTarget = Math.max(shipListCount * 2, shipListCount + 5);
+    const candidateTarget = shipListCount;
     const sizeBand = {
       startup: "20-80 employees. Seed, Series A, or bootstrapped equivalent. Bias toward under 50 employees.",
       growth: "50-150 employees. Series A or Series B, or bootstrapped equivalent with similar scale.",
@@ -2277,6 +2348,7 @@ ${senderName}`;
       params: {
         city: cityFilter,
         sizeBand: shipListSizeBand,
+        industryFocus: shipListIndustryFocus,
         includeServices: shipListIncludeServices,
         requestedCount: shipListCount,
         savedExclusions: savedNames.length,
@@ -2330,8 +2402,18 @@ ${senderName}`;
         industry: shipValue(row, ["industry", "vertical"], ""),
         founded: shipValue(row, ["founded", "foundedYear", "founded year"], ""),
         description: shipValue(row, ["description", "summary"], ""),
+        contactEmail: shipValue(row, ["contactEmail", "contact email", "email", "bestEmail", "best email"], ""),
+        emailConfidence: shipValue(row, ["emailConfidence", "email confidence"], ""),
+        emailSource: shipValue(row, ["emailSource", "email source", "sourceUrl", "source url"], ""),
+        hasPhysicalProduct: shipValue(row, ["hasPhysicalProduct", "has physical product", "physical product"], false) === true,
+        isSoftwareOnly: shipValue(row, ["isSoftwareOnly", "is software only", "software only"], false) === true,
+        physicalProductFit: shipValue(row, ["physicalProductFit", "physical product fit", "physicalProduct", "physical product"], ""),
+        videoShotPotential: shipValue(row, ["videoShotPotential", "video shot potential", "video angle", "shoot potential"], ""),
         headOfContentPresent: shipValue(row, ["headOfContentPresent", "head of content present", "content lead present"], false) === true,
         hiringMarketingRoles: shipValue(row, ["hiringMarketingRoles", "hiring marketing roles", "marketing hiring"], false) === true,
+        isEventsBusiness: shipValue(row, ["isEventsBusiness", "is events business", "events business", "events"], false) === true,
+        isLuxury: shipValue(row, ["isLuxury", "is luxury", "luxury"], false) === true,
+        budgetSignal: shipValue(row, ["budgetSignal", "budget signal", "budget"], ""),
         socials: { linkedin: null, twitter: null, instagram: null, tiktok: null, youtube: null, facebook: null },
       }))
       .filter(row => row.companyName);
@@ -2356,15 +2438,59 @@ ${senderName}`;
       };
     };
 
-    const runShipListPrompt = async (promptText, action, maxTokens = 3000) => {
-      const { data } = await callAnthropic(action, {
+    const runShipListPrompt = async (promptText, action, maxTokens = 2200, { webSearch = false } = {}) => {
+      const body = {
         model: "claude-sonnet-4-20250514",
         max_tokens: maxTokens,
-        system: "You are a business research assistant. Search the web for real companies. Respond with strict JSON only. No prose, no markdown.",
+        system: webSearch
+          ? "You are a business research assistant. Search the web for real companies. Respond with strict JSON only. No prose, no markdown."
+          : "You are a business research assistant. Return real, plausible companies from known public business context. Respond with strict JSON only. No prose, no markdown.",
         messages: [{ role: "user", content: promptText }],
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-      });
+      };
+      if (webSearch) body.tools = [{ type: "web_search_20250305", name: "web_search" }];
+      const { data } = await callAnthropic(action, body);
       return data;
+    };
+
+    const enrichShipListEmails = async (companies) => {
+      const lookupTargets = companies
+        .map(company => ({
+          company,
+          lead: {
+            company: company.companyName,
+            domain: company.website,
+            name: company.contactName || company.companyName,
+          },
+        }))
+        .filter(item => item.lead.company && (item.lead.domain || item.lead.company));
+
+      if (lookupTargets.length === 0) return companies;
+
+      setShipListProgress("Finding reachable emails...");
+      try {
+        const response = await fetch("/api/hunter-email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ leads: lookupTargets.map(item => item.lead) }),
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) throw new Error(data.error || "Email lookup failed");
+        const results = Array.isArray(data.results) ? data.results : [];
+        return companies.map(company => {
+          const index = lookupTargets.findIndex(item => item.company.id === company.id);
+          const found = index >= 0 ? results[index] : null;
+          if (!found?.email) return company;
+          return {
+            ...company,
+            contactEmail: found.email,
+            emailConfidence: found.confidence || (found.verified ? "HIGH" : "MEDIUM"),
+            emailSource: found.sourceUrl || found.domain || "",
+          };
+        });
+      } catch (error) {
+        console.warn("[ShipList] Email enrichment failed", error?.message || error);
+        return companies;
+      }
     };
 
     const auditCompanySocials = async (company, index, total) => {
@@ -2414,33 +2540,66 @@ JSON shape:
 
     try {
       const includeServicesText = shipListIncludeServices
-        ? "Also include boutique professional services firms: law, consulting, recruiting, finance, and marketing agencies."
-        : "Exclude professional services firms; focus on B2B SaaS, fintech, devtools, and AI/ML startups.";
+        ? "Boutique services are allowed only when they have a physical space, studio, showroom, clinic, event presence, workshop, or client experience that would look good on camera."
+        : "Exclude professional services firms and pure software companies unless they have a physical product, facility, or customer-facing space.";
       const excludeClause = savedNames.length
         ? `Do not return these previously saved companies: ${savedNames.join(", ")}.`
         : "";
-      const discoveryPrompt = `Find ${candidateTarget} candidate companies for a Bay Area visual storytelling content agency.
+      const industryFocusBlock = {
+        events_weddings: `INDUSTRY FOCUS — Events & Weddings (prioritize these):
+- Wedding venues, estate venues, private event spaces, rooftop venues, historic properties.
+- Luxury wedding planners, full-service event design companies.
+- Corporate event companies, experiential marketing agencies with real events.
+- Photo and video studios that also host events or productions.
+- High-end party and event rental companies.`,
+        luxury_lifestyle: `INDUSTRY FOCUS — Luxury Lifestyle (prioritize these):
+- Luxury car dealerships, exotic car rentals, high-end auto detailing studios.
+- Luxury fashion boutiques, jewelry brands, premium watch retailers.
+- Premium spirits, fine wine, champagne brands or importers with physical presence.
+- Luxury wellness — high-end spas, private fitness clubs, members-only studios.
+- Interior design firms and luxury home furnishings showrooms.`,
+        nightlife: `INDUSTRY FOCUS — Nightlife & Hospitality (prioritize these):
+- Upscale restaurants, hotel rooftops, fine dining establishments.
+- Nightclubs, cocktail lounges, bars with strong visual brand identity.
+- Hotel and resort properties with an active events calendar.
+- Private members clubs and social clubs.`,
+        tech: `INDUSTRY FOCUS — Tech with visual story potential (prioritize these):
+- Hardware, robotics, or IoT companies with a physical product.
+- Tech companies that run product launches, demos, or brand events.
+- Consumer tech products (wearables, smart home, devices).
+- AI or SaaS companies with a filmable lab, workspace, or customer-facing experience.`,
+        all: `TARGET CATEGORIES — companies most likely to spend $4,000–$8,000+ on a single video shoot:
+- Events & weddings: venues, luxury planners, experiential companies.
+- Luxury lifestyle: exotic cars, fashion, jewelry, premium spirits, high-end wellness.
+- Nightlife & hospitality: upscale restaurants, hotels, clubs, rooftop venues.
+- Tech with physical presence: hardware products, launches, demo-worthy operations.
+- Any business whose brand depends on visual impact and premium perception.`,
+      }[shipListIndustryFocus] || "";
 
-ICP:
-- Headquartered in ${cityFilter}, California, USA. Verify location and exclude UK, Canada, or other US homonyms.
+      const buildDiscoveryPrompt = (targetCount, fallback = false) => `Find ${targetCount} companies in ${cityFilter}, California, USA that would be strong clients for a premium video production agency charging $4,000–$8,000 per shoot.
+
+${industryFocusBlock}
+
+Requirements:
+- Headquartered in ${cityFilter}, California, USA. Exclude UK, Canadian, or other US-homonym cities.
 - ${sizeBand}
-- Founded 2017 or later when data is available.
 - Currently operating in 2026.
-- Always include B2B SaaS, fintech, devtools, and AI/ML startups.
+- Must have a filmable business: physical venue, tangible product, live events, or luxury visual identity.
 - ${includeServicesText}
 
 Exclude:
-- Public companies, unicorns, companies valued at $1B+, or 300+ employee companies.
-- Companies with Head of Content, Creative Director, or VP Brand listed on their team/about pages.
-- Big-name consultancies such as Bain, McKinsey, Deloitte, Accenture, PwC, EY, KPMG.
+- Public companies, unicorns ($1B+ valuation), or 300+ employee companies.
+- Companies with Head of Content, Creative Director, or VP Brand already on staff.
+- Pure SaaS, fintech, devtools, or marketplace companies with nothing to film.
+- Big-name consultancies (Bain, McKinsey, Deloitte, Accenture, etc.).
 ${excludeClause}
 
-Positive signals to detect but not require:
-- Funded in the last 18 months.
-- Actively hiring marketing/content roles.
-- No in-house content lead detected.
+For each company, assess:
+- isEventsBusiness: true if the company runs events, weddings, nightlife, or experiential activations as a core part of the business.
+- isLuxury: true if the brand is positioned as premium or luxury (price point, aesthetics, clientele).
+- budgetSignal: "High" if they would easily spend $5K+ on video, "Medium" if likely, "Low" if uncertain.
 
-Do not research social media in this phase.
+${fallback ? "Use fast, high-confidence sources only: company website, LinkedIn, Crunchbase, Wellfound, YC, or recent press. No deep research." : "Keep research shallow. Do not look up social media in this phase."}
 Return strict JSON only. No prose. No markdown fences.
 
 JSON shape:
@@ -2450,49 +2609,56 @@ JSON shape:
       "companyName": "",
       "website": "",
       "city": "",
-      "employeeCount": "30-50",
-      "fundingStage": "Seed",
+      "employeeCount": "10-30",
+      "fundingStage": "Bootstrapped",
       "lastFundingDate": "2025-08",
       "industry": "",
       "founded": "2021",
       "description": "",
+      "contactEmail": "public general email if confidently known, otherwise blank",
+      "emailConfidence": "HIGH | MEDIUM | LOW | blank",
+      "emailSource": "source URL or domain if known",
+      "hasPhysicalProduct": true,
+      "isSoftwareOnly": false,
+      "isEventsBusiness": false,
+      "isLuxury": false,
+      "budgetSignal": "High | Medium | Low",
+      "physicalProductFit": "What tangible venue, product, event, or experience could be filmed.",
+      "videoShotPotential": "Specific practical video angle for this company (e.g. event highlight reel, product launch, brand story).",
       "headOfContentPresent": false,
       "hiringMarketingRoles": false
     }
   ]
 }`;
 
-      const discoveryData = await runShipListPrompt(discoveryPrompt, "Ship List Phase 1 Discovery", 3500);
+      let discoveryData = await runShipListPrompt(buildDiscoveryPrompt(candidateTarget, true), "Ship List Fast Discovery", 1800, { webSearch: false });
+      if (discoveryData.error && /timeout|took too long|504/i.test(discoveryData.error.message || discoveryData.error.type || "")) {
+        setShipListProgress("Search took too long. Retrying with fewer companies...");
+        discoveryData = await runShipListPrompt(
+          buildDiscoveryPrompt(Math.min(shipListCount, 6), true),
+          "Ship List Fast Discovery Retry",
+          1600,
+          { webSearch: false },
+        );
+      }
       if (discoveryData.error) throw new Error(discoveryData.error.message || "Discovery failed");
       const discoveryRaw = extractShipText(discoveryData);
       logRaw("Phase 1", discoveryRaw);
       const discoveryParsed = parseShipListResponse(discoveryRaw);
       if (!discoveryParsed) logParseWarning("Phase 1", discoveryRaw);
-      const candidates = normalizePhaseOneRows(discoveryParsed);
+      let candidates = normalizePhaseOneRows(discoveryParsed);
       console.log(`[ShipList] Phase 1: ${candidates.length} candidates`);
 
       if (candidates.length === 0) {
-        setShipListError("No candidate companies found. Try a broader region or a different size band.");
-        setShipListLoading(false);
-        setShipListProgress(null);
-        endCostRun(costRunId, { resultCount: 0, status: "partial", notes: "Phase 1 returned zero candidates" });
-        costRunEnded = true;
-        return;
+        throw new Error("No companies found. Try a different city or size filter.");
       }
 
-      const audited = [];
-      const SOCIAL_BATCH_SIZE = 3;
-      for (let i = 0; i < candidates.length; i += SOCIAL_BATCH_SIZE) {
-        const batch = candidates.slice(i, i + SOCIAL_BATCH_SIZE);
-        const batchResults = await Promise.all(batch.map((company, offset) => auditCompanySocials(company, i + offset, candidates.length)));
-        audited.push(...batchResults);
-      }
-      console.log(`[ShipList] Phase 2: ${audited.length} audited`);
-
-      const finalResults = audited
+      setShipListProgress("Scoring companies...");
+      const scoredResults = candidates
         .map(scoreShipListCompany)
         .sort((a, b) => b.priority - a.priority)
         .slice(0, shipListCount);
+      const finalResults = await enrichShipListEmails(scoredResults);
       console.log(`[ShipList] Phase 3: ${finalResults.length} final`);
       setShipListResults(finalResults);
       showToast(`Found ${finalResults.length} companies for the Ship List`);
@@ -2546,7 +2712,7 @@ JSON shape:
       contact_name: contact.name || "",
       contact_title: contact.title || "",
       contact_linkedin: contact.linkedin || "",
-      contact_email: contact.email || "",
+      contact_email: contact.email || company.contactEmail || "",
       outreach_platform: contact.platform || "",
       outreach_draft: shipListOutreach[company.id] || "",
       status: "new",
@@ -3276,6 +3442,13 @@ Discovery requirements:
    - companyFilters
    - geography
 2. Find real candidate companies that match the request and show at least one recent or currently active freight-demand signal.
+2a. Freight brokerage ICP is small-to-medium shippers that may still be open to a new brokerage:
+   - Ideal size: roughly 10-250 employees, regional or privately held, one to a few plants/warehouses/branches, or clearly mid-market.
+   - Accept borderline companies only when they are still regional/mid-market and do not show mature logistics infrastructure.
+   - Exclude companies that look enterprise-sized, public, Fortune/large national brands, have hundreds of locations, or appear to have a dedicated logistics, transportation, supply-chain, TMS, private fleet, preferred-carrier, or established 3PL operation.
+   - Do not pick companies just because they are famous shippers; prioritize companies a new brokerage could realistically win.
+2b. Freight fit must be general freight that can plausibly move on dry van or flatbed: palletized/boxed goods, packaged products, building materials, industrial supplies, machinery/equipment/parts, packaging, furniture/fixtures, food and beverage, ingredients, paper/plastics, wholesale/distribution, manufacturing, suppliers, producers, or fabricators. Exclude parcel-only, courier-only, pure ecommerce with tiny parcels, bulk tanker, hazmat-only, ocean/air-forwarding-only, intermodal-only, and parcel delivery companies.
+2c. Geography is nationwide, with priority in the Pacific Northwest, Chicago/Midwest industrial markets, Texas, California, Florida/Georgia/Southeast, and the broader East Coast. If the user gave a city/region, honor it while still applying this fit.
 3. Strong freight-demand signals must be specific events or active evidence, such as:
    - a new or expanded distribution center, warehouse, plant, cold storage site, branch, production line, or market launch
    - current shipping, receiving, warehouse, logistics, dispatch, supply chain, CDL, driver, forklift, distribution, inventory, or operations hiring
@@ -3292,7 +3465,7 @@ Discovery requirements:
 6. Signal Proof URL must be a direct link to the page proving that exact signal, such as the hiring post, public bid, press release, facility opening announcement, expansion article, permit/news page, or company announcement.
 7. Source URL can be the company website or best company source, but Signal Proof URL must correspond to the Signal. Do not use a generic homepage as Signal Proof URL unless it directly contains the signal.
 8. Prefer companies with callable public main lines.
-9. For freight/shipper searches, include shippers, distributors, manufacturers, wholesalers, suppliers, producers, and foodservice operators. Exclude carriers, brokers, 3PLs, couriers, freight marketplaces, and staffing agencies.
+9. For freight/shipper searches, include small-to-medium shippers, distributors, manufacturers, wholesalers, suppliers, producers, fabricators, building-material companies, food/beverage producers, and foodservice operators. Exclude carriers, brokers, 3PLs, couriers, freight marketplaces, staffing agencies, enterprise shippers, private-fleet operators, and companies with obvious in-house logistics/transportation/supply-chain departments.
 10. Job boards are allowed only as Signal Proof URL evidence for current physical freight roles by the shipper company itself: shipping, receiving, warehouse, logistics, supply chain, CDL, driver, forklift, distribution, inventory, or operations. Do not return the job board as the company.
 11. If you cannot find a direct proof URL for a strong freight-demand signal, skip the company and find another.
 12. Do not find individual contacts in this step. That happens later one company at a time.
@@ -3342,7 +3515,10 @@ Rules:
 - Prioritize getting a useful phone number. A public main/location phone is acceptable.
 - Prefer a dispatch, logistics, shipping, warehouse, operations, distribution, transportation, or supply chain contact when public.
 - If a named contact is not public, leave Contact Person blank.
-- For freight/shipper searches, the company must be a shipper, distributor, manufacturer, wholesaler, supplier, producer, or foodservice operator. Exclude carriers, brokers, 3PLs, couriers, freight marketplaces, job boards, and staffing agencies.
+- For freight/shipper searches, the company must be a small-to-medium shipper, distributor, manufacturer, wholesaler, supplier, producer, fabricator, building-material company, food/beverage producer, or foodservice operator. Exclude carriers, brokers, 3PLs, couriers, freight marketplaces, job boards, staffing agencies, enterprise shippers, private-fleet operators, and companies with obvious in-house logistics/transportation/supply-chain departments.
+- The company should look realistically winnable by a new freight brokerage: roughly 10-250 employees, regional/mid-market, privately held when possible, and not already signaling a mature logistics machine.
+- Freight must plausibly move by dry van or flatbed: palletized/boxed goods, packaged products, building materials, industrial supplies, machinery/equipment/parts, packaging, furniture/fixtures, food and beverage, ingredients, paper/plastics, wholesale/distribution, manufacturing, suppliers, producers, or fabricators. Reject parcel-only, courier-only, pure ecommerce parcel, bulk tanker, hazmat-only, ocean/air-forwarding-only, or intermodal-only fits.
+- Nationwide is acceptable, but prioritize the Pacific Northwest, Chicago/Midwest industrial markets, Texas, California, Florida/Georgia/Southeast, and the broader East Coast unless the user gave a tighter geography.
 - Confirm the company has a recent or currently active freight-demand signal such as shipping/logistics/warehouse/driver hiring, a distribution/facility opening or expansion, a public delivery/freight bid, seasonal outbound freight, or supplier/distributor growth announcement.
 - Signal must be one caller-ready sentence that clearly names the exact signal, so a caller can say "I saw you..." naturally.
 - Signal Proof URL must directly prove the Signal. Use the hiring post, bid/RFP page, press release, facility opening/expansion article, company announcement, or similar evidence page.
@@ -3679,7 +3855,7 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
   const handlePipelinePersonalizeEmail = async (lead) => {
     setPipelineDraftingId(lead.id);
     try {
-      const draft = buildLeadListOfferEmail(lead, prospects, shipListSenderName, shipListStripeLink);
+      const draft = buildLeadListOfferEmail(lead, prospects);
       updatePipelineLead(
         item => item.id === lead.id,
         item => ({ ...item, savedEmailDraft: draft }),
@@ -4239,33 +4415,12 @@ Return:
             <div style={{ animation: "fadeIn 0.3s ease" }}>
               <div style={{ marginBottom: 24 }}>
                 <h2 style={{ fontSize: 20, fontWeight: 700, fontFamily: "'Outfit', sans-serif", marginBottom: 6 }}>📋 Ship List</h2>
-                <p style={{ color: t.textDim, fontSize: 14 }}>Find small Bay Area companies likely to outsource visual storytelling and content work.</p>
+                <p style={{ color: t.textDim, fontSize: 14 }}>Find Bay Area companies likely to spend $4,000–$8,000+ on a professional video or photo shoot.</p>
               </div>
 
               {/* Controls */}
               <div style={{ ...cardStyle, marginBottom: 24 }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
-                  <div>
-                    <label style={labelStyle}>Stripe Payment Link</label>
-                    <input
-                      style={inputStyle}
-                      value={shipListStripeLink}
-                      onChange={e => setShipListStripeLink(e.target.value)}
-                      placeholder="https://buy.stripe.com/..."
-                    />
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Your Name</label>
-                    <input
-                      style={inputStyle}
-                      value={shipListSenderName}
-                      onChange={e => setShipListSenderName(e.target.value)}
-                      placeholder="Your name"
-                    />
-                  </div>
-                </div>
-
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr auto", gap: 16, alignItems: "flex-end" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr auto", gap: 16, alignItems: "flex-end" }}>
                   <div>
                     <label style={labelStyle}>City / Region</label>
                     <select style={{ ...inputStyle, cursor: "pointer" }} value={shipListCity} onChange={e => setShipListCity(e.target.value)}>
@@ -4285,6 +4440,16 @@ Return:
                     </select>
                   </div>
                   <div>
+                    <label style={labelStyle}>Industry Focus</label>
+                    <select style={{ ...inputStyle, cursor: "pointer" }} value={shipListIndustryFocus} onChange={e => setShipListIndustryFocus(e.target.value)}>
+                      <option value="all">All high-spend</option>
+                      <option value="events_weddings">Events &amp; Weddings</option>
+                      <option value="luxury_lifestyle">Luxury Lifestyle</option>
+                      <option value="nightlife">Nightlife &amp; Hospitality</option>
+                      <option value="tech">Tech</option>
+                    </select>
+                  </div>
+                  <div>
                     <label style={labelStyle}>Show Priority</label>
                     <select style={{ ...inputStyle, cursor: "pointer" }} value={shipListPriorityFilter} onChange={e => setShipListPriorityFilter(e.target.value)}>
                       <option value="all">All results</option>
@@ -4296,7 +4461,7 @@ Return:
                   <div>
                     <label style={labelStyle}>Results</label>
                     <select style={{ ...inputStyle, cursor: "pointer" }} value={shipListCount} onChange={e => setShipListCount(Number(e.target.value))}>
-                      {[10, 15, 20, 25].map(n => <option key={n} value={n}>{n} companies</option>)}
+                      {[5, 10, 15, 20, 25].map(n => <option key={n} value={n}>{n} companies</option>)}
                     </select>
                   </div>
                   <button onClick={handleShipListSearch} disabled={shipListLoading} style={{ ...btnPrimary, whiteSpace: "nowrap", opacity: shipListLoading ? 0.7 : 1 }}>
@@ -4325,10 +4490,10 @@ Return:
                   <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center" }}>
                     <span style={{ fontSize: 13, color: t.textMuted, flex: 1 }}>{shipListResults.length} prioritized companies</span>
                     <button onClick={() => {
-                      const headers = ["Company Name", "Website", "City", "Employee Count", "Funding Stage", "Last Funding Date", "Industry", "Founded", "Priority", "Buyer Fit", "Social Gap", "Platforms Present", "Priority Reasons", "YouTube", "Instagram", "TikTok", "LinkedIn", "Twitter", "Facebook"];
+                      const headers = ["Company Name", "Email", "Email Confidence", "Email Source", "Website", "City", "Employee Count", "Funding Stage", "Last Funding Date", "Industry", "Founded", "Priority", "Budget Signal", "Buyer Fit", "Social Gap", "Platforms Present", "Priority Reasons", "YouTube", "Instagram", "TikTok", "LinkedIn", "Twitter", "Facebook"];
                       const rows = shipListResults.map(r => [
-                        r.companyName, r.website, r.city, r.employeeCount, r.fundingStage, r.lastFundingDate, r.industry || r.companyType, r.founded,
-                        r.priority, r.buyerFit, r.socialGap, r.platformsPresent, (r.priorityReasons || []).join("; "),
+                        r.companyName, r.contactEmail, r.emailConfidence, r.emailSource, r.website, r.city, r.employeeCount, r.fundingStage, r.lastFundingDate, r.industry || r.companyType, r.founded,
+                        r.priority, r.budgetSignal || "", r.buyerFit, r.socialGap, r.platformsPresent, (r.priorityReasons || []).join("; "),
                         r.socials?.youtube || "none", r.socials?.instagram || "none", r.socials?.tiktok || "none", r.socials?.linkedin || "none", r.socials?.twitter || "none", r.socials?.facebook || "none"
                       ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(","));
                       const csv = [headers.join(","), ...rows].join("\n");
@@ -4366,6 +4531,15 @@ Return:
                               <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 6, background: t.bgHover, color: t.textMuted }}>
                                 Priority: {r.priority}
                               </span>
+                              {r.budgetSignal && (
+                                <span style={{
+                                  fontSize: 10, fontWeight: 800, padding: "2px 8px", borderRadius: 6, letterSpacing: "0.05em", textTransform: "uppercase",
+                                  background: r.budgetSignal === "High" ? "#14532d44" : r.budgetSignal === "Medium" ? "#78350f44" : t.bgHover,
+                                  color: r.budgetSignal === "High" ? "#86efac" : r.budgetSignal === "Medium" ? "#fcd34d" : t.textMuted,
+                                }}>
+                                  {r.budgetSignal === "High" ? "💰 High Budget" : r.budgetSignal === "Medium" ? "💵 Mid Budget" : "Budget?"}
+                                </span>
+                              )}
                               {(r.industry || r.companyType) && <span style={{ fontSize: 10, background: "#1d4ed822", color: "#93c5fd", padding: "2px 6px", borderRadius: 4 }}>{r.industry || r.companyType}</span>}
                               {r.country && r.country !== "US" && <span style={{ fontSize: 10, background: "#7f1d1d33", color: "#fca5a5", padding: "2px 6px", borderRadius: 4 }}>⚠ {r.country}</span>}
                             </div>
@@ -4374,6 +4548,9 @@ Return:
                               {r.city && <span>{r.city} · </span>}
                               {r.employeeCount && <span>{r.employeeCount} emp · </span>}
                               {r.fundingStage && <span style={{ color: t.accent }}>{r.fundingStage}</span>}
+                            </div>
+                            <div style={{ fontSize: 12, color: r.contactEmail ? "#86efac" : "#fca5a5", marginBottom: 2 }}>
+                              {r.contactEmail ? `Email: ${r.contactEmail}${r.emailConfidence ? ` · ${r.emailConfidence}` : ""}` : "No reachable email found yet"}
                             </div>
                             <div style={{ fontSize: 12, color: t.textFaint }}>
                               Fit: {r.buyerFit} · Gap: {r.socialGap}{r.lastFundingDate ? ` · Last funding: ${r.lastFundingDate}` : ""}{r.founded ? ` · Founded: ${r.founded}` : ""}

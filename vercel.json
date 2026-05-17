@@ -8,6 +8,9 @@
     },
     "api/indeed-search.js": {
       "maxDuration": 30
+    },
+    "api/hunter-email.js": {
+      "maxDuration": 45
     }
   },
   "rewrites": [

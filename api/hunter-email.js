@@ -109,10 +109,21 @@ async function lookupWithHunter(entry, apiKey) {
     params.set("full_name", fullName || firstName);
   }
 
-  const response = await fetch(`https://api.hunter.io/v2/email-finder?${params.toString()}`, {
-    method: "GET",
-    headers: { Accept: "application/json" },
-  });
+  const ctrl = new AbortController();
+  const timeoutId = setTimeout(() => ctrl.abort(), 6000);
+  let response;
+  try {
+    response = await fetch(`https://api.hunter.io/v2/email-finder?${params.toString()}`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeoutId);
+    return { email: "", verified: false, error: "timeout", reason: "Hunter email-finder timed out." };
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   const rawText = await response.text();
   let payload;
@@ -175,10 +186,21 @@ async function lookupDomainFallback(entry, apiKey) {
   if (domain) params.set("domain", domain);
   if (!domain && company) params.set("company", company);
 
-  const response = await fetch(`https://api.hunter.io/v2/domain-search?${params.toString()}`, {
-    method: "GET",
-    headers: { Accept: "application/json" },
-  });
+  const ctrl = new AbortController();
+  const timeoutId = setTimeout(() => ctrl.abort(), 6000);
+  let response;
+  try {
+    response = await fetch(`https://api.hunter.io/v2/domain-search?${params.toString()}`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeoutId);
+    return { email: "", verified: false, error: "timeout", reason: "Hunter domain-search timed out." };
+  } finally {
+    clearTimeout(timeoutId);
+  }
 
   const rawText = await response.text();
   let payload;
