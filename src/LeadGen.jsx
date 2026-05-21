@@ -323,8 +323,6 @@ const LEAD_LIST_COLUMNS = [
 const LEAD_LIST_MAX_GENERATION_PASSES = 8;
 const LEAD_LIST_BUFFER_ROWS = 2;
 const LEAD_LIST_ROW_DELAY_MS = 350;
-const PROSPECT_EMAIL_BATCH_SIZE = 1;
-const PROSPECT_EMAIL_DELAY_MS = 350;
 
 function extractJSONValue(fullText) {
   if (!fullText) return null;
@@ -577,9 +575,12 @@ function classifyProspect(prospect) {
   const blank = (s) => !s || !s.trim() || /not found|n\/a|unknown/i.test(s.trim());
   const hasPhone = !blank(prospect.phone);
   const hasEmail = !blank(prospect.email);
+  const phoneVerified = prospect.phoneVerified === true;
 
+  if (hasPhone && hasEmail && phoneVerified) return { tier: "Verified phone + email", emoji: "🟢", color: "#34d399" };
   if (hasPhone && hasEmail) return { tier: "Phone + email", emoji: "🟢", color: "#34d399" };
-  if (hasPhone) return { tier: "Phone-only", emoji: "🟡", color: "#f59e0b" };
+  if (hasPhone && phoneVerified) return { tier: "Verified phone", emoji: "🟡", color: "#f59e0b" };
+  if (hasPhone) return { tier: "Phone (unverified)", emoji: "🟠", color: "#fb923c" };
   if (hasEmail) return { tier: "Email-only", emoji: "🔵", color: "#60a5fa" };
   return { tier: "NOT ACTIONABLE", emoji: "🔴", color: "#f87171" };
 }
@@ -1430,6 +1431,57 @@ function mergePipelineLeads(localLeads, remoteLeads) {
   return [...byKey.values()].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 }
 
+// ─── METRO WARNING ───────────────────────────────────────────
+const HIGH_ADOPTION_CITIES = new Set([
+  "new york","los angeles","chicago","houston","phoenix","philadelphia",
+  "san antonio","san diego","dallas","san jose","austin","fort worth",
+  "columbus","san francisco","charlotte","indianapolis","seattle","denver",
+  "washington","nashville","boston","portland","las vegas","baltimore",
+  "milwaukee","albuquerque","tucson","fresno","mesa","sacramento",
+  "atlanta","kansas city","omaha","colorado springs","raleigh","miami",
+  "minneapolis","tampa","new orleans","virginia beach","long beach",
+  "arlington","bakersfield","honolulu","anaheim","aurora","santa ana",
+  "corpus christi","riverside","st louis","pittsburgh","anchorage",
+  "stockton","cincinnati","st paul","toledo","greensboro","newark",
+  "plano","henderson","lincoln","buffalo","fort wayne","jersey city",
+  "chula vista","orlando","st petersburg","norfolk","chandler","laredo",
+  "madison","durham","lubbock","winston-salem","garland","glendale",
+  "hialeah","reno","baton rouge","irvine","chesapeake","scottsdale",
+  "north las vegas","fremont","gilbert",
+  // Affluent suburbs / neighborhoods with high web adoption
+  "sherman oaks","studio city","encino","calabasas","tarzana",
+  "woodland hills","beverly hills","west hollywood","santa monica",
+  "malibu","brentwood","pacific palisades","culver city","marina del rey",
+  "manhattan beach","hermosa beach","redondo beach","el segundo","torrance",
+  "pasadena","burbank","los gatos","saratoga",
+  "palo alto","menlo park","mountain view","sunnyvale","cupertino",
+  "san mateo","burlingame","redwood city","walnut creek","pleasanton",
+  "danville","orinda","lafayette","moraga","oakland","berkeley","emeryville",
+  "cambridge","newton","brookline","wellesley","evanston","oak park",
+  "naperville","schaumburg","wheaton","downers grove",
+  "bellevue","kirkland","redmond","bothell","issaquah","mercer island",
+  "tempe","chandler","gilbert","peoria","scottsdale",
+  "plano","frisco","allen","mckinney","southlake","grapevine","colleyville",
+  "newport beach","laguna beach","mission viejo","lake forest",
+  "hoboken","montclair","princeton","summit","morristown",
+  "bethesda","rockville","silver spring","mclean","tysons","great falls",
+  "lakewood","centennial","highlands ranch","parker",
+  "buckhead","sandy springs","alpharetta","marietta","dunwoody",
+  "coral gables","coconut grove","aventura","weston","brickell","bal harbour",
+  "stamford","greenwich","westport","darien","new canaan","wilton",
+  "white plains","yonkers","scarsdale","bronxville","tarrytown","rye",
+  "brooklyn","queens","bronx","staten island","manhattan",
+]);
+
+function isHighAdoptionCity(cityStr) {
+  const normalized = String(cityStr || "")
+    .toLowerCase()
+    .replace(/,.*$/, "")
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim();
+  return HIGH_ADOPTION_CITIES.has(normalized);
+}
+
 // ─── MAIN COMPONENT ──────────────────────────────────────────
 export default function LeadGen() {
   const [loading, setLoading] = useState(true);
@@ -1849,6 +1901,12 @@ export default function LeadGen() {
       showToast("Enter city and state, e.g. San Jose, CA", "error");
       return;
     }
+    // Hard block: high web-adoption city + no niche = almost certainly no results.
+    // Bail before making any API call to avoid burning money.
+    if (!prospectNiche.trim() && isHighAdoptionCity(locationText)) {
+      setProspectError(`${locationText.replace(/,.*$/, "").trim()} is a high web-adoption area. Most businesses here already have websites. Add a niche (e.g. "nail salons", "auto detailing") to get results.`);
+      return;
+    }
     setProspectLoading(true);
     setProspectError(null);
     setProspects([]);
@@ -1922,6 +1980,9 @@ export default function LeadGen() {
           websiteStatus: clean(r.websiteStatus || r["Website Status"]),
           proofReason: clean(r.proofReason || r.proof || r["Proof"] || r["Proof / Reason"]),
           pitchAngle: clean(r.pitchAngle || r["Pitch Angle"]),
+          facebookUrl: clean(r.facebookUrl || r["Facebook URL"]),
+          instagramUrl: clean(r.instagramUrl || r["Instagram URL"]),
+          yelpUrl: clean(r.yelpUrl || r["Yelp URL"]),
           buyingSignal: clean(r.websiteStatus || r["Website Status"] || r.proofReason || r.proof || r["Proof"]),
           personalizedFirstLine: clean(r.pitchAngle || r["Pitch Angle"]),
           niche: searchNiche,
@@ -1949,6 +2010,32 @@ export default function LeadGen() {
       if (data.error) throw new Error(data.error.message || "Unknown error from the AI service.");
       const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
       return parseProspectJSON(text) || [];
+    };
+
+    // Cheap probe used only by the sample gate — minimal tokens, no deep per-business searches.
+    const runSampleProbe = async () => {
+      const batchTarget = searchNiche || generalLeadFocusAreas[0];
+      return runAnthropicSearch({
+        maxTokens: 480,
+        action: "Find My Clients Sample Probe",
+        system: "You are a fast B2B lead researcher. Use a single broad web search to find real local businesses. Return only a raw JSON array. No markdown, no explanation.",
+        prompt: `Find up to 3 real ${batchTarget} in ${locationText} that do NOT have a usable standalone website.
+
+Practical no-website definition:
+- No website listed on public sources.
+- Or only Facebook, Instagram, Yelp, directory, booking, or Google Business Profile.
+- Or listed website is broken, parked, or a placeholder.
+
+Rules:
+- Run ONE broad search (e.g. "${batchTarget} ${locationText}" on Yelp or Google Maps). Prefer listings that show no Website field.
+- Do NOT run separate per-business searches. The app verifies websites after this step.
+- Keep only real local businesses with a phone or email.
+- Exclude national chains, franchises, and directories.
+- Return fewer than 3 if you cannot find 3 quickly.
+
+Return exactly this JSON array (no other text):
+[{ "Company Name": "", "Phone": "", "Email": "", "Website URL": "", "Source URL": "", "Website Status": "No website found", "Facebook URL": "", "Instagram URL": "", "Yelp URL": "", "Pitch Angle": "" }]`,
+      });
     };
 
     const runCompanyDiscoveryBatch = async ({ batchSize, batchIndex, existingCompanies, focusArea }) => {
@@ -1982,6 +2069,14 @@ Exclude:
 - Companies without a phone number or email address.
 ${existingNames ? `Do not repeat these companies: ${existingNames}.` : ""}
 
+Email extraction — check these sources for an email address:
+- Facebook page "About" or "Info" section
+- Instagram bio
+- Yelp business listing
+- Google Business Profile
+- Any directory listing that shows an email
+If you find an email on any social profile or listing, put it in the Email field.
+
 Return exactly this JSON array schema:
 [
   {
@@ -1992,7 +2087,9 @@ Return exactly this JSON array schema:
     "Website URL": "",
     "Source URL": "",
     "Website Status": "No website found",
-    "Proof": "",
+    "Facebook URL": "",
+    "Instagram URL": "",
+    "Yelp URL": "",
     "Pitch Angle": ""
   }
 ]
@@ -2003,7 +2100,7 @@ Hard rules:
 - Website Status must be one of: "No website found", "Social-only presence", "Directory-only presence", "Broken website", "Placeholder website", "Parked domain".
 - If the business has any candidate website URL visible in directory listings, social pages, or search results, Website URL must contain that URL. Leaving Website URL blank is only acceptable when no URL appears anywhere across the sources you checked.
 - If Website Status is "Broken website", Website URL must be the exact standalone website URL that appears broken. Do not infer broken status without a URL.
-- Proof must explain why this qualifies as a practical no-website lead.
+- Facebook URL, Instagram URL, and Yelp URL: include the direct profile/listing URL if found during research. Leave blank if not found.
 - Pitch Angle must be one caller-ready sentence about helping the business get a real website.
 - Return only actionable companies with phone and/or email.
 - Return real local businesses only.
@@ -2045,132 +2142,59 @@ This is discovery batch ${batchIndex}.`,
       }
     };
 
-    const runDecisionMakerBatch = async (companies, batchIndex, attempt = 1) => {
-      const companyLines = companies.map((company, index) => (
-        `${index + 1}. ${clean(company["Company Name"] || company.companyName || company.businessName)} | domain: ${clean(company["Website Domain"] || company.websiteDomain || company.domain)} | signal: ${clean(company["Buying Signal"] || company.buyingSignal)}`
-      )).join("\n");
+    const PHONE_VERIFY_BATCH_SIZE = 1;
+    const PHONE_VERIFY_DELAY_MS = 1200;
 
-      return normalizeProspectResults(await runAnthropicSearch({
-        maxTokens: 1800,
-        action: attempt > 1 ? "Find My Clients Retry Search" : "Find My Clients Decision Maker Search",
-        system: "You are a B2B decision-maker lead researcher. Use web search to find public decision-maker evidence. Return ONLY a raw JSON array. No markdown, no explanation, no placeholder text.",
-        prompt: `Enrich these ${companies.length} ${prospectNiche} companies in ${prospectCity.trim()} with ONE decision maker each.
-
-Companies:
-${companyLines}
-
-For each company, search its website/team/about/contact pages, LinkedIn, press pages, directories, or other public sources to find ONE decision maker.
-Priority order:
-1. Founder / Owner
-2. CEO / President / Managing Partner
-3. Most senior person in the relevant department
-
-Email rules:
-- HIGH confidence only if the exact email is found on a public page.
-- MEDIUM confidence if inferred from a visible company email pattern or a very standard pattern at the company domain.
-- LOW confidence if guessed.
-- If inferring and no public pattern is found, use firstname@companydomain.com only when it looks plausible.
-
-Return exactly these 9 fields for each row and no extra fields:
-[
-  {
-    "Company Name": "",
-    "Decision Maker Name": "",
-    "Title": "",
-    "Email": "",
-    "Email Confidence": "HIGH",
-    "LinkedIn URL": "",
-    "Source URL": "",
-    "Buying Signal": "",
-    "Personalized First Line": ""
-  }
-]
-
-Hard rules:
-- Do not return a row unless it has at least Company Name and Decision Maker Name.
-- Do not use placeholder text like "Not found", "N/A", "Unknown", or "None"; leave optional fields empty or skip the row.
-- The personalized first line must be one sentence referencing something specific about the business.
-
-This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
-      }));
-    };
-
-    const enrichProspectEmails = async (rows, companies, progressMeta = {}) => {
-      const companyMap = new Map(
-        (companies || []).map(company => [
-          columnKey(clean(company["Company Name"] || company.companyName || company.businessName)),
-          company,
-        ])
-      );
-
+    const verifyProspectPhones = async (rows) => {
       const lookups = rows
-        .map((row, index) => {
-          const matchedCompany = companyMap.get(columnKey(row.businessName));
-          return {
-            index,
-            name: row.ownerName,
-            company: row.businessName,
-            domain: normalizeLeadDomain(
-              clean(
-                matchedCompany?.["Website Domain"] ||
-                matchedCompany?.websiteDomain ||
-                matchedCompany?.domain ||
-                row.sourceUrl
-              )
-            ),
-            email: row.email,
-          };
-        })
-        .filter(item => !String(item.email || "").trim() && String(item.name || "").trim() && (String(item.domain || "").trim() || String(item.company || "").trim()));
-
+        .map((row, index) => ({ index, phone: String(row.phone || "").trim() }))
+        .filter(item => item.phone);
       if (lookups.length === 0) return rows;
 
-      const enrichedByIndex = new Map();
+      const verifiedByIndex = new Map();
       let completed = 0;
-      for (let i = 0; i < lookups.length; i += PROSPECT_EMAIL_BATCH_SIZE) {
-        const batch = lookups.slice(i, i + PROSPECT_EMAIL_BATCH_SIZE);
-        setProspectProgress({
-          phase: "enriching",
-          current: progressMeta.current ?? 0,
-          total: progressMeta.total ?? rows.length,
-          batchIndex: progressMeta.batchIndex ?? 1,
-          totalBatches: progressMeta.totalBatches ?? 1,
-          detail: `Finding emails ${completed}/${lookups.length}`,
-        });
-
-        const response = await fetch("/api/hunter-email", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            leads: batch.map(item => ({
-              name: item.name,
-              company: item.company,
-              domain: item.domain,
-            })),
-          }),
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok || data.error) {
-          throw new Error(data.error || "Prospect email enrichment failed");
-        }
-        (data.results || []).forEach((result, offset) => {
-          enrichedByIndex.set(batch[offset].index, result);
-        });
+      for (let i = 0; i < lookups.length; i += PHONE_VERIFY_BATCH_SIZE) {
+        const batch = lookups.slice(i, i + PHONE_VERIFY_BATCH_SIZE);
+        setProspectProgress(prev => ({
+          ...prev,
+          phase: "verifying",
+          detail: `Verifying phones ${completed}/${lookups.length}`,
+        }));
+        try {
+          const response = await fetch("/api/twilio-lookup", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              numbers: batch.map(item => ({ phone: item.phone, countryCode: "US" })),
+            }),
+          });
+          const data = await response.json().catch(() => ({}));
+          if (response.ok && !data.error) {
+            (data.results || []).forEach((result, offset) => {
+              verifiedByIndex.set(batch[offset].index, result);
+            });
+          }
+        } catch {}
         completed += batch.length;
-        if (i + PROSPECT_EMAIL_BATCH_SIZE < lookups.length) {
-          await sleep(PROSPECT_EMAIL_DELAY_MS);
+        if (i + PHONE_VERIFY_BATCH_SIZE < lookups.length) {
+          await sleep(PHONE_VERIFY_DELAY_MS);
         }
       }
 
       return rows.map((row, index) => {
-        const enrichment = enrichedByIndex.get(index);
-        if (!enrichment?.email) return row;
-        return {
-          ...row,
-          email: enrichment.email,
-          emailConfidence: enrichment.confidence || row.emailConfidence,
-          sourceUrl: row.sourceUrl || enrichment.sourceUrl || "",
-        };
+        const verification = verifiedByIndex.get(index);
+        if (!verification) return row;
+        if (verification.verified) {
+          return {
+            ...row,
+            phone: verification.nationalFormat || row.phone,
+            phoneVerified: true,
+            phoneLineType: verification.lineType || null,
+            phoneCarrier: verification.carrierName || null,
+          };
+        }
+        // Dead number — clear it so it doesn't show as actionable
+        return { ...row, phone: "", phoneVerified: false, phoneDeadReason: verification.validationMode || "failed" };
       });
     };
 
@@ -2179,6 +2203,35 @@ This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
       const DISCOVERY_BATCH_SIZE = isGeneralSearch ? 2 : 3;
       const discoveryBatches = Math.ceil(targetCount / DISCOVERY_BATCH_SIZE);
       let results = [];
+
+      // ── Sample gate ─────────────────────────────────────────────
+      // Run a cheap 3-lead probe before committing to the full search.
+      // Uses a stripped-down prompt (480 tokens, 1 search) to minimize cost.
+      // If none survive website verification, bail early and save cost.
+      setProspectProgress({ phase: "discovery", current: 0, total: targetCount, batchIndex: 0, totalBatches: discoveryBatches });
+      const sampleBatch = await runSampleProbe();
+      const sampleWebVerified = await verifyWebsiteClaims(normalizeProspectResults(sampleBatch));
+      const sampleVerified = await verifyProspectPhones(sampleWebVerified);
+      if (sampleVerified.length === 0) {
+        setProspectError(`No verified no-website leads found in ${locationText}. Most businesses here already have websites. Try a smaller nearby city or add a niche (e.g. "nail salons", "auto detailing").`);
+        endCostRun(costRunId, { resultCount: 0, status: "partial", notes: "Sample gate: 0 leads passed verification" });
+        prospectRunEnded = true;
+        setProspectLoading(false); setProspectProgress(null); return;
+      }
+      // Seed results with the verified sample so we don't re-search them
+      const sampleSeen = new Set(sampleVerified.map(p => columnKey(p.businessName)));
+      results = [...sampleVerified].slice(0, targetCount);
+      setProspects(results);
+      if (results.length >= targetCount) {
+        prospectRunResultCount = results.length;
+        const withPhone = results.filter(r => String(r.phone || "").trim()).length;
+        const withEmail = results.filter(r => isPlausibleEmail(r.email)).length;
+        showToast(`Found ${results.length} no-website leads · ${withPhone} phone · ${withEmail} email`);
+        endCostRun(costRunId, { resultCount: results.length, status: "success" });
+        prospectRunEnded = true;
+        setProspectLoading(false); setProspectProgress(null); return;
+      }
+      // ── End sample gate ──────────────────────────────────────────
 
       for (let discoveryIndex = 0; discoveryIndex < discoveryBatches; discoveryIndex++) {
         setProspectProgress({ phase: "discovery", current: results.length, total: targetCount, batchIndex: discoveryIndex + 1, totalBatches: discoveryBatches });
@@ -2191,7 +2244,9 @@ This is batch ${batchIndex}, attempt ${attempt}. Accuracy beats volume.`,
             focusArea: generalLeadFocusAreas[discoveryIndex % generalLeadFocusAreas.length],
           });
           const seen = new Set(results.map(p => columnKey(p.businessName)));
-          const fresh = (await verifyWebsiteClaims(normalizeProspectResults(batch))).filter(prospect => {
+          const webVerified = await verifyWebsiteClaims(normalizeProspectResults(batch));
+          const phoneVerified = await verifyProspectPhones(webVerified);
+          const fresh = phoneVerified.filter(prospect => {
             const key = columnKey(prospect.businessName);
             if (!key || seen.has(key)) return false;
             seen.add(key);
@@ -5381,6 +5436,12 @@ Return:
                   </div>
                 </div>
 
+                {!prospectNiche.trim() && isHighAdoptionCity(prospectCity) && (
+                  <div style={{ background: "#1c1400", border: "1px solid #78350f", color: "#fbbf24", borderRadius: 8, padding: "12px 16px", fontSize: 13, marginBottom: 16, lineHeight: 1.5 }}>
+                    ⚠ <strong>{prospectCity.replace(/,.*$/, "").trim()}</strong> is a high web-adoption area. Without a niche, most businesses here already have websites and results may come back empty — wasting your search budget. Add a niche (e.g. "nail salons", "auto detailing") for better results.
+                  </div>
+                )}
+
                 <button onClick={handleProspectSearch} disabled={prospectLoading} style={{ ...btnPrimary, padding: "12px 32px", fontSize: 15, opacity: prospectLoading ? 0.6 : 1, cursor: prospectLoading ? "wait" : "pointer" }}>
                   {prospectLoading
                     ? (prospectProgress?.phase === "discovery"
@@ -5445,14 +5506,16 @@ Return:
                           {[
                             ["Company Name", p.businessName],
                             ["Contact Method", p.classification.tier],
-                            ["Phone", p.phone],
+                            ["Phone", p.phone ? `${p.phone}${p.phoneVerified ? " ✓" : ""}` : ""],
+                            ...(p.phoneLineType ? [["Phone Type", p.phoneLineType]] : []),
                             ...(p.email ? [["Email", p.email]] : []),
                             ["Address", p.address],
-                            ["Address Detail", p.addressDetail],
                             ...(p.websiteUrl ? [["Website URL Checked", p.websiteUrl]] : []),
                             ["Website Status", p.websiteStatus],
                             ["Source URL", p.sourceUrl],
-                            ["Proof", p.proofReason],
+                            ...(p.facebookUrl ? [["Facebook", p.facebookUrl]] : []),
+                            ...(p.instagramUrl ? [["Instagram", p.instagramUrl]] : []),
+                            ...(p.yelpUrl ? [["Yelp", p.yelpUrl]] : []),
                             ["Pitch Angle", p.pitchAngle],
                           ].filter(([, value]) => String(value || "").trim()).map(([label, value]) => (
                             <div key={label} style={{ minWidth: 0 }}>
