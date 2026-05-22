@@ -320,6 +320,21 @@ const LEAD_LIST_COLUMNS = [
   "Signal Proof URL",
 ];
 
+const CREDIT_COLUMNS = [
+  "Company Name",
+  "Decision Maker",
+  "Best Phone",
+  "Email",
+  "Region",
+  "Industry",
+  "Company Type",
+  "Credit Need Signal",
+  "Signal Proof URL",
+  "Source URL",
+  "Funding Fit",
+  "Pitch Angle",
+];
+
 const LEAD_LIST_MAX_GENERATION_PASSES = 8;
 const LEAD_LIST_BUFFER_ROWS = 2;
 const LEAD_LIST_ROW_DELAY_MS = 350;
@@ -404,6 +419,27 @@ function sanitizeLeadListRow(row) {
     "Signal Proof URL": ["Signal Proof URL", "Proof URL", "Signal URL", "Evidence URL"],
   };
   return LEAD_LIST_COLUMNS.reduce((cleanRow, column) => {
+    cleanRow[column] = stripLeadListMarkup(getFirstLeadCell(row || {}, aliases[column] || [column]));
+    return cleanRow;
+  }, {});
+}
+
+function sanitizeCreditRow(row) {
+  const aliases = {
+    "Company Name": ["Company Name", "Business Name", "Company", "Name"],
+    "Decision Maker": ["Decision Maker", "Contact Person", "Owner Name", "Founder", "President", "CEO", "Name"],
+    "Best Phone": ["Best Phone", "Phone", "Phone Number", "Main Phone"],
+    "Email": ["Email", "Email Address"],
+    "Region": ["Region", "Location", "City", "State", "Market"],
+    "Industry": ["Industry", "Niche", "Vertical"],
+    "Company Type": ["Company Type", "Type", "Business Type"],
+    "Credit Need Signal": ["Credit Need Signal", "Funding Signal", "Signal", "Buying Signal", "Reason"],
+    "Signal Proof URL": ["Signal Proof URL", "Proof URL", "Signal URL", "Evidence URL"],
+    "Source URL": ["Source URL", "Source", "Website", "URL"],
+    "Funding Fit": ["Funding Fit", "Fit", "Credit Fit"],
+    "Pitch Angle": ["Pitch Angle", "Call Angle", "Outreach Angle"],
+  };
+  return CREDIT_COLUMNS.reduce((cleanRow, column) => {
     cleanRow[column] = stripLeadListMarkup(getFirstLeadCell(row || {}, aliases[column] || [column]));
     return cleanRow;
   }, {});
@@ -495,6 +531,52 @@ function validateLeadListRow(row) {
 
   if (/^\/?$|^\/(about|contact|locations?|services?|company|home)\/?$/i.test(proofPath)) {
     return { ok: false, reason: "proof URL is too generic" };
+  }
+
+  return { ok: true, reason: "" };
+}
+
+function validateCreditRow(row) {
+  const company = getFirstLeadCell(row, ["Company Name"]);
+  const signal = stripLeadListMarkup(getLeadCell(row, "Credit Need Signal"));
+  const proofUrl = stripLeadListMarkup(getLeadCell(row, "Signal Proof URL"));
+  const sourceUrl = stripLeadListMarkup(getLeadCell(row, "Source URL"));
+  const proofDomain = getUrlDomain(proofUrl);
+  const proofPath = getUrlPath(proofUrl);
+  const contextText = [
+    getLeadCell(row, "Company Name"),
+    getLeadCell(row, "Industry"),
+    getLeadCell(row, "Company Type"),
+    signal,
+    getLeadCell(row, "Funding Fit"),
+  ].map(stripLeadListMarkup).join(" ").toLowerCase();
+
+  if (!company || !signal || !proofUrl || !/^https?:\/\//i.test(proofUrl)) {
+    return { ok: false, reason: "missing company, signal, or direct proof URL" };
+  }
+
+  if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl)) {
+    return { ok: false, reason: "missing source URL" };
+  }
+
+  if (/(^|\.)(zoominfo|apollo|dnb|crunchbase|yelp|zippia|signalhire|rocketreach|adapt|lusha|seamless)\.com$/i.test(proofDomain)) {
+    return { ok: false, reason: "generic data/directory proof source" };
+  }
+
+  if (/^\/?$|^\/(about|contact|locations?|services?|company|home)\/?$/i.test(proofPath)) {
+    return { ok: false, reason: "proof URL is too generic" };
+  }
+
+  if (/(bank|credit union|lender|loan broker|mortgage broker|merchant cash advance|mca provider|funding company|financing company|collection agency)/i.test(contextText)) {
+    return { ok: false, reason: "financial-services seller, not a credit-help prospect" };
+  }
+
+  if (/\b(fortune\s*\d+|publicly traded|nyse|nasdaq|global leader|multinational|enterprise|national chain|hundreds of locations|thousands of employees|over\s+\d{1,3},?\d{3}\s+employees)\b/i.test(contextText)) {
+    return { ok: false, reason: "too large or likely well capitalized" };
+  }
+
+  if (!/\b(hiring|expanding|expansion|opened|opening|new location|second location|equipment|fleet|truck|vehicle|permit|contract|bid|rfp|working capital|cash flow|receivables|invoice|growth|renovation|buildout|purchase order|seasonal|inventory|tax lien|judgment|funding|financing|credit)\b/i.test(signal)) {
+    return { ok: false, reason: "no clear credit or working-capital signal" };
   }
 
   return { ok: true, reason: "" };
@@ -1282,6 +1364,36 @@ function buildLeadListPipelineDetails(lead, columns = [], outreachDraft = "") {
   };
 }
 
+function buildCreditPipelineDetails(lead) {
+  return {
+    sourceLabel: "Credit Leads",
+    sections: [
+      {
+        title: "Credit Fit",
+        items: toDetailItems([
+          ["Company Name", getLeadCell(lead, "Company Name")],
+          ["Decision Maker", getLeadCell(lead, "Decision Maker")],
+          ["Best Phone", getLeadCell(lead, "Best Phone")],
+          ["Email", getLeadCell(lead, "Email")],
+          ["Region", getLeadCell(lead, "Region")],
+          ["Industry", getLeadCell(lead, "Industry")],
+          ["Company Type", getLeadCell(lead, "Company Type")],
+        ]),
+      },
+      {
+        title: "Buying Signal",
+        items: toDetailItems([
+          ["Credit Need Signal", getLeadCell(lead, "Credit Need Signal")],
+          ["Funding Fit", getLeadCell(lead, "Funding Fit")],
+          ["Pitch Angle", getLeadCell(lead, "Pitch Angle")],
+          ["Signal Proof URL", getLeadCell(lead, "Signal Proof URL")],
+          ["Source URL", getLeadCell(lead, "Source URL")],
+        ]),
+      },
+    ],
+  };
+}
+
 function buildProspectLeadResult(prospect) {
   const hasPhone = !!String(prospect?.phone || "").trim();
   const hasEmail = !!String(prospect?.email || "").trim();
@@ -1603,6 +1715,16 @@ export default function LeadGen() {
   const [leadListSheetStatus, setLeadListSheetStatus] = useState(null);
   const [leadListOutreach, setLeadListOutreach] = useState({});
   const [generatingLeadListOutreach, setGeneratingLeadListOutreach] = useState(null);
+
+  // Credit Leads state
+  const [creditCity, setCreditCity] = useState("");
+  const [creditNiche, setCreditNiche] = useState("");
+  const [creditCount, setCreditCount] = useState(10);
+  const [creditSignalFocus, setCreditSignalFocus] = useState("growth");
+  const [creditResults, setCreditResults] = useState([]);
+  const [creditLoading, setCreditLoading] = useState(false);
+  const [creditError, setCreditError] = useState(null);
+  const [creditProgress, setCreditProgress] = useState(null);
 
   const fileRef = useRef();
   const activeCostRunRef = useRef(null);
@@ -3441,6 +3563,128 @@ Respond with ONLY a JSON object:
     });
   };
 
+  // ─── CREDIT LEADS SEARCH ─────────────────────────────────
+  const handleCreditSearch = async () => {
+    const region = creditCity.trim();
+    if (!region) { showToast("Enter a city, state, or region", "error"); return; }
+
+    setCreditLoading(true);
+    setCreditError(null);
+    setCreditResults([]);
+    setCreditProgress("Finding credit-fit companies");
+
+    const desiredCount = Math.min(25, Math.max(1, Number(creditCount) || 10));
+    const focusText = {
+      growth: "growth, expansion, hiring, new locations, equipment needs, inventory needs, or working-capital pressure",
+      cashflow: "cash-flow strain, receivables-heavy businesses, invoice lag, seasonal inventory, project-based work, or working-capital gaps",
+      equipment: "equipment purchases, vehicle or fleet growth, machinery needs, buildouts, permits, renovations, or facility expansion",
+      distress: "public signs of tax liens, judgments, payment pressure, closures avoided, restructuring, or urgent financing need; use only reputable public sources and avoid making defamatory claims",
+    }[creditSignalFocus] || "growth, expansion, hiring, new locations, equipment needs, inventory needs, or working-capital pressure";
+    const nicheText = creditNiche.trim() || "local small-to-mid-sized businesses";
+    const existingCompanies = leads.filter(l => l.sourceMode === "credit").map(l => l.company).filter(Boolean);
+    const exclusionClause = existingCompanies.length
+      ? `Do not return these companies already in the pipeline: ${existingCompanies.join(", ")}.`
+      : "";
+
+    const costRunId = startCostRun({
+      mode: "credit",
+      action: "Credit Lead Search",
+      params: { region, niche: creditNiche.trim(), focus: creditSignalFocus, requestedCount: desiredCount },
+    });
+    let costRunEnded = false;
+
+    const prompt = `Find up to ${desiredCount} companies that may be good prospects for a business credit / funding-readiness company.
+
+Region: ${region}
+Niche hint: ${nicheText}
+Signal focus: ${focusText}
+${exclusionClause}
+
+Ideal prospects:
+- Small-to-mid-sized businesses that may benefit from business credit building, funding readiness, working capital, vendor credit, tradelines, equipment financing prep, or cleaner credit positioning.
+- Companies with a public, caller-mentionable signal showing growth, cash-flow timing, equipment/fleet need, expansion, hiring, project workload, inventory need, receivables pressure, public bids/contracts, permits/buildouts, or similar capital need.
+- Prefer owner-operated, privately held, regional, local, or lower-mid-market companies.
+
+Exclude:
+- Banks, credit unions, lenders, MCA providers, loan brokers, mortgage brokers, funding companies, collection agencies, and credit repair companies.
+- Huge enterprise companies, public companies, national chains, franchises, and companies that appear already well-capitalized.
+- Generic directory-only companies with no clear funding or credit-help signal.
+
+Source quality rules:
+1. Signal Proof URL must directly prove the credit/funding need signal: job post, permit, bid/RFP, expansion article, company announcement, new location page, equipment/fleet news, public notice, or other concrete source.
+2. Do not use generic homepages, About pages, Yelp, ZoomInfo, Apollo, Crunchbase, DNB, or scraped directory pages as Signal Proof URL.
+3. Do not claim financial distress unless the proof source explicitly supports it.
+4. If you cannot find a direct proof URL for a strong signal, skip the company.
+5. Prioritize rows with a public phone number or email.
+
+Return strict JSON only. No prose. No markdown.
+
+JSON shape:
+[
+  {
+    "Company Name": "",
+    "Decision Maker": "",
+    "Best Phone": "",
+    "Email": "",
+    "Region": "",
+    "Industry": "",
+    "Company Type": "",
+    "Credit Need Signal": "One caller-ready sentence naming the exact signal.",
+    "Signal Proof URL": "https://...",
+    "Source URL": "https://...",
+    "Funding Fit": "Why this company may need credit/funding readiness help.",
+    "Pitch Angle": "One practical outreach angle for a credit company."
+  }
+]`;
+
+    try {
+      const { response, data } = await callAnthropic("Credit Lead Search", {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: desiredCount <= 10 ? 2200 : 3200,
+        system: "You are a careful B2B lead researcher for business credit and working-capital services. Search the web for real companies and return strict JSON only. Accuracy beats volume.",
+        messages: [{ role: "user", content: prompt }],
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
+      });
+      if (!data || data.error?.type === "upstream_parse_error") throw new Error(`Search service unavailable (HTTP ${response.status})`);
+      if (data.error) throw new Error(data.error.message || "Credit lead search failed");
+
+      setCreditProgress("Checking signal quality");
+      const text = (data.content || []).filter(block => block.type === "text" && block.text).map(block => block.text).join("\n");
+      const parsed = extractJSONValue(text);
+      const rows = getParsedRows(parsed) || [];
+      const seen = new Set();
+      const results = rows
+        .map((row, index) => ({ ...sanitizeCreditRow(row), id: Date.now() + index + Math.random() }))
+        .filter(row => {
+          const key = columnKey(getLeadCell(row, "Company Name"));
+          if (!key || seen.has(key)) return false;
+          seen.add(key);
+          return validateCreditRow(row).ok;
+        })
+        .slice(0, desiredCount);
+
+      if (results.length === 0) {
+        setCreditError("No usable credit-fit companies returned. Try a clearer niche, broader geography, or a different signal focus.");
+        endCostRun(costRunId, { resultCount: 0, status: "partial", notes: "No validated credit leads returned" });
+        costRunEnded = true;
+        return;
+      }
+
+      setCreditResults(results);
+      showToast(`Found ${results.length} credit-fit companies`);
+      endCostRun(costRunId, { resultCount: results.length, status: results.length < desiredCount ? "partial" : "success" });
+      costRunEnded = true;
+    } catch (err) {
+      setCreditError(`Search failed — ${err?.message || "please try again."}`);
+      endCostRun(costRunId, { resultCount: creditResults.length, status: "error", notes: err?.message || "Credit lead search failed" });
+      costRunEnded = true;
+    } finally {
+      if (!costRunEnded) endCostRun(costRunId, { resultCount: creditResults.length, status: "partial", notes: "Credit lead search stopped before completion" });
+      setCreditLoading(false);
+      setCreditProgress(null);
+    }
+  };
+
   // ─── LEAD REQUEST ENGINE ─────────────────────────────────
   const handleLeadListSearch = async () => {
     const requestText = [
@@ -3907,6 +4151,41 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
     savePipelineLead(newLead);
   };
 
+  const handleAddCreditToPipeline = (row) => {
+    const company = getLeadCell(row, "Company Name");
+    const decisionMaker = getLeadCell(row, "Decision Maker");
+    const newLead = {
+      id: Date.now() + Math.random(),
+      createdAt: Date.now(),
+      name: decisionMaker || company,
+      company: company || "Unknown Company",
+      email: getLeadCell(row, "Email"),
+      phone: getLeadCell(row, "Best Phone"),
+      projectType: getLeadCell(row, "Industry") || "credit",
+      budget: "",
+      location: getLeadCell(row, "Region") || creditCity,
+      zipCode: "",
+      timeline: "",
+      source: getLeadCell(row, "Source URL") || getLeadCell(row, "Signal Proof URL") || "Credit Leads",
+      description: [
+        getLeadCell(row, "Credit Need Signal") ? `Signal: ${getLeadCell(row, "Credit Need Signal")}` : "",
+        getLeadCell(row, "Funding Fit") ? `Funding fit: ${getLeadCell(row, "Funding Fit")}` : "",
+        getLeadCell(row, "Pitch Angle") ? `Pitch angle: ${getLeadCell(row, "Pitch Angle")}` : "",
+      ].filter(Boolean).join("\n"),
+      followUp: "new",
+      result: { qualified: true, score: 3, total: 3, criteria: [
+        { name: "Credit Signal", pass: true, detail: getLeadCell(row, "Credit Need Signal") },
+        { name: "Proof URL", pass: true, detail: getLeadCell(row, "Signal Proof URL") },
+        { name: "Reachable", pass: Boolean(getLeadCell(row, "Best Phone") || getLeadCell(row, "Email")), detail: getLeadCell(row, "Best Phone") || getLeadCell(row, "Email") || "No phone/email saved" },
+      ] },
+      sourceMode: "credit",
+      creditRaw: row,
+      searchContext: { city: creditCity, niche: creditNiche, focus: creditSignalFocus },
+      pipelineDetails: buildCreditPipelineDetails(row),
+    };
+    savePipelineLead(newLead);
+  };
+
   const handlePipelinePersonalizeEmail = async (lead) => {
     setPipelineDraftingId(lead.id);
     try {
@@ -4062,8 +4341,19 @@ Return:
       });
     }
 
+    if (mode === "credit") {
+      const activeCity = normalizePipelineContextValue(creditCity);
+      const activeNiche = normalizePipelineContextValue(creditNiche);
+      if (!activeCity && !activeNiche) return base;
+      return base.filter(lead => {
+        const leadCity = normalizePipelineContextValue(lead.searchContext?.city || lead.location);
+        const leadNiche = normalizePipelineContextValue(lead.searchContext?.niche || lead.projectType);
+        return (!activeCity || leadCity === activeCity) && (!activeNiche || leadNiche === activeNiche);
+      });
+    }
+
     return base;
-  }, [leads, mode, prospectCity, prospectNiche, leadListRequest, leadListJob, leadListCity, leadListNiche]);
+  }, [leads, mode, prospectCity, prospectNiche, leadListRequest, leadListJob, leadListCity, leadListNiche, creditCity, creditNiche]);
 
   // ─── FILTERED & SORTED LEADS ─────────────────────────────
   const filteredLeads = useMemo(() => {
@@ -4437,6 +4727,7 @@ Return:
             {[
               { id: "leadlist",  tab: "leadlist",  label: "🎯 Build a Lead List" },
               { id: "prospects", tab: "prospects", label: "🔍 Find Leads" },
+              { id: "credit",    tab: "credit",    label: "💳 Credit Leads" },
               { id: "shiplist",  tab: "shiplist",  label: "📋 Ship List" },
             ].map(m => {
               const active = mode === m.id;
@@ -4453,6 +4744,7 @@ Return:
             {({
               leadlist:  [{ id: "leadlist",  label: "Build a Lead List",   count: leadListResults.length || undefined }, { id: "leads", label: "Pipeline", count: mode === "leadlist" ? modeLeads.length || undefined : leads.filter(l => (l.sourceMode || "leadlist") === "leadlist").length || undefined }, { id: "dashboard", label: "Dashboard" }],
               prospects: [{ id: "prospects", label: "Find Leads" }, { id: "leads", label: "Pipeline", count: mode === "prospects" ? modeLeads.length || undefined : leads.filter(l => l.sourceMode === "prospects").length || undefined }, { id: "dashboard", label: "Dashboard" }],
+              credit:    [{ id: "credit",    label: "Credit Leads",        count: creditResults.length || undefined }, { id: "leads", label: "Pipeline", count: mode === "credit" ? modeLeads.length || undefined : leads.filter(l => l.sourceMode === "credit").length || undefined }, { id: "dashboard", label: "Dashboard" }],
               shiplist:  [{ id: "shiplist",  label: "Ship List",           count: shipListResults.length || undefined }, { id: "leads", label: "Pipeline", count: leads.filter(l => l.sourceMode === "shiplist").length || undefined }, { id: "dashboard", label: "Dashboard" }],
             }[mode] || []).map(tb => (
               <button key={tb.id} onClick={() => setTab(tb.id)} style={{ padding: "12px 20px", background: tab === tb.id ? t.accent : "transparent", color: tab === tb.id ? "#0c0a09" : t.textMuted, border: "none", borderBottom: tab === tb.id ? `3px solid ${t.accent}` : "3px solid transparent", cursor: "pointer", fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: tab === tb.id ? 700 : 500, letterSpacing: "0.02em", transition: "all 0.2s", display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}>
@@ -4464,6 +4756,121 @@ Return:
         </div>
 
         <div style={{ maxWidth: 1240, margin: "0 auto", padding: "28px 32px" }} className="app-content">
+
+          {/* ════════════ CREDIT LEADS ════════════ */}
+          {tab === "credit" && (
+            <div style={{ animation: "fadeIn 0.3s ease" }}>
+              <div style={{ marginBottom: 24 }}>
+                <h2 style={{ fontSize: 20, fontWeight: 700, fontFamily: "'Outfit', sans-serif", marginBottom: 6 }}>💳 Credit Leads</h2>
+                <p style={{ color: t.textDim, fontSize: 14 }}>Find businesses with public growth, cash-flow, equipment, or expansion signals that a credit company can credibly mention on a call.</p>
+              </div>
+
+              <div style={{ ...cardStyle, marginBottom: 24 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1.2fr 1fr auto auto", gap: 16, alignItems: "flex-end" }}>
+                  <div>
+                    <label style={labelStyle}>City / Region</label>
+                    <input style={inputStyle} value={creditCity} onChange={e => setCreditCity(e.target.value)} placeholder="e.g. Austin, TX or Southeast US" onKeyDown={e => e.key === "Enter" && handleCreditSearch()} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Industry / Niche</label>
+                    <input style={inputStyle} value={creditNiche} onChange={e => setCreditNiche(e.target.value)} placeholder="e.g. contractors, trucking, restaurants" onKeyDown={e => e.key === "Enter" && handleCreditSearch()} />
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Signal Focus</label>
+                    <select style={{ ...inputStyle, cursor: "pointer" }} value={creditSignalFocus} onChange={e => setCreditSignalFocus(e.target.value)}>
+                      <option value="growth">Growth / hiring</option>
+                      <option value="cashflow">Cash-flow pressure</option>
+                      <option value="equipment">Equipment / buildout</option>
+                      <option value="distress">Public pressure</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Rows</label>
+                    <select style={{ ...inputStyle, width: 90, cursor: "pointer" }} value={creditCount} onChange={e => setCreditCount(Number(e.target.value))}>
+                      {[5, 10, 15, 20, 25].map(n => <option key={n} value={n}>{n}</option>)}
+                    </select>
+                  </div>
+                  <button onClick={handleCreditSearch} disabled={creditLoading} style={{ ...btnPrimary, height: 43, whiteSpace: "nowrap", opacity: creditLoading ? 0.7 : 1 }}>
+                    {creditLoading ? "Searching..." : "Find Credit Leads"}
+                  </button>
+                </div>
+                {creditLoading && creditProgress && (
+                  <div style={{ marginTop: 14, padding: "10px 12px", borderRadius: 8, background: t.bgHover, border: `1px solid ${t.borderLight}`, color: t.textMuted, fontSize: 13 }}>
+                    {creditProgress}
+                  </div>
+                )}
+              </div>
+
+              {creditError && (
+                <div style={{ background: t.redBg, border: `1px solid ${t.redBorder}`, borderRadius: 8, padding: "14px 18px", marginBottom: 20, fontSize: 14, color: t.red }}>{creditError}</div>
+              )}
+
+              {creditResults.length > 0 && (
+                <>
+                  <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center" }}>
+                    <span style={{ fontSize: 13, color: t.textMuted, flex: 1 }}>{creditResults.length} credit-fit companies</span>
+                    <button onClick={() => {
+                      const rows = creditResults.map(row => CREDIT_COLUMNS.map(col => csvValue(getLeadCell(row, col))).join(","));
+                      const csv = [CREDIT_COLUMNS.map(csvValue).join(","), ...rows].join("\n");
+                      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a"); a.href = url; a.download = "credit_leads.csv"; a.click();
+                      URL.revokeObjectURL(url);
+                    }} style={btnSecondary}>Export CSV</button>
+                  </div>
+
+                  <div style={{ display: "grid", gap: 14 }}>
+                    {creditResults.map(row => {
+                      const company = getLeadCell(row, "Company Name");
+                      const inPipeline = leads.some(l => l.sourceMode === "credit" && columnKey(l.company) === columnKey(company));
+                      return (
+                        <div key={row.id} style={{ ...cardStyle, marginBottom: 0, borderLeft: "4px solid #22c55e" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 12 }}>
+                            <div style={{ minWidth: 240, flex: 1 }}>
+                              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
+                                <span style={{ fontSize: 16, fontWeight: 800, color: t.text }}>{company}</span>
+                                {getLeadCell(row, "Industry") && <span style={{ fontSize: 10, background: "#16653433", color: "#86efac", padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>{getLeadCell(row, "Industry")}</span>}
+                                {getLeadCell(row, "Company Type") && <span style={{ fontSize: 10, background: t.bgHover, color: t.textMuted, padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>{getLeadCell(row, "Company Type")}</span>}
+                              </div>
+                              <div style={{ fontSize: 12, color: t.textMuted }}>
+                                {getLeadCell(row, "Region") || creditCity}
+                                {getLeadCell(row, "Decision Maker") ? ` · ${getLeadCell(row, "Decision Maker")}` : ""}
+                              </div>
+                              <div style={{ fontSize: 12, color: getLeadCell(row, "Best Phone") || getLeadCell(row, "Email") ? "#86efac" : t.textFaint, marginTop: 3 }}>
+                                {getLeadCell(row, "Best Phone") || "No phone"}{getLeadCell(row, "Email") ? ` · ${getLeadCell(row, "Email")}` : ""}
+                              </div>
+                            </div>
+                            <button onClick={() => handleAddCreditToPipeline(row)} disabled={inPipeline} style={{ ...btnPrimary, alignSelf: "flex-start", opacity: inPipeline ? 0.6 : 1 }}>
+                              {inPipeline ? "In Pipeline" : "Add to Pipeline"}
+                            </button>
+                          </div>
+
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+                            {[
+                              ["Credit Need Signal", getLeadCell(row, "Credit Need Signal")],
+                              ["Funding Fit", getLeadCell(row, "Funding Fit")],
+                              ["Pitch Angle", getLeadCell(row, "Pitch Angle")],
+                              ["Signal Proof URL", getLeadCell(row, "Signal Proof URL")],
+                              ["Source URL", getLeadCell(row, "Source URL")],
+                            ].map(([label, value]) => (
+                              <div key={label} style={{ minWidth: 0 }}>
+                                <div style={{ fontSize: 10, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 5 }}>{label}</div>
+                                {String(value || "").startsWith("http") ? (
+                                  <a href={value} target="_blank" rel="noreferrer" style={{ fontSize: 13, color: t.accent, overflowWrap: "anywhere" }}>{value}</a>
+                                ) : (
+                                  <div style={{ fontSize: 13, color: value ? t.text : t.textFaint, lineHeight: 1.45, overflowWrap: "anywhere" }}>{value || "—"}</div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           {/* ════════════ SHIP LIST ════════════ */}
           {tab === "shiplist" && (
