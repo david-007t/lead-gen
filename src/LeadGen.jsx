@@ -328,12 +328,15 @@ const CREDIT_COLUMNS = [
   "Region",
   "Industry",
   "Company Type",
-  "Credit Need Signal",
+  "Referral Signal",
   "Signal Proof URL",
   "Source URL",
-  "Funding Fit",
+  "Referral Fit",
   "Pitch Angle",
 ];
+
+const GENERIC_PROOF_DOMAINS = ["zoominfo", "apollo", "dnb", "crunchbase", "yelp", "zippia", "signalhire", "rocketreach", "adapt", "lusha", "seamless", "zillow", "realtor", "expertise"];
+const GENERIC_PROOF_PATH_RE = /^\/?$|^\/(about|contact|locations?|services?|company|home)\/?$/i;
 
 const LEAD_LIST_MAX_GENERATION_PASSES = 8;
 const LEAD_LIST_BUFFER_ROWS = 2;
@@ -433,10 +436,10 @@ function sanitizeCreditRow(row) {
     "Region": ["Region", "Location", "City", "State", "Market"],
     "Industry": ["Industry", "Niche", "Vertical"],
     "Company Type": ["Company Type", "Type", "Business Type"],
-    "Credit Need Signal": ["Credit Need Signal", "Funding Signal", "Signal", "Buying Signal", "Reason"],
+    "Referral Signal": ["Referral Signal", "Credit Need Signal", "Funding Signal", "Signal", "Buying Signal", "Reason"],
     "Signal Proof URL": ["Signal Proof URL", "Proof URL", "Signal URL", "Evidence URL"],
     "Source URL": ["Source URL", "Source", "Website", "URL"],
-    "Funding Fit": ["Funding Fit", "Fit", "Credit Fit"],
+    "Referral Fit": ["Referral Fit", "Funding Fit", "Fit", "Credit Fit"],
     "Pitch Angle": ["Pitch Angle", "Call Angle", "Outreach Angle"],
   };
   return CREDIT_COLUMNS.reduce((cleanRow, column) => {
@@ -536,50 +539,82 @@ function validateLeadListRow(row) {
   return { ok: true, reason: "" };
 }
 
-function validateCreditRow(row) {
+async function validateCreditRow(row, verifyProofUrl) {
   const company = getFirstLeadCell(row, ["Company Name"]);
-  const signal = stripLeadListMarkup(getLeadCell(row, "Credit Need Signal"));
+  const decisionMaker = stripLeadListMarkup(getLeadCell(row, "Decision Maker"));
+  const signal = stripLeadListMarkup(getLeadCell(row, "Referral Signal"));
   const proofUrl = stripLeadListMarkup(getLeadCell(row, "Signal Proof URL"));
   const sourceUrl = stripLeadListMarkup(getLeadCell(row, "Source URL"));
   const proofDomain = getUrlDomain(proofUrl);
   const proofPath = getUrlPath(proofUrl);
   const contextText = [
     getLeadCell(row, "Company Name"),
+    decisionMaker,
     getLeadCell(row, "Industry"),
     getLeadCell(row, "Company Type"),
     signal,
-    getLeadCell(row, "Funding Fit"),
+    getLeadCell(row, "Referral Fit"),
   ].map(stripLeadListMarkup).join(" ").toLowerCase();
 
-  if (!company || !signal || !proofUrl || !/^https?:\/\//i.test(proofUrl)) {
-    return { ok: false, reason: "missing company, signal, or direct proof URL" };
+  if (!company || !decisionMaker || !signal || !proofUrl || !/^https?:\/\//i.test(proofUrl)) {
+    return { ok: false, reason: "missing company, named contact, signal, or direct proof URL" };
+  }
+
+  if (/\b(company representative|loan officer team|name not specified|not specified|team|representative|staff|office|department)\b/i.test(decisionMaker) || /^(fha specialist|senior loan officer|loan officer|mortgage broker)$/i.test(decisionMaker.trim())) {
+    return { ok: false, reason: "generic contact, not a named individual" };
   }
 
   if (!sourceUrl || !/^https?:\/\//i.test(sourceUrl)) {
     return { ok: false, reason: "missing source URL" };
   }
 
-  if (/(^|\.)(zoominfo|apollo|dnb|crunchbase|yelp|zippia|signalhire|rocketreach|adapt|lusha|seamless)\.com$/i.test(proofDomain)) {
+  if (GENERIC_PROOF_DOMAINS.some(domain => new RegExp(`(^|\\.)${domain}\\.com$`, "i").test(proofDomain))) {
     return { ok: false, reason: "generic data/directory proof source" };
   }
 
-  if (/^\/?$|^\/(about|contact|locations?|services?|company|home)\/?$/i.test(proofPath)) {
+  if (GENERIC_PROOF_PATH_RE.test(proofPath)) {
     return { ok: false, reason: "proof URL is too generic" };
   }
 
-  if (/(bank|credit union|lender|loan broker|mortgage broker|merchant cash advance|mca provider|funding company|financing company|collection agency)/i.test(contextText)) {
-    return { ok: false, reason: "financial-services seller, not a credit-help prospect" };
+  if (/\b(chase|bank of america|bofa|wells fargo|citi|citibank|us bank|u\.s\. bank|rocket mortgage|quicken loans|loandepot|lexington law|credit saint|sky blue|morgan stanley|merrill lynch|ubs)\b/i.test(contextText)) {
+    return { ok: false, reason: "tier c company or direct competitor" };
+  }
+
+  if (/\b(merchant cash advance|mca provider|funding company|financing company|collection agency|debt settlement|debt consolidation|credit counseling|title company|escrow company|insurance agent|insurance broker)\b/i.test(contextText)) {
+    return { ok: false, reason: "tier c category" };
+  }
+
+  if (/\b(tpo|wholesale lender|wholesale channel|correspondent lender|lender marketplace|loan marketplace)\b/i.test(contextText)) {
+    return { ok: false, reason: "wholesale/lender channel, not a referral partner" };
+  }
+
+  if (/\b(national|large|major)\s+credit union\b|\bcredit union\b.*\b(\$?1b|\$?1\s*billion|billion in assets)\b/i.test(contextText)) {
+    return { ok: false, reason: "large credit union" };
+  }
+
+  const tierAText = `${decisionMaker} ${getLeadCell(row, "Industry")} ${getLeadCell(row, "Company Type")} ${company}`.toLowerCase();
+  if (!/\b(mortgage|loan officer|loan originator|\blo\b|real estate|realtor|broker|agent|used car|auto dealer|property manager|property management|leasing|divorce attorney|bankruptcy attorney|tax preparer)\b/i.test(tierAText)) {
+    return { ok: false, reason: "not a tier a referral partner" };
   }
 
   if (/\b(fortune\s*\d+|publicly traded|nyse|nasdaq|global leader|multinational|enterprise|national chain|hundreds of locations|thousands of employees|over\s+\d{1,3},?\d{3}\s+employees)\b/i.test(contextText)) {
-    return { ok: false, reason: "too large or likely well capitalized" };
+    return { ok: false, reason: "too large or national-chain oriented" };
   }
 
-  if (!/\b(hiring|expanding|expansion|opened|opening|new location|second location|equipment|fleet|truck|vehicle|permit|contract|bid|rfp|working capital|cash flow|receivables|invoice|growth|renovation|buildout|purchase order|seasonal|inventory|tax lien|judgment|funding|financing|credit)\b/i.test(signal)) {
-    return { ok: false, reason: "no clear credit or working-capital signal" };
+  if (!/\b(closing|closed|listing|listed|joined|launched|licensed|hiring|recruiting|announced|partnered|sponsored|featured|podcast|panel|fha|va|first[-\s]?time buyer|subprime|distressed|foreclosure|short sale|recent)\b/i.test(signal)) {
+    return { ok: false, reason: "no clear referral-partner signal" };
   }
 
-  return { ok: true, reason: "" };
+  if (/\b20(1\d|2[0-4])\b/.test(signal)) {
+    return { ok: false, reason: "signal appears older than six months" };
+  }
+
+  const verification = verifyProofUrl ? await verifyProofUrl(proofUrl) : { ok: true, verified: "skipped" };
+  if (!verification?.ok) {
+    return { ok: false, reason: verification?.reason || "proof URL verification failed", verification };
+  }
+
+  return { ok: true, reason: "", verification };
 }
 
 function withCallFeedbackColumns(columns) {
@@ -650,6 +685,70 @@ function leadListRowKey(row) {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+const PROSPECT_SIGNAL_FILTERS = {
+  hiringOnIndeed: {
+    label: "Hiring",
+    prompt: "HIRING: job postings on Indeed, ZipRecruiter, Craigslist, or similar; 'now hiring' language on listings or social profiles.",
+  },
+  badWebsite: {
+    label: "Weak web presence",
+    prompt: "WEAK_WEB_PRESENCE: no standalone website, social-only, directory-only, broken, parked, placeholder, empty, or under-construction website.",
+  },
+  lowReviews: {
+    label: "Review gap",
+    prompt: "REVIEW_GAP: low review count, poor review average, outdated listings, or obvious reputation gap on Yelp/Google/Facebook.",
+  },
+  noSocial: {
+    label: "No social",
+    prompt: "NO_SOCIAL: no obvious Facebook, Instagram, or other owned social presence found.",
+  },
+  runningAds: {
+    label: "Running ads",
+    prompt: "RUNNING_ADS: sponsored Yelp result, enhanced Yelp profile, paid directory placement, or visible paid/local ad indicator.",
+  },
+  recentlyStarted: {
+    label: "Recently active",
+    prompt: "RECENT_ACTIVITY: recently opened, recently licensed, recently posted, recently updated listing, or recently announced service/location.",
+  },
+  onlineBooking: {
+    label: "Online booking",
+    prompt: "ONLINE_BOOKING: active booking page on Vagaro, Booksy, Square Appointments, Calendly, StyleSeat, Schedulicity, GlossGenius, Acuity, or similar.",
+  },
+};
+
+const PROSPECT_SIGNAL_KEYS = Object.keys(PROSPECT_SIGNAL_FILTERS);
+
+function normalizeProspectSignals(row = {}) {
+  const raw = row.signals || row.Signals || {};
+  return PROSPECT_SIGNAL_KEYS.reduce((signals, key) => {
+    signals[key] = raw[key] === true;
+    return signals;
+  }, {});
+}
+
+function normalizeProspectSignalEvidence(row = {}) {
+  const raw = row.signalEvidence || row["Signal Evidence"] || {};
+  return PROSPECT_SIGNAL_KEYS.reduce((evidence, key) => {
+    evidence[key] = String(raw[key] || "").trim();
+    return evidence;
+  }, {});
+}
+
+function prospectSignalCount(signals = {}) {
+  return PROSPECT_SIGNAL_KEYS.reduce((total, key) => total + (signals[key] === true ? 1 : 0), 0);
+}
+
+function formatProspectSignalSummary(signals = {}, evidence = {}) {
+  return PROSPECT_SIGNAL_KEYS
+    .filter(key => signals[key] === true)
+    .map(key => {
+      const label = PROSPECT_SIGNAL_FILTERS[key]?.label || key;
+      const detail = String(evidence[key] || "").trim();
+      return detail ? `${label}: ${detail}` : label;
+    })
+    .join("\n");
 }
 
 // ─── PROSPECT CLASSIFICATION ──────────────────────────────────
@@ -1019,6 +1118,7 @@ function buildProspectPipelineDetails(prospect, emailDraft = "", cityHint = "") 
       {
         title: "Sales Context",
         items: toDetailItems([
+          ["Growth Signals", formatProspectSignalSummary(prospect.signals, prospect.signalEvidence)],
           ["Pitch Angle", prospect.pitchAngle],
           ["Niche", prospect.niche],
         ]),
@@ -1369,7 +1469,7 @@ function buildCreditPipelineDetails(lead) {
     sourceLabel: "Credit Leads",
     sections: [
       {
-        title: "Credit Fit",
+        title: "Referral Partner",
         items: toDetailItems([
           ["Company Name", getLeadCell(lead, "Company Name")],
           ["Decision Maker", getLeadCell(lead, "Decision Maker")],
@@ -1381,10 +1481,10 @@ function buildCreditPipelineDetails(lead) {
         ]),
       },
       {
-        title: "Buying Signal",
+        title: "Referral Signal",
         items: toDetailItems([
-          ["Credit Need Signal", getLeadCell(lead, "Credit Need Signal")],
-          ["Funding Fit", getLeadCell(lead, "Funding Fit")],
+          ["Referral Signal", getLeadCell(lead, "Referral Signal")],
+          ["Referral Fit", getLeadCell(lead, "Referral Fit")],
           ["Pitch Angle", getLeadCell(lead, "Pitch Angle")],
           ["Signal Proof URL", getLeadCell(lead, "Signal Proof URL")],
           ["Source URL", getLeadCell(lead, "Source URL")],
@@ -1641,6 +1741,7 @@ export default function LeadGen() {
     noSocial: true,
     runningAds: true,
     recentlyStarted: true,
+    onlineBooking: true,
   });
   const [prospects, setProspects] = useState([]);
   const [prospectLoading, setProspectLoading] = useState(false);
@@ -1728,6 +1829,7 @@ export default function LeadGen() {
 
   const fileRef = useRef();
   const activeCostRunRef = useRef(null);
+  const creditVerificationCacheRef = useRef(new Map());
   const t = themes[theme];
   const ind = INDUSTRIES[industry] || INDUSTRIES.construction;
   const PROJECT_TYPES = ind.types;
@@ -1907,6 +2009,23 @@ export default function LeadGen() {
     }
   };
 
+  const verifyCreditProofUrl = async (url) => {
+    const normalized = String(url || "").trim();
+    if (!normalized) return { ok: false, reason: "missing_url" };
+    if (creditVerificationCacheRef.current.has(normalized)) {
+      return creditVerificationCacheRef.current.get(normalized);
+    }
+    const response = await fetch("/api/verify-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: normalized }),
+    });
+    const data = await response.json().catch(() => ({ ok: false, reason: "bad_verify_response" }));
+    const result = response.ok ? data : { ...data, ok: false };
+    creditVerificationCacheRef.current.set(normalized, result);
+    return result;
+  };
+
   // ─── PIPELINE STORAGE ─────────────────────────────────────
   const savePipelineLead = async (lead, { silent = false } = {}) => {
     const normalizedLead = {
@@ -2054,6 +2173,19 @@ export default function LeadGen() {
       "street-level local operators such as auto repair shops, restaurants, food trucks, laundromats, and small retailers",
       "professional local practices such as dentists, chiropractors, therapists, accountants, and small law offices",
     ];
+    const activeProspectSignalKeys = PROSPECT_SIGNAL_KEYS.filter(key => prospectFilters[key] !== false);
+    const activeProspectSignalInstructions = activeProspectSignalKeys
+      .map(key => `- ${PROSPECT_SIGNAL_FILTERS[key].prompt}`)
+      .join("\n");
+    const activeProspectSignalJson = activeProspectSignalKeys
+      .map(key => `      "${key}": false`)
+      .join(",\n");
+    const activeProspectSignalEvidenceJson = activeProspectSignalKeys
+      .map(key => `      "${key}": ""`)
+      .join(",\n");
+    const activeProspectSignalLabels = activeProspectSignalKeys
+      .map(key => PROSPECT_SIGNAL_FILTERS[key].label)
+      .join(", ");
 
     const parseProspectJSON = (fullText) => {
       let parsed = null;
@@ -2105,6 +2237,9 @@ export default function LeadGen() {
           facebookUrl: clean(r.facebookUrl || r["Facebook URL"]),
           instagramUrl: clean(r.instagramUrl || r["Instagram URL"]),
           yelpUrl: clean(r.yelpUrl || r["Yelp URL"]),
+          signals: normalizeProspectSignals(r),
+          signalEvidence: normalizeProspectSignalEvidence(r),
+          signalCount: 0,
           buyingSignal: clean(r.websiteStatus || r["Website Status"] || r.proofReason || r.proof || r["Proof"]),
           personalizedFirstLine: clean(r.pitchAngle || r["Pitch Angle"]),
           niche: searchNiche,
@@ -2113,12 +2248,21 @@ export default function LeadGen() {
           classification: null,
         };
         p.addressDetail = getAddressDetail(p.address);
-        p.buyingSignals = p.buyingSignal ? [p.buyingSignal] : [];
+        p.signalCount = prospectSignalCount(p.signals);
+        const signalSummary = formatProspectSignalSummary(p.signals, p.signalEvidence);
+        p.buyingSignals = [signalSummary, p.buyingSignal].filter(Boolean);
         p.opportunities = p.personalizedFirstLine ? [p.personalizedFirstLine] : [];
         p.classification = classifyProspect(p);
         return p;
       })
       .filter(p => p.businessName && (p.phone || isPlausibleEmail(p.email)));
+
+    const sortProspectsBySignals = (rows) => [...rows].sort((a, b) => {
+      const signalDelta = (b.signalCount || 0) - (a.signalCount || 0);
+      if (signalDelta !== 0) return signalDelta;
+      const contactDelta = Number(Boolean(b.phone && b.email)) - Number(Boolean(a.phone && a.email));
+      return contactDelta;
+    });
 
     const runAnthropicSearch = async ({ maxTokens, system, prompt, action }) => {
       const { response: resp, data } = await callAnthropic(action || "Find My Clients Search", {
@@ -2153,10 +2297,11 @@ Rules:
 - Do NOT run separate per-business searches. The app verifies websites after this step.
 - Keep only real local businesses with a phone or email.
 - Exclude national chains, franchises, and directories.
+- Prioritize candidates with these selected signals when visible from the same public source: ${activeProspectSignalLabels || "weak/no website"}.
 - Return fewer than 3 if you cannot find 3 quickly.
 
 Return exactly this JSON array (no other text):
-[{ "Company Name": "", "Phone": "", "Email": "", "Website URL": "", "Source URL": "", "Website Status": "No website found", "Facebook URL": "", "Instagram URL": "", "Yelp URL": "", "Pitch Angle": "" }]`,
+[{ "Company Name": "", "Phone": "", "Email": "", "Website URL": "", "Source URL": "", "Website Status": "No website found", "Facebook URL": "", "Instagram URL": "", "Yelp URL": "", "Pitch Angle": "", "Signals": {${activeProspectSignalJson ? `\n${activeProspectSignalJson}\n    ` : ""}}, "Signal Evidence": {${activeProspectSignalEvidenceJson ? `\n${activeProspectSignalEvidenceJson}\n    ` : ""}} }]`,
       });
     };
 
@@ -2199,6 +2344,9 @@ Email extraction — check these sources for an email address:
 - Any directory listing that shows an email
 If you find an email on any social profile or listing, put it in the Email field.
 
+Selected signal detection — for every candidate, set each selected signal to true only when it is obvious from the same public source you already inspected. Do not invent signals and do not run extra searches only to fill these fields.
+${activeProspectSignalInstructions || "- WEAK_WEB_PRESENCE: no standalone website, social-only, directory-only, broken, parked, placeholder, empty, or under-construction website."}
+
 Return exactly this JSON array schema:
 [
   {
@@ -2212,7 +2360,13 @@ Return exactly this JSON array schema:
     "Facebook URL": "",
     "Instagram URL": "",
     "Yelp URL": "",
-    "Pitch Angle": ""
+    "Pitch Angle": "",
+    "Signals": {
+${activeProspectSignalJson || '      "badWebsite": false'}
+    },
+    "Signal Evidence": {
+${activeProspectSignalEvidenceJson || '      "badWebsite": ""'}
+    }
   }
 ]
 
@@ -2224,6 +2378,8 @@ Hard rules:
 - If Website Status is "Broken website", Website URL must be the exact standalone website URL that appears broken. Do not infer broken status without a URL.
 - Facebook URL, Instagram URL, and Yelp URL: include the direct profile/listing URL if found during research. Leave blank if not found.
 - Pitch Angle must be one caller-ready sentence about helping the business get a real website.
+- Each selected signal in "Signals" must be a boolean. For each true signal, "Signal Evidence" must contain a short caller-ready reason. For false signals, leave the evidence string empty.
+- Prioritize rows with at least one selected signal beyond weak web presence when available, especially hiring, running ads, recently active, or online booking.
 - Return only actionable companies with phone and/or email.
 - Return real local businesses only.
 
@@ -2341,8 +2497,7 @@ This is discovery batch ${batchIndex}.`,
         setProspectLoading(false); setProspectProgress(null); return;
       }
       // Seed results with the verified sample so we don't re-search them
-      const sampleSeen = new Set(sampleVerified.map(p => columnKey(p.businessName)));
-      results = [...sampleVerified].slice(0, targetCount);
+      results = sortProspectsBySignals([...sampleVerified]).slice(0, targetCount);
       setProspects(results);
       if (results.length >= targetCount) {
         prospectRunResultCount = results.length;
@@ -2374,7 +2529,7 @@ This is discovery batch ${batchIndex}.`,
             seen.add(key);
             return true;
           });
-          results = [...results, ...fresh].slice(0, targetCount);
+          results = sortProspectsBySignals([...results, ...fresh]).slice(0, targetCount);
           setProspects(results);
           if (results.length >= targetCount) break;
         } catch (err) {
@@ -3571,16 +3726,17 @@ Respond with ONLY a JSON object:
     setCreditLoading(true);
     setCreditError(null);
     setCreditResults([]);
-    setCreditProgress("Finding credit-fit companies");
+    setCreditProgress("Finding referral partners");
 
     const desiredCount = Math.min(25, Math.max(1, Number(creditCount) || 10));
+    const searchCount = desiredCount;
     const focusText = {
-      growth: "growth, expansion, hiring, new locations, equipment needs, inventory needs, or working-capital pressure",
-      cashflow: "cash-flow strain, receivables-heavy businesses, invoice lag, seasonal inventory, project-based work, or working-capital gaps",
-      equipment: "equipment purchases, vehicle or fleet growth, machinery needs, buildouts, permits, renovations, or facility expansion",
-      distress: "public signs of tax liens, judgments, payment pressure, closures avoided, restructuring, or urgent financing need; use only reputable public sources and avoid making defamatory claims",
-    }[creditSignalFocus] || "growth, expansion, hiring, new locations, equipment needs, inventory needs, or working-capital pressure";
-    const nicheText = creditNiche.trim() || "local small-to-mid-sized businesses";
+      production: "Active production — broker/agent closing deals right now, recent listings, recent closings, active LinkedIn posts about transactions",
+      subprime: "Subprime or distressed exposure — works with FHA, VA, first-time buyers, short sales, foreclosures, or markets known for credit-challenged buyers",
+      referral: "Referral-network active — publicly partners with other service providers, visible referral language on their site or LinkedIn, podcast appearances with adjacent businesses, 'preferred vendor' mentions",
+      growth: "Growth signal — recently joined a new brokerage, launched their own shop, recently licensed, hiring junior agents or LOs",
+    }[creditSignalFocus] || "Active production — broker/agent closing deals right now, recent listings, recent closings, active LinkedIn posts about transactions";
+    const nicheText = creditNiche.trim() || "mortgage brokers, real estate agents, and adjacent referral partners";
     const existingCompanies = leads.filter(l => l.sourceMode === "credit").map(l => l.company).filter(Boolean);
     const exclusionClause = existingCompanies.length
       ? `Do not return these companies already in the pipeline: ${existingCompanies.join(", ")}.`
@@ -3593,85 +3749,158 @@ Respond with ONLY a JSON object:
     });
     let costRunEnded = false;
 
-    const prompt = `Find up to ${desiredCount} companies that may be good prospects for a business credit / funding-readiness company.
+    const buildPrompt = (batchCount, queryFocus, alreadyAccepted = []) => `Find up to ${batchCount} REFERRAL PARTNERS for Conquer Credit Management, a consumer credit repair company in Los Angeles that helps individuals fix their personal credit so they can qualify for mortgages, auto loans, and rentals.
+
+We are looking for PROFESSIONALS whose clients regularly get blocked by personal credit problems and who would benefit from having a trusted credit-repair partner to refer those clients to.
 
 Region: ${region}
 Niche hint: ${nicheText}
 Signal focus: ${focusText}
+Search this specific angle first: ${queryFocus}
 ${exclusionClause}
+${alreadyAccepted.length ? `Do not return these already accepted leads: ${alreadyAccepted.join(", ")}.` : ""}
 
-Ideal prospects:
-- Small-to-mid-sized businesses that may benefit from business credit building, funding readiness, working capital, vendor credit, tradelines, equipment financing prep, or cleaner credit positioning.
-- Companies with a public, caller-mentionable signal showing growth, cash-flow timing, equipment/fleet need, expansion, hiring, project workload, inventory need, receivables pressure, public bids/contracts, permits/buildouts, or similar capital need.
-- Prefer owner-operated, privately held, regional, local, or lower-mid-market companies.
+Niche discipline:
+- If the Niche hint names a specific Tier A category, return only that category.
+- If the Niche hint is "Mortgage brokers" or similar, return only named mortgage brokers, loan officers, or loan originators.
 
-Exclude:
-- Banks, credit unions, lenders, MCA providers, loan brokers, mortgage brokers, funding companies, collection agencies, and credit repair companies.
-- Huge enterprise companies, public companies, national chains, franchises, and companies that appear already well-capitalized.
-- Generic directory-only companies with no clear funding or credit-help signal.
+Ideal prospects (Tier A — return these):
+- Mortgage brokers and loan officers, especially FHA, VA, non-QM, or subprime-focused
+- Real estate agents and brokers, especially those working with first-time buyers, distressed properties, short sales, or buyer-side transactions in mid-tier markets
+- Used car dealers and subprime auto lenders (independent, not national franchises)
+- Apartment leasing agents and property managers who run credit checks on applicants
+- Divorce attorneys and bankruptcy attorneys (solo or small firm)
+- Tax preparers serving working/middle-class neighborhoods (not big-firm CPAs)
+
+Reject (Tier C — never return these):
+- Big banks (Chase, BofA, Wells Fargo, Citi, US Bank, etc.)
+- Credit unions with more than ~$1B in assets
+- National mortgage chains and corporate franchise offices with mandatory in-house referral programs (Rocket Mortgage, Quicken, LoanDepot corporate, etc.)
+- Wholesale lenders, TPO/channel lenders, correspondent lenders, and lender marketplaces
+- Other credit repair companies (Lexington Law, Credit Saint, Sky Blue, etc. — direct competitors)
+- Nonprofit credit counseling organizations
+- Debt settlement and debt consolidation companies
+- Title companies and escrow companies
+- Insurance agents and brokers
+- Financial advisors at high-net-worth firms (Morgan Stanley, Merrill, UBS, private wealth divisions)
+
+Each lead must have:
+1. A NAMED individual contact (broker name, agent name, attorney name) — not just "ABC Realty"
+2. A public, recent (within 6 months), caller-mentionable signal showing they are actively producing or expanding
+3. A proof URL that DIRECTLY shows the signal — LinkedIn post, brokerage announcement, local news article, podcast episode, deal closing announcement, recent press, recent listing
+4. Proof URL must NOT be: a homepage, About page, Zillow profile, Realtor.com profile, Expertise.com, Yelp, ZoomInfo, Apollo, Crunchbase, DNB, or any directory
+5. Avoid using a LinkedIn profile page as the Proof URL when the signal is from a post. Use the exact LinkedIn post URL when available.
+6. Do not return generic contacts like "Loan Officer Team", "Company Representative", "Office", "Staff", or "Team". Skip the row if you cannot name a person.
+6a. Do not return "Name not specified" or title-only contacts like "Senior Loan Officer" or "FHA Specialist Loan Officer".
+7. For mortgage searches, an individual loan officer or broker page is acceptable only when it directly states FHA, VA, non-QM, first-time buyer, or credit-challenged borrower expertise.
+
+Search speed rules:
+- Start with targeted searches for "${nicheText}" in "${region}" plus FHA, VA, first-time buyer, non-QM, subprime, recent closing, joined brokerage, or podcast.
+- For mortgage-broker searches, use source patterns like Scotsman Guide rankings, Non-QM announcements, individual FHA/VA loan officer pages, broker podcasts, local mortgage association posts, brokerage announcements, and LinkedIn posts.
+- Return enough candidate rows so that at least ${desiredCount} can survive validation.
+- For Los Angeles mortgage searches, broaden across LA County cities and neighborhoods: Los Angeles, Pasadena, Glendale, Burbank, Long Beach, Torrance, Sherman Oaks, Encino, Woodland Hills, Downey, Whittier, Norwalk, Pomona, and Santa Monica.
+- Use high-confidence public sources only.
 
 Source quality rules:
-1. Signal Proof URL must directly prove the credit/funding need signal: job post, permit, bid/RFP, expansion article, company announcement, new location page, equipment/fleet news, public notice, or other concrete source.
-2. Do not use generic homepages, About pages, Yelp, ZoomInfo, Apollo, Crunchbase, DNB, or scraped directory pages as Signal Proof URL.
-3. Do not claim financial distress unless the proof source explicitly supports it.
-4. If you cannot find a direct proof URL for a strong signal, skip the company.
-5. Prioritize rows with a public phone number or email.
+1. Signal must be specific enough to mention on a cold call
+2. If the proof URL is older than 6 months, skip the company
+3. Do not claim financial pressure or distress about the contact unless proof explicitly supports it
+4. Prioritize leads with a public phone or email
+5. Prefer source diversity. Do not return all proof URLs from LinkedIn. Aim for a mix of LinkedIn posts, brokerage websites, local news articles, and podcast/press appearances. If multiple leads have LinkedIn-only proofs, replace some with leads that have other source types.
+
+Before returning JSON, self-check and replace any row that fails any of these:
+- Named contact is missing, title-only, "team", "staff", or "name not specified"
+- Region is not clearly Los Angeles County
+- Signal says 2024 or older
+- Proof URL is a homepage, About page, directory, Zillow, Realtor.com, Expertise.com, Yelp, or generic profile
+- Proof URL does not directly support the Referral Signal
+- Company is a wholesale lender, TPO/channel lender, lender marketplace, national chain, bank, credit union, or competitor
 
 Return strict JSON only. No prose. No markdown.
 
 JSON shape:
 [
   {
-    "Company Name": "",
-    "Decision Maker": "",
+    "Company Name": "Brokerage or firm name",
+    "Decision Maker": "Named individual with title (e.g., 'Maria Gonzalez, Loan Officer')",
     "Best Phone": "",
     "Email": "",
-    "Region": "",
-    "Industry": "",
-    "Company Type": "",
-    "Credit Need Signal": "One caller-ready sentence naming the exact signal.",
+    "Region": "City, State",
+    "Industry": "One of: Mortgage, Real Estate, Auto, Property Management, Legal, Tax, Financial Advisory",
+    "Company Type": "Independent / Small firm / Franchise office / Solo practitioner",
+    "Referral Signal": "One caller-ready sentence naming the exact signal and date if known.",
     "Signal Proof URL": "https://...",
     "Source URL": "https://...",
-    "Funding Fit": "Why this company may need credit/funding readiness help.",
-    "Pitch Angle": "One practical outreach angle for a credit company."
+    "Referral Fit": "Why this person would benefit from a credit-repair referral partner — one sentence.",
+    "Pitch Angle": "\"Suggested opening line for outreach, wrapped in quote marks, that references the specific signal.\""
   }
 ]`;
 
     try {
-      const { response, data } = await callAnthropic("Credit Lead Search", {
-        model: "claude-sonnet-4-20250514",
-        max_tokens: desiredCount <= 10 ? 2200 : 3200,
-        system: "You are a careful B2B lead researcher for business credit and working-capital services. Search the web for real companies and return strict JSON only. Accuracy beats volume.",
-        messages: [{ role: "user", content: prompt }],
-        tools: [{ type: "web_search_20250305", name: "web_search" }],
-      });
-      if (!data || data.error?.type === "upstream_parse_error") throw new Error(`Search service unavailable (HTTP ${response.status})`);
-      if (data.error) throw new Error(data.error.message || "Credit lead search failed");
-
-      setCreditProgress("Checking signal quality");
-      const text = (data.content || []).filter(block => block.type === "text" && block.text).map(block => block.text).join("\n");
-      const parsed = extractJSONValue(text);
-      const rows = getParsedRows(parsed) || [];
       const seen = new Set();
-      const results = rows
-        .map((row, index) => ({ ...sanitizeCreditRow(row), id: Date.now() + index + Math.random() }))
-        .filter(row => {
-          const key = columnKey(getLeadCell(row, "Company Name"));
-          if (!key || seen.has(key)) return false;
+      const results = [];
+      const mortgageMode = /mortgage|loan officer|loan originator|broker/i.test(nicheText);
+      const searchAngles = mortgageMode
+        ? [
+            `${focusText}; named LA mortgage brokers or loan officers with FHA, VA, first-time buyer, non-QM, or subprime borrower pages`,
+            "Los Angeles 2026 Scotsman Guide Non-QM mortgage broker loan officer press release named individual",
+            "Los Angeles mortgage broker FHA VA first-time buyer individual loan officer page",
+            "Los Angeles mortgage broker recent podcast interview FHA VA non-QM named loan officer",
+            "Los Angeles loan officer joined brokerage 2026 FHA VA non-QM LinkedIn post",
+            "Pasadena Glendale Burbank Long Beach mortgage broker FHA VA first-time buyer named loan officer",
+            "Beverly Hills Los Angeles non-QM mortgage broker 2026 press release named individual",
+            "LA County Scotsman Guide 2026 mortgage originator named loan officer non-QM FHA VA",
+          ]
+        : [
+            focusText,
+            `${nicheText} ${region} referral partners recent announcement named individual`,
+            `${nicheText} ${region} podcast interview referral partner named individual`,
+          ];
+
+      for (const [pass, queryFocus] of searchAngles.entries()) {
+        if (results.length >= desiredCount) break;
+        const batchCount = Math.min(2, desiredCount - results.length);
+        setCreditProgress(`Finding referral partners ${results.length}/${desiredCount}`);
+        const { response, data } = await callAnthropic("Credit Lead Search", {
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1700,
+          system: "You are a careful B2B lead researcher finding referral partners for a consumer credit repair company. Your job is to find mortgage brokers, real estate agents, and adjacent professionals whose clients have personal credit problems. Return strict JSON only. No narration, no search notes, no markdown. Accuracy beats volume.",
+          messages: [{ role: "user", content: buildPrompt(batchCount, queryFocus, results.map(row => getLeadCell(row, "Company Name")).filter(Boolean)) }],
+          tools: [{ type: "web_search_20250305", name: "web_search" }],
+        });
+        if (!data || data.error?.type === "upstream_parse_error") throw new Error(`Search service unavailable (HTTP ${response.status})`);
+        if (data.error) {
+          if (/timeout|took too long/i.test(data.error.message || "")) continue;
+          throw new Error(data.error.message || "Credit lead search failed");
+        }
+
+        setCreditProgress(`Checking signal quality ${results.length}/${desiredCount}`);
+        const text = (data.content || []).filter(block => block.type === "text" && block.text).map(block => block.text).join("\n");
+        const parsed = extractJSONValue(text);
+        const rows = getParsedRows(parsed) || [];
+        for (const [index, row] of rows.entries()) {
+          const sanitized = { ...sanitizeCreditRow(row), id: Date.now() + pass + index + Math.random() };
+          const key = columnKey(`${getLeadCell(sanitized, "Company Name")} ${getLeadCell(sanitized, "Decision Maker")}`);
+          if (!key || seen.has(key)) continue;
           seen.add(key);
-          return validateCreditRow(row).ok;
-        })
-        .slice(0, desiredCount);
+          const quality = await validateCreditRow(sanitized, verifyCreditProofUrl);
+          if (quality.ok) {
+            sanitized.proofVerification = quality.verification;
+            results.push(sanitized);
+          }
+          if (results.length >= desiredCount) break;
+        }
+      }
 
       if (results.length === 0) {
-        setCreditError("No usable credit-fit companies returned. Try a clearer niche, broader geography, or a different signal focus.");
+        setCreditError("No usable referral partners returned. Try a clearer niche, broader geography, or a different signal focus.");
         endCostRun(costRunId, { resultCount: 0, status: "partial", notes: "No validated credit leads returned" });
         costRunEnded = true;
         return;
       }
 
       setCreditResults(results);
-      showToast(`Found ${results.length} credit-fit companies`);
+      showToast(`Found ${results.length} referral partners`);
       endCostRun(costRunId, { resultCount: results.length, status: results.length < desiredCount ? "partial" : "success" });
       costRunEnded = true;
     } catch (err) {
@@ -4137,6 +4366,7 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
       source: prospect.sourceUrl || "Find Leads",
       description: [
         prospect.websiteStatus ? `Website status: ${prospect.websiteStatus}` : "",
+        formatProspectSignalSummary(prospect.signals, prospect.signalEvidence) ? `Growth signals:\n${formatProspectSignalSummary(prospect.signals, prospect.signalEvidence)}` : "",
         prospect.proofReason ? `Proof: ${prospect.proofReason}` : "",
         prospect.pitchAngle ? `Pitch angle: ${prospect.pitchAngle}` : "",
       ].filter(Boolean).join("\n"),
@@ -4168,13 +4398,13 @@ Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson
       timeline: "",
       source: getLeadCell(row, "Source URL") || getLeadCell(row, "Signal Proof URL") || "Credit Leads",
       description: [
-        getLeadCell(row, "Credit Need Signal") ? `Signal: ${getLeadCell(row, "Credit Need Signal")}` : "",
-        getLeadCell(row, "Funding Fit") ? `Funding fit: ${getLeadCell(row, "Funding Fit")}` : "",
+        getLeadCell(row, "Referral Signal") ? `Referral signal: ${getLeadCell(row, "Referral Signal")}` : "",
+        getLeadCell(row, "Referral Fit") ? `Referral fit: ${getLeadCell(row, "Referral Fit")}` : "",
         getLeadCell(row, "Pitch Angle") ? `Pitch angle: ${getLeadCell(row, "Pitch Angle")}` : "",
       ].filter(Boolean).join("\n"),
       followUp: "new",
       result: { qualified: true, score: 3, total: 3, criteria: [
-        { name: "Credit Signal", pass: true, detail: getLeadCell(row, "Credit Need Signal") },
+        { name: "Referral Signal", pass: true, detail: getLeadCell(row, "Referral Signal") },
         { name: "Proof URL", pass: true, detail: getLeadCell(row, "Signal Proof URL") },
         { name: "Reachable", pass: Boolean(getLeadCell(row, "Best Phone") || getLeadCell(row, "Email")), detail: getLeadCell(row, "Best Phone") || getLeadCell(row, "Email") || "No phone/email saved" },
       ] },
@@ -4762,7 +4992,7 @@ Return:
             <div style={{ animation: "fadeIn 0.3s ease" }}>
               <div style={{ marginBottom: 24 }}>
                 <h2 style={{ fontSize: 20, fontWeight: 700, fontFamily: "'Outfit', sans-serif", marginBottom: 6 }}>💳 Credit Leads</h2>
-                <p style={{ color: t.textDim, fontSize: 14 }}>Find businesses with public growth, cash-flow, equipment, or expansion signals that a credit company can credibly mention on a call.</p>
+                <p style={{ color: t.textDim, fontSize: 14 }}>Find referral partners whose clients get blocked by personal credit problems and could refer them to Conquer Credit.</p>
               </div>
 
               <div style={{ ...cardStyle, marginBottom: 24 }}>
@@ -4773,15 +5003,15 @@ Return:
                   </div>
                   <div>
                     <label style={labelStyle}>Industry / Niche</label>
-                    <input style={inputStyle} value={creditNiche} onChange={e => setCreditNiche(e.target.value)} placeholder="e.g. contractors, trucking, restaurants" onKeyDown={e => e.key === "Enter" && handleCreditSearch()} />
+                    <input style={inputStyle} value={creditNiche} onChange={e => setCreditNiche(e.target.value)} placeholder="e.g. mortgage brokers, real estate agents" onKeyDown={e => e.key === "Enter" && handleCreditSearch()} />
                   </div>
                   <div>
                     <label style={labelStyle}>Signal Focus</label>
                     <select style={{ ...inputStyle, cursor: "pointer" }} value={creditSignalFocus} onChange={e => setCreditSignalFocus(e.target.value)}>
-                      <option value="growth">Growth / hiring</option>
-                      <option value="cashflow">Cash-flow pressure</option>
-                      <option value="equipment">Equipment / buildout</option>
-                      <option value="distress">Public pressure</option>
+                      <option value="production">Active production</option>
+                      <option value="subprime">Subprime / distressed exposure</option>
+                      <option value="referral">Referral-network active</option>
+                      <option value="growth">Growth signal</option>
                     </select>
                   </div>
                   <div>
@@ -4808,7 +5038,7 @@ Return:
               {creditResults.length > 0 && (
                 <>
                   <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center" }}>
-                    <span style={{ fontSize: 13, color: t.textMuted, flex: 1 }}>{creditResults.length} credit-fit companies</span>
+                    <span style={{ fontSize: 13, color: t.textMuted, flex: 1 }}>{creditResults.length} referral partners</span>
                     <button onClick={() => {
                       const rows = creditResults.map(row => CREDIT_COLUMNS.map(col => csvValue(getLeadCell(row, col))).join(","));
                       const csv = [CREDIT_COLUMNS.map(csvValue).join(","), ...rows].join("\n");
@@ -4829,6 +5059,8 @@ Return:
                             <div style={{ minWidth: 240, flex: 1 }}>
                               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
                                 <span style={{ fontSize: 16, fontWeight: 800, color: t.text }}>{company}</span>
+                                {row.proofVerification?.verified === "linkedin-structural" && <span style={{ fontSize: 10, background: "#2563eb33", color: "#93c5fd", padding: "2px 8px", borderRadius: 6, fontWeight: 800 }}>LinkedIn ✓</span>}
+                                {row.proofVerification?.verified === "http" && <span style={{ fontSize: 10, background: "#16653433", color: "#86efac", padding: "2px 8px", borderRadius: 6, fontWeight: 800 }}>Verified ✓</span>}
                                 {getLeadCell(row, "Industry") && <span style={{ fontSize: 10, background: "#16653433", color: "#86efac", padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>{getLeadCell(row, "Industry")}</span>}
                                 {getLeadCell(row, "Company Type") && <span style={{ fontSize: 10, background: t.bgHover, color: t.textMuted, padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>{getLeadCell(row, "Company Type")}</span>}
                               </div>
@@ -4847,8 +5079,8 @@ Return:
 
                           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
                             {[
-                              ["Credit Need Signal", getLeadCell(row, "Credit Need Signal")],
-                              ["Funding Fit", getLeadCell(row, "Funding Fit")],
+                              ["Referral Signal", getLeadCell(row, "Referral Signal")],
+                              ["Referral Fit", getLeadCell(row, "Referral Fit")],
                               ["Pitch Angle", getLeadCell(row, "Pitch Angle")],
                               ["Signal Proof URL", getLeadCell(row, "Signal Proof URL")],
                               ["Source URL", getLeadCell(row, "Source URL")],
@@ -5832,6 +6064,22 @@ Return:
                 </div>
 
                 <div style={{ marginBottom: 16 }}>
+                  <label style={labelStyle}>Prioritize Signals</label>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 8 }}>
+                    {PROSPECT_SIGNAL_KEYS.map(key => (
+                      <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: t.bgHover, border: `1px solid ${t.borderLight}`, borderRadius: 8, color: t.textMuted, fontSize: 12, cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={prospectFilters[key] !== false}
+                          onChange={e => setProspectFilters(prev => ({ ...prev, [key]: e.target.checked }))}
+                        />
+                        <span>{PROSPECT_SIGNAL_FILTERS[key].label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: 16 }}>
                   <label style={labelStyle}>Number of Results</label>
                   <div style={{ display: "flex", gap: 8 }}>
                     {[5, 10, 15].map(n => (
@@ -5919,6 +6167,7 @@ Return:
                             ["Address", p.address],
                             ...(p.websiteUrl ? [["Website URL Checked", p.websiteUrl]] : []),
                             ["Website Status", p.websiteStatus],
+                            ...(formatProspectSignalSummary(p.signals, p.signalEvidence) ? [["Growth Signals", formatProspectSignalSummary(p.signals, p.signalEvidence)]] : []),
                             ["Source URL", p.sourceUrl],
                             ...(p.facebookUrl ? [["Facebook", p.facebookUrl]] : []),
                             ...(p.instagramUrl ? [["Instagram", p.instagramUrl]] : []),

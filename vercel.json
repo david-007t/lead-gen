@@ -11,6 +11,9 @@
     },
     "api/hunter-email.js": {
       "maxDuration": 45
+    },
+    "api/verify-url.js": {
+      "maxDuration": 10
     }
   },
   "rewrites": [
