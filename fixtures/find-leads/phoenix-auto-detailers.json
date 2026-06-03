@@ -1,0 +1,567 @@
+{
+  "description": "Offline Find Leads fixture from Phoenix auto-detailer harness runs. Uses mocked website/source/contact verification so tests do not call Anthropic, Twilio, or external sites.",
+  "city": "Phoenix, AZ",
+  "niche": "auto detailers",
+  "count": 5,
+  "minAccepted": 1,
+  "expectations": {
+    "accepted": [
+      "A Zone Auto Glass Car Detailing & Front Door Services",
+      "Erick's Mobile Wash"
+    ],
+    "rejected": {
+      "Phoenix Mobile Auto Detailing": [
+        "business name looks like the search query",
+        "proof source URL not reachable"
+      ],
+      "Valley Mobile Details": [
+        "missing verified phone or MX-valid email"
+      ],
+      "Mobile Detailing Phoenix": [
+        "business name looks like the search query",
+        "fabricated-looking phone"
+      ],
+      "Sittin Pretty Auto Detailing": [
+        "working website found"
+      ],
+      "Tucson Desert Detail": [
+        "outside requested metro Phoenix, AZ"
+      ],
+      "Jiffy Lube Phoenix Detail Center": [
+        "looks like a chain/franchise"
+      ],
+      "Cloud Shield Detail": [
+        "website status is unverified"
+      ],
+      "Blocked Source Auto Spa": [
+        "proof source URL not reachable"
+      ],
+      "Yelp Search Result Auto Detail": [
+        "source URL is a search/listing page, not a business-specific profile"
+      ],
+      "Mobile Detail AZ": [
+        "proof source URL not reachable"
+      ]
+    }
+  },
+  "rows": [
+    {
+      "Company Name": "A Zone Auto Glass Car Detailing & Front Door Services",
+      "Address": "El Mirage, AZ",
+      "Phone": "",
+      "Email": "",
+      "Website URL": "",
+      "Source URL": "https://citylocal101.com/12107-ceramic-coating-peoria-az",
+      "Website Status": "No website found",
+      "Proof": "CityLocal page shows this business, phone, email, and auto detailing services but no standalone domain.",
+      "Pitch Angle": "CityLocal shows A Zone Auto Glass Car Detailing using a directory page with phone and email, so a standalone website with booking and local SEO could capture Peoria-area detailing leads directly.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "Phoenix Mobile Auto Detailing",
+      "Address": "4248 N 12th St #4, Phoenix, AZ 85014",
+      "Phone": "",
+      "Email": "",
+      "Website URL": "",
+      "Source URL": "https://www.phoenixonline.us/profile/phoenix-mobile-auto-detailing",
+      "Website Status": "No website found",
+      "Proof": "Directory profile exists, but production server could not verify the source page because it returned a bot-blocked 403.",
+      "Pitch Angle": "PhoenixOnline lists Phoenix Mobile Auto Detailing on a directory page, but without a verified source and contact the website opportunity is not safe to sell.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "Valley Mobile Details",
+      "Address": "Phoenix, AZ",
+      "Phone": "",
+      "Email": "",
+      "Website URL": "https://valleymobiledetails.square.site/",
+      "Source URL": "https://valleymobiledetails.square.site/",
+      "Website Status": "Booking/profile-only presence",
+      "Proof": "Square page exists, but no independently verified phone or MX-valid email was found.",
+      "Pitch Angle": "The Square booking page suggests Valley Mobile Details depends on a hosted profile, so a standalone website with booking and local SEO could improve lead capture if contact verification is resolved.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": true,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "Square profile",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "Mobile Detailing Phoenix",
+      "Address": "Phoenix, AZ",
+      "Phone": "(602) 555-0123",
+      "Email": "",
+      "Website URL": "",
+      "Source URL": "https://www.yelp.com/biz/mobile-detailing-phoenix",
+      "Website Status": "No website found",
+      "Proof": "Regression fixture for fabricated query-name business and reserved fake phone number.",
+      "Pitch Angle": "This row should never ship because the phone is a reserved 555 number and the company name looks like the search query, even if the pitch mentions website and local SEO.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "Sittin Pretty Auto Detailing",
+      "Address": "Peoria, AZ",
+      "Phone": "(623) 555-0188",
+      "Email": "",
+      "Website URL": "https://sittinprettyautodetailing.com/",
+      "Source URL": "https://sittinprettyautodetailing.com/",
+      "Website Status": "Broken website",
+      "Proof": "Regression fixture for a working website previously mislabeled as broken.",
+      "Pitch Angle": "This row should never ship because the source is the business's working website, so calling it broken would create a bad website sales conversation.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "Tucson Desert Detail",
+      "Address": "Tucson, AZ",
+      "Phone": "(520) 222-0199",
+      "Email": "",
+      "Website URL": "",
+      "Source URL": "https://directory.example.test/tucson-desert-detail",
+      "Website Status": "No website found",
+      "Proof": "Regression fixture for a valid-looking lead outside the requested Phoenix metro.",
+      "Pitch Angle": "The directory page indicates Tucson Desert Detail lacks a standalone website, but it is outside the requested Phoenix metro so it should not be shown.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "Jiffy Lube Phoenix Detail Center",
+      "Address": "Phoenix, AZ",
+      "Phone": "(602) 222-0198",
+      "Email": "",
+      "Website URL": "",
+      "Source URL": "https://directory.example.test/jiffy-lube-phoenix-detail",
+      "Website Status": "No website found",
+      "Proof": "Regression fixture for chain/franchise rejection.",
+      "Pitch Angle": "The directory page suggests a website opportunity, but this is a chain/franchise name and should not be sold as a small local webdev prospect.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "Cloud Shield Detail",
+      "Address": "Phoenix, AZ",
+      "Phone": "(602) 222-0197",
+      "Email": "",
+      "Website URL": "https://cloudshielddetail.example.test/",
+      "Source URL": "https://directory.example.test/cloud-shield-detail",
+      "Website Status": "Broken website",
+      "Proof": "Regression fixture for bot-blocked or timeout website checks being treated as unverified, not broken.",
+      "Pitch Angle": "The directory page points to a possible website issue, but the website status could not be confirmed so the lead should not be shown as broken.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "Blocked Source Auto Spa",
+      "Address": "Mesa, AZ",
+      "Phone": "(480) 222-0188",
+      "Email": "",
+      "Website URL": "",
+      "Source URL": "https://blocked-directory.example.test/blocked-source-auto-spa",
+      "Website Status": "No website found",
+      "Proof": "Regression fixture for a business-specific proof URL that is bot-blocked from datacenter verification.",
+      "Pitch Angle": "The business-specific directory page identifies Blocked Source Auto Spa and no standalone website, so a local SEO website with booking could help convert Mesa auto detailing searches.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "Erick's Mobile Wash",
+      "Address": "Phoenix, AZ",
+      "Phone": "(928) 222-0166",
+      "Email": "",
+      "Website URL": "",
+      "Source URL": "https://www.yelp.com/biz/ericks-mobile-wash-yuma",
+      "Website Status": "No website found",
+      "Proof": "Yelp business page proves this is a local mobile wash business with no standalone website listed.",
+      "Pitch Angle": "The Yelp business page identifies Erick's Mobile Wash without a standalone website, so a simple booking-ready website with local SEO could convert Yuma mobile wash searches.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "Yelp Search Result Auto Detail",
+      "Address": "Phoenix, AZ",
+      "Phone": "(602) 222-0165",
+      "Email": "",
+      "Website URL": "",
+      "Source URL": "https://www.yelp.com/search?find_desc=auto+detailing&find_loc=Phoenix%2C+AZ",
+      "Website Status": "No website found",
+      "Proof": "Regression fixture for Yelp search URLs remaining invalid proof.",
+      "Pitch Angle": "This row should not ship because a Yelp search results URL is not business-specific proof, even though it mentions website and local SEO.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "Mobile Detail AZ",
+      "Address": "Phoenix, AZ",
+      "Phone": "(928) 222-0164",
+      "Email": "",
+      "Website URL": "",
+      "Source URL": "https://directory.example.test/other-mobile-detail-az",
+      "Website Status": "No website found",
+      "Proof": "Regression fixture for a source page that only shares generic category/location tokens.",
+      "Pitch Angle": "This row should not ship because the proof page only shares generic mobile detail AZ words, not distinctive business evidence for the actual company website opportunity.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    }
+  ],
+  "verifications": [
+    {
+      "businessName": "A Zone Auto Glass Car Detailing & Front Door Services",
+      "status": "No website found",
+      "keep": true,
+      "websiteUrl": "",
+      "sourceVerified": true,
+      "sourceStatus": "reachable",
+      "sourceUrl": "https://citylocal101.com/12107-ceramic-coating-peoria-az",
+      "sourcePhone": "(602) 492-8876",
+      "sourceEmail": "info@azoneautoglass.com",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "No working website found among candidate domains."
+    },
+    {
+      "businessName": "Phoenix Mobile Auto Detailing",
+      "status": "No website found",
+      "keep": true,
+      "websiteUrl": "",
+      "sourceVerified": false,
+      "sourceStatus": "unreachable",
+      "sourceUrl": "https://www.phoenixonline.us/profile/phoenix-mobile-auto-detailing",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "Could not verify source page as business-specific (HTTP 403)."
+    },
+    {
+      "businessName": "Valley Mobile Details",
+      "status": "Booking/profile-only presence",
+      "keep": true,
+      "websiteUrl": "https://valleymobiledetails.square.site/",
+      "sourceVerified": true,
+      "sourceStatus": "reachable",
+      "sourceUrl": "https://valleymobiledetails.square.site/",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "Only non-standalone web presence found at https://valleymobiledetails.square.site/."
+    },
+    {
+      "businessName": "Mobile Detailing Phoenix",
+      "status": "No website found",
+      "keep": true,
+      "websiteUrl": "",
+      "sourceVerified": false,
+      "sourceStatus": "generic_search",
+      "sourceUrl": "https://www.yelp.com/biz/mobile-detailing-phoenix",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "Regression fixture for hallucinated/fabricated row."
+    },
+    {
+      "businessName": "Sittin Pretty Auto Detailing",
+      "status": "Has working website",
+      "keep": false,
+      "websiteUrl": "https://sittinprettyautodetailing.com/",
+      "sourceVerified": true,
+      "sourceStatus": "reachable",
+      "sourceUrl": "https://sittinprettyautodetailing.com/",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "Verified working website at https://sittinprettyautodetailing.com/."
+    },
+    {
+      "businessName": "Tucson Desert Detail",
+      "status": "No website found",
+      "keep": true,
+      "websiteUrl": "",
+      "sourceVerified": true,
+      "sourceStatus": "reachable",
+      "sourceUrl": "https://directory.example.test/tucson-desert-detail",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "No working website found among candidate domains."
+    },
+    {
+      "businessName": "Jiffy Lube Phoenix Detail Center",
+      "status": "No website found",
+      "keep": true,
+      "websiteUrl": "",
+      "sourceVerified": true,
+      "sourceStatus": "reachable",
+      "sourceUrl": "https://directory.example.test/jiffy-lube-phoenix-detail",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "No working website found among candidate domains."
+    },
+    {
+      "businessName": "Cloud Shield Detail",
+      "status": "Unverified — could not confirm",
+      "keep": false,
+      "websiteUrl": "https://cloudshielddetail.example.test/",
+      "sourceVerified": true,
+      "sourceStatus": "reachable",
+      "sourceUrl": "https://directory.example.test/cloud-shield-detail",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "Could not safely verify website status (bot_or_rate_limited)."
+    },
+    {
+      "businessName": "Blocked Source Auto Spa",
+      "status": "No website found",
+      "keep": true,
+      "websiteUrl": "",
+      "sourceVerified": false,
+      "sourceStatus": "unreachable",
+      "sourceUrl": "https://blocked-directory.example.test/blocked-source-auto-spa",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "No working website found among candidate domains."
+    },
+    {
+      "businessName": "Erick's Mobile Wash",
+      "status": "No website found",
+      "keep": true,
+      "websiteUrl": "",
+      "sourceVerified": true,
+      "sourceStatus": "reachable",
+      "sourceUrl": "https://www.yelp.com/biz/ericks-mobile-wash-yuma",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "No working website found among candidate domains."
+    },
+    {
+      "businessName": "Yelp Search Result Auto Detail",
+      "status": "No website found",
+      "keep": true,
+      "websiteUrl": "",
+      "sourceVerified": false,
+      "sourceStatus": "generic_search",
+      "sourceUrl": "https://www.yelp.com/search?find_desc=auto+detailing&find_loc=Phoenix%2C+AZ",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "Source URL is a search/listing page, not a business-specific profile."
+    },
+    {
+      "businessName": "Mobile Detail AZ",
+      "status": "No website found",
+      "keep": true,
+      "websiteUrl": "",
+      "sourceVerified": false,
+      "sourceStatus": "unreachable",
+      "sourceUrl": "https://directory.example.test/other-mobile-detail-az",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "Source page did not match the business; generic category/location tokens are not enough."
+    }
+  ],
+  "phoneVerifications": [
+    {
+      "phone": "(602) 492-8876",
+      "verified": true,
+      "validationMode": "fixture_verified",
+      "valid": true,
+      "lineStatus": "active",
+      "lineType": "fixedvoip",
+      "nationalFormat": "(602) 492-8876"
+    },
+    {
+      "phone": "",
+      "verified": false,
+      "validationMode": "fixture_missing"
+    },
+    {
+      "phone": "",
+      "verified": false,
+      "validationMode": "fixture_missing"
+    },
+    {
+      "phone": "(602) 555-0123",
+      "verified": false,
+      "validationMode": "fixture_fake"
+    },
+    {
+      "phone": "(623) 555-0188",
+      "verified": false,
+      "validationMode": "fixture_fake"
+    },
+    {
+      "phone": "(520) 222-0199",
+      "verified": true,
+      "validationMode": "fixture_verified",
+      "valid": true,
+      "lineStatus": "active",
+      "lineType": "mobile",
+      "nationalFormat": "(520) 222-0199"
+    },
+    {
+      "phone": "(602) 222-0198",
+      "verified": true,
+      "validationMode": "fixture_verified",
+      "valid": true,
+      "lineStatus": "active",
+      "lineType": "landline",
+      "nationalFormat": "(602) 222-0198"
+    },
+    {
+      "phone": "(602) 222-0197",
+      "verified": true,
+      "validationMode": "fixture_verified",
+      "valid": true,
+      "lineStatus": "active",
+      "lineType": "landline",
+      "nationalFormat": "(602) 222-0197"
+    },
+    {
+      "phone": "(480) 222-0188",
+      "verified": true,
+      "validationMode": "fixture_verified",
+      "valid": true,
+      "lineStatus": "active",
+      "lineType": "mobile",
+      "nationalFormat": "(480) 222-0188"
+    },
+    {
+      "phone": "(928) 222-0166",
+      "verified": true,
+      "validationMode": "fixture_verified",
+      "valid": true,
+      "lineStatus": "active",
+      "lineType": "mobile",
+      "nationalFormat": "(928) 222-0166"
+    },
+    {
+      "phone": "(602) 222-0165",
+      "verified": true,
+      "validationMode": "fixture_verified",
+      "valid": true,
+      "lineStatus": "active",
+      "lineType": "mobile",
+      "nationalFormat": "(602) 222-0165"
+    },
+    {
+      "phone": "(928) 222-0164",
+      "verified": true,
+      "validationMode": "fixture_verified",
+      "valid": true,
+      "lineStatus": "active",
+      "lineType": "mobile",
+      "nationalFormat": "(928) 222-0164"
+    }
+  ]
+}

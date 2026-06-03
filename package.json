@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:find-leads:offline": "node scripts/test-find-leads.js",
+    "test:find-leads:offline:all": "node scripts/test-find-leads-offline-all.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.101.1",

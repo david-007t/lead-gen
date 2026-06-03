@@ -3,6 +3,15 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
+  if (process.env.ANTHROPIC_DISABLED === '1') {
+    return res.status(423).json({
+      error: {
+        type: 'anthropic_disabled',
+        message: 'Anthropic API calls are disabled by ANTHROPIC_DISABLED=1.',
+      },
+    });
+  }
+
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     return res.status(500).json({ error: 'ANTHROPIC_API_KEY not configured' });
@@ -11,6 +20,7 @@ export default async function handler(req, res) {
   try {
     const body = req.body || {};
     const tools = Array.isArray(body.tools) ? body.tools : [];
+    const model = String(body.model || '');
 
     const headers = {
       'Content-Type': 'application/json',
@@ -52,6 +62,35 @@ export default async function handler(req, res) {
           message: `Anthropic API returned a non-JSON response (HTTP ${response.status}). Please try again.`,
         },
       });
+    }
+
+    const usage = data?.usage || {};
+    const inputTokens = Number(usage.input_tokens || 0);
+    const outputTokens = Number(usage.output_tokens || 0);
+    const webSearchRequests = Number(
+      usage?.server_tool_use?.web_search_requests ||
+      usage?.server_tool_use?.web_search_request_count ||
+      0
+    );
+    const pricing = /sonnet-4/i.test(model)
+      ? { inputPerMillion: 3, outputPerMillion: 15, webSearchEach: 0.01 }
+      : { inputPerMillion: 0, outputPerMillion: 0, webSearchEach: 0.01 };
+    const estimatedCostUsd =
+      (inputTokens / 1_000_000) * pricing.inputPerMillion +
+      (outputTokens / 1_000_000) * pricing.outputPerMillion +
+      webSearchRequests * pricing.webSearchEach;
+    if (Number.isFinite(estimatedCostUsd) && estimatedCostUsd > 0) {
+      res.setHeader('x-anthropic-estimated-cost-usd', estimatedCostUsd.toFixed(6));
+      res.setHeader('x-anthropic-input-tokens', String(inputTokens));
+      res.setHeader('x-anthropic-output-tokens', String(outputTokens));
+      res.setHeader('x-anthropic-web-search-requests', String(webSearchRequests));
+      console.log('[anthropic-cost]', JSON.stringify({
+        model,
+        inputTokens,
+        outputTokens,
+        webSearchRequests,
+        estimatedCostUsd: Number(estimatedCostUsd.toFixed(6)),
+      }));
     }
 
     return res.status(response.status).json(data);

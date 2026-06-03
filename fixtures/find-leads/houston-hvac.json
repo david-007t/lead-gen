@@ -1,0 +1,251 @@
+{
+  "description": "Offline Find Leads fixture for Houston HVAC regressions.",
+  "city": "Houston, TX",
+  "niche": "HVAC contractors",
+  "count": 5,
+  "minAccepted": 1,
+  "expectations": {
+    "accepted": [
+      "Bayou Breeze HVAC"
+    ],
+    "rejected": {
+      "HVAC Contractors Houston": [
+        "business name looks like the search query",
+        "fabricated-looking phone"
+      ],
+      "Austin Heat and Air": [
+        "outside requested metro Houston, TX"
+      ],
+      "Home Depot HVAC Services Houston": [
+        "looks like a chain/franchise"
+      ],
+      "Katy Cool Air": [
+        "working website found"
+      ]
+    }
+  },
+  "rows": [
+    {
+      "Company Name": "Bayou Breeze HVAC",
+      "Address": "Pearland, TX",
+      "Phone": "",
+      "Email": "",
+      "Website URL": "",
+      "Source URL": "https://directory.example.test/bayou-breeze-hvac",
+      "Website Status": "No website found",
+      "Proof": "Business directory page lists HVAC services and phone but no standalone website.",
+      "Pitch Angle": "The directory page lists Bayou Breeze HVAC with phone and service info but no standalone website, so a local SEO site with quote requests could capture Houston-area HVAC leads.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "HVAC Contractors Houston",
+      "Address": "Houston, TX",
+      "Phone": "(713) 555-0123",
+      "Email": "",
+      "Website URL": "",
+      "Source URL": "https://directory.example.test/hvac-contractors-houston",
+      "Website Status": "No website found",
+      "Proof": "Regression fixture for query-name HVAC row.",
+      "Pitch Angle": "This row should never ship because it looks like the search query and uses a fake phone, even though it mentions a website opportunity.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "Austin Heat and Air",
+      "Address": "Austin, TX",
+      "Phone": "(512) 222-0199",
+      "Email": "",
+      "Website URL": "",
+      "Source URL": "https://directory.example.test/austin-heat-and-air",
+      "Website Status": "No website found",
+      "Proof": "Regression fixture for a verified-looking row outside Houston metro.",
+      "Pitch Angle": "The source indicates Austin Heat and Air lacks a standalone website, but it is outside the requested Houston metro and should not be shown.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "Home Depot HVAC Services Houston",
+      "Address": "Houston, TX",
+      "Phone": "(713) 222-0198",
+      "Email": "",
+      "Website URL": "",
+      "Source URL": "https://directory.example.test/home-depot-hvac-houston",
+      "Website Status": "No website found",
+      "Proof": "Regression fixture for obvious chain rejection.",
+      "Pitch Angle": "This row should be rejected because Home Depot is a chain, even if a directory source mentions HVAC website opportunities.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "Katy Cool Air",
+      "Address": "Katy, TX",
+      "Phone": "(281) 222-0197",
+      "Email": "",
+      "Website URL": "https://katycoolair.example.test/",
+      "Source URL": "https://katycoolair.example.test/",
+      "Website Status": "Broken website",
+      "Proof": "Regression fixture for a working site mislabeled as broken.",
+      "Pitch Angle": "This row should be rejected because the verifier found a working website, so selling it as broken would damage trust.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    }
+  ],
+  "verifications": [
+    {
+      "businessName": "Bayou Breeze HVAC",
+      "status": "No website found",
+      "keep": true,
+      "websiteUrl": "",
+      "sourceVerified": true,
+      "sourceStatus": "reachable",
+      "sourceUrl": "https://directory.example.test/bayou-breeze-hvac",
+      "sourcePhone": "(713) 222-0101",
+      "sourceEmail": "",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "No working website found among candidate domains."
+    },
+    {
+      "businessName": "HVAC Contractors Houston",
+      "status": "No website found",
+      "keep": true,
+      "websiteUrl": "",
+      "sourceVerified": true,
+      "sourceStatus": "reachable",
+      "sourceUrl": "https://directory.example.test/hvac-contractors-houston",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "No working website found among candidate domains."
+    },
+    {
+      "businessName": "Austin Heat and Air",
+      "status": "No website found",
+      "keep": true,
+      "websiteUrl": "",
+      "sourceVerified": true,
+      "sourceStatus": "reachable",
+      "sourceUrl": "https://directory.example.test/austin-heat-and-air",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "No working website found among candidate domains."
+    },
+    {
+      "businessName": "Home Depot HVAC Services Houston",
+      "status": "No website found",
+      "keep": true,
+      "websiteUrl": "",
+      "sourceVerified": true,
+      "sourceStatus": "reachable",
+      "sourceUrl": "https://directory.example.test/home-depot-hvac-houston",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "No working website found among candidate domains."
+    },
+    {
+      "businessName": "Katy Cool Air",
+      "status": "Has working website",
+      "keep": false,
+      "websiteUrl": "https://katycoolair.example.test/",
+      "sourceVerified": true,
+      "sourceStatus": "reachable",
+      "sourceUrl": "https://katycoolair.example.test/",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "Verified working website at https://katycoolair.example.test/."
+    }
+  ],
+  "phoneVerifications": [
+    {
+      "phone": "(713) 222-0101",
+      "verified": true,
+      "validationMode": "fixture_verified",
+      "valid": true,
+      "lineStatus": "active",
+      "lineType": "landline",
+      "nationalFormat": "(713) 222-0101"
+    },
+    {
+      "phone": "(713) 555-0123",
+      "verified": false,
+      "validationMode": "fixture_fake"
+    },
+    {
+      "phone": "(512) 222-0199",
+      "verified": true,
+      "validationMode": "fixture_verified",
+      "valid": true,
+      "lineStatus": "active",
+      "lineType": "landline",
+      "nationalFormat": "(512) 222-0199"
+    },
+    {
+      "phone": "(713) 222-0198",
+      "verified": true,
+      "validationMode": "fixture_verified",
+      "valid": true,
+      "lineStatus": "active",
+      "lineType": "landline",
+      "nationalFormat": "(713) 222-0198"
+    },
+    {
+      "phone": "(281) 222-0197",
+      "verified": true,
+      "validationMode": "fixture_verified",
+      "valid": true,
+      "lineStatus": "active",
+      "lineType": "landline",
+      "nationalFormat": "(281) 222-0197"
+    }
+  ]
+}

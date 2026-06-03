@@ -1,0 +1,251 @@
+{
+  "description": "Offline Find Leads fixture for Los Angeles nail salon regressions.",
+  "city": "Los Angeles, CA",
+  "niche": "nail salons",
+  "count": 5,
+  "minAccepted": 1,
+  "expectations": {
+    "accepted": [
+      "Echo Park Nail Studio"
+    ],
+    "rejected": {
+      "Nail Salon Los Angeles": [
+        "business name looks like the search query",
+        "fabricated-looking phone"
+      ],
+      "Santa Ana Nail Bar": [
+        "outside requested metro Los Angeles, CA"
+      ],
+      "Great Clips Nail Lounge": [
+        "looks like a chain/franchise"
+      ],
+      "Glossy Cloud Nails": [
+        "website status is unverified"
+      ]
+    }
+  },
+  "rows": [
+    {
+      "Company Name": "Echo Park Nail Studio",
+      "Address": "Glendale, CA",
+      "Phone": "",
+      "Email": "",
+      "Website URL": "",
+      "Source URL": "https://directory.example.test/echo-park-nail-studio",
+      "Website Status": "No website found",
+      "Proof": "Business directory page lists phone and services but no standalone website.",
+      "Pitch Angle": "The directory page lists Echo Park Nail Studio with services and contact info but no standalone website, so a booking-ready site with local SEO could capture nearby nail clients.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "Nail Salon Los Angeles",
+      "Address": "Los Angeles, CA",
+      "Phone": "(213) 555-0123",
+      "Email": "",
+      "Website URL": "",
+      "Source URL": "https://directory.example.test/nail-salon-los-angeles",
+      "Website Status": "No website found",
+      "Proof": "Regression fixture for query-name business with reserved fake phone.",
+      "Pitch Angle": "This row should never ship because it looks like the search query, even though the pitch mentions website and booking opportunities.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "Santa Ana Nail Bar",
+      "Address": "Santa Ana, CA",
+      "Phone": "(714) 222-0199",
+      "Email": "",
+      "Website URL": "",
+      "Source URL": "https://directory.example.test/santa-ana-nail-bar",
+      "Website Status": "No website found",
+      "Proof": "Regression fixture for a valid-looking row outside the requested LA metro.",
+      "Pitch Angle": "The source suggests Santa Ana Nail Bar lacks a website, but the city is outside the requested Los Angeles metro so it should be rejected.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "Great Clips Nail Lounge",
+      "Address": "Los Angeles, CA",
+      "Phone": "(323) 222-0198",
+      "Email": "",
+      "Website URL": "",
+      "Source URL": "https://directory.example.test/great-clips-nail-lounge",
+      "Website Status": "No website found",
+      "Proof": "Regression fixture for chain/franchise wording.",
+      "Pitch Angle": "This row should be rejected as a chain/franchise even though the source suggests a website opportunity for nail bookings.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    },
+    {
+      "Company Name": "Glossy Cloud Nails",
+      "Address": "Pasadena, CA",
+      "Phone": "(626) 222-0197",
+      "Email": "",
+      "Website URL": "https://glossycloudnails.example.test/",
+      "Source URL": "https://directory.example.test/glossy-cloud-nails",
+      "Website Status": "Broken website",
+      "Proof": "Regression fixture for bot-blocked website status being treated as unverified.",
+      "Pitch Angle": "The directory page points to a possible website issue, but the site status is unverified so this should not be sold as a broken website lead.",
+      "Signals": {
+        "hiringOnIndeed": false,
+        "runningAds": false,
+        "onlineBooking": false,
+        "recentlyStarted": false
+      },
+      "Signal Evidence": {
+        "hiringOnIndeed": "",
+        "runningAds": "",
+        "onlineBooking": "",
+        "recentlyStarted": ""
+      }
+    }
+  ],
+  "verifications": [
+    {
+      "businessName": "Echo Park Nail Studio",
+      "status": "No website found",
+      "keep": true,
+      "websiteUrl": "",
+      "sourceVerified": true,
+      "sourceStatus": "reachable",
+      "sourceUrl": "https://directory.example.test/echo-park-nail-studio",
+      "sourcePhone": "(323) 222-0101",
+      "sourceEmail": "",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "No working website found among candidate domains."
+    },
+    {
+      "businessName": "Nail Salon Los Angeles",
+      "status": "No website found",
+      "keep": true,
+      "websiteUrl": "",
+      "sourceVerified": true,
+      "sourceStatus": "reachable",
+      "sourceUrl": "https://directory.example.test/nail-salon-los-angeles",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "No working website found among candidate domains."
+    },
+    {
+      "businessName": "Santa Ana Nail Bar",
+      "status": "No website found",
+      "keep": true,
+      "websiteUrl": "",
+      "sourceVerified": true,
+      "sourceStatus": "reachable",
+      "sourceUrl": "https://directory.example.test/santa-ana-nail-bar",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "No working website found among candidate domains."
+    },
+    {
+      "businessName": "Great Clips Nail Lounge",
+      "status": "No website found",
+      "keep": true,
+      "websiteUrl": "",
+      "sourceVerified": true,
+      "sourceStatus": "reachable",
+      "sourceUrl": "https://directory.example.test/great-clips-nail-lounge",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "No working website found among candidate domains."
+    },
+    {
+      "businessName": "Glossy Cloud Nails",
+      "status": "Unverified — could not confirm",
+      "keep": false,
+      "websiteUrl": "https://glossycloudnails.example.test/",
+      "sourceVerified": true,
+      "sourceStatus": "reachable",
+      "sourceUrl": "https://directory.example.test/glossy-cloud-nails",
+      "emailVerified": false,
+      "emailStatus": "missing",
+      "proof": "Could not safely verify website status (timeout)."
+    }
+  ],
+  "phoneVerifications": [
+    {
+      "phone": "(323) 222-0101",
+      "verified": true,
+      "validationMode": "fixture_verified",
+      "valid": true,
+      "lineStatus": "active",
+      "lineType": "landline",
+      "nationalFormat": "(323) 222-0101"
+    },
+    {
+      "phone": "(213) 555-0123",
+      "verified": false,
+      "validationMode": "fixture_fake"
+    },
+    {
+      "phone": "(714) 222-0199",
+      "verified": true,
+      "validationMode": "fixture_verified",
+      "valid": true,
+      "lineStatus": "active",
+      "lineType": "landline",
+      "nationalFormat": "(714) 222-0199"
+    },
+    {
+      "phone": "(323) 222-0198",
+      "verified": true,
+      "validationMode": "fixture_verified",
+      "valid": true,
+      "lineStatus": "active",
+      "lineType": "landline",
+      "nationalFormat": "(323) 222-0198"
+    },
+    {
+      "phone": "(626) 222-0197",
+      "verified": true,
+      "validationMode": "fixture_verified",
+      "valid": true,
+      "lineStatus": "active",
+      "lineType": "landline",
+      "nationalFormat": "(626) 222-0197"
+    }
+  ]
+}
