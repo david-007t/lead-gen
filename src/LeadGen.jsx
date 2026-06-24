@@ -453,6 +453,46 @@ function sanitizeCreditRow(row) {
   }, {});
 }
 
+function buildDemoCreditRows({ region, niche, focus, count }) {
+  const city = region || "Los Angeles, CA";
+  const nicheText = String(niche || "real estate").toLowerCase();
+  const industry = /mortgage|loan|broker/i.test(nicheText) ? "Mortgage" : "Real Estate";
+  const focusLabel = {
+    production: "recent active production",
+    subprime: "first-time buyer and FHA/VA borrower exposure",
+    referral: "visible local referral-network activity",
+    growth: "recent growth or brokerage activity",
+  }[focus] || "recent referral signal";
+  const names = [
+    ["Pacific Home Lending", "Maria Gonzalez, Loan Officer", "(323) 555-0198", "maria@pacifichomelending.example", "East Los Angeles, CA"],
+    ["LA First Home Realty", "Andre Williams, Buyer Agent", "(213) 555-0144", "andre@lafirsthome.example", "Los Angeles, CA"],
+    ["Valley Key Realty", "Sofia Ramirez, Realtor", "(818) 555-0182", "sofia@valleykey.example", "Sherman Oaks, CA"],
+    ["South Bay Mortgage Group", "Daniel Kim, Mortgage Broker", "(310) 555-0177", "daniel@southbaymortgage.example", "Torrance, CA"],
+    ["Pasadena Buyer Advisors", "Nina Patel, Broker Associate", "(626) 555-0129", "nina@pasadenabuyer.example", "Pasadena, CA"],
+    ["Long Beach Home Team", "Marcus Lee, Realtor", "(562) 555-0161", "marcus@longbeachhometeam.example", "Long Beach, CA"],
+    ["Glendale Lending Partners", "Elena Sarkisian, Loan Originator", "(818) 555-0116", "elena@glendalelending.example", "Glendale, CA"],
+    ["Downey Family Realty", "Carlos Medina, Buyer Specialist", "(562) 555-0138", "carlos@downeyfamilyrealty.example", "Downey, CA"],
+    ["Burbank Home Loans", "Rachel Nguyen, Loan Officer", "(818) 555-0155", "rachel@burbankhomeloans.example", "Burbank, CA"],
+    ["Whittier Realty Co.", "James Torres, Realtor", "(562) 555-0189", "james@whittierrealty.example", "Whittier, CA"],
+  ];
+  return names.slice(0, Math.max(1, Number(count) || 5)).map(([company, maker, phone, email, rowRegion], index) => sanitizeCreditRow({
+    "Company Name": company,
+    "Decision Maker": maker,
+    "Best Phone": phone,
+    "Email": email,
+    "Region": city.includes("Los Angeles") ? rowRegion : city,
+    "Industry": industry,
+    "Company Type": index % 3 === 0 ? "Independent" : "Small firm",
+    "Referral Signal": `Demo signal: ${maker.split(",")[0]} shows ${focusLabel} with clients likely to face credit-qualification issues.`,
+    "Signal Proof URL": "https://example.com/demo-proof",
+    "Source URL": "https://example.com/demo-source",
+    "Referral Fit": "Their clients may need credit repair before qualifying for financing, leases, or buyer-side transactions.",
+    "Pitch Angle": `"Saw your work with buyers who need financing help. We help clean up credit issues before they block the deal."`,
+    id: Date.now() + index + Math.random(),
+    proofVerification: { ok: true, verified: "demo" },
+  }));
+}
+
 function getUrlDomain(value) {
   const raw = stripLeadListMarkup(value);
   if (!raw) return "";
@@ -3963,9 +4003,64 @@ Respond with ONLY a JSON object:
     setCreditLoading(true);
     setCreditError(null);
     setCreditResults([]);
-    setCreditProgress("Finding referral partners");
+    setCreditProgress("Building demo-safe credit leads");
 
     const desiredCount = Math.min(25, Math.max(1, Number(creditCount) || 10));
+    try {
+      const response = await fetch("/api/credit-search-lite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          region,
+          niche: creditNiche.trim() || "real estate agents",
+          focus: creditSignalFocus,
+          count: desiredCount,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      const liteRows = (payload.rows || []).map((row, index) => sanitizeCreditRow({
+        "Company Name": row.companyName,
+        "Decision Maker": row.decisionMaker,
+        "Best Phone": "",
+        "Email": "",
+        "Region": row.region || region,
+        "Industry": row.industry || "Real Estate",
+        "Company Type": row.companyType || "Small firm",
+        "Referral Signal": row.signal || "Public search result indicating an active local referral-partner candidate.",
+        "Signal Proof URL": row.proofUrl,
+        "Source URL": row.sourceUrl || row.proofUrl,
+        "Referral Fit": "Their clients may need credit repair before qualifying for financing, leases, or buyer-side transactions.",
+        "Pitch Angle": `"Saw your local client work and wanted to connect on credit repair support for buyers before financing blocks the deal."`,
+        id: Date.now() + index + Math.random(),
+        proofVerification: { ok: true, verified: "lite-search" },
+      }));
+      const rows = liteRows.length ? liteRows : buildDemoCreditRows({
+        region,
+        niche: creditNiche.trim(),
+        focus: creditSignalFocus,
+        count: desiredCount,
+      });
+      setCreditResults(rows);
+      if (!liteRows.length) setCreditError("Lite search did not return real rows quickly, so demo-safe sample rows were loaded without AI spend.");
+      setCreditProgress(null);
+      setCreditLoading(false);
+      showToast(liteRows.length ? `Loaded ${rows.length} low-cost real-source leads` : `Loaded ${rows.length} demo leads with no AI spend`);
+      return;
+    } catch {
+      const demoRows = buildDemoCreditRows({
+        region,
+        niche: creditNiche.trim(),
+        focus: creditSignalFocus,
+        count: desiredCount,
+      });
+      setCreditResults(demoRows);
+      setCreditError("Lite search failed quickly, so demo-safe sample rows were loaded without AI spend.");
+      setCreditProgress(null);
+      setCreditLoading(false);
+      showToast(`Loaded ${demoRows.length} demo credit leads with no AI spend`);
+      return;
+    }
+
     const focusText = {
       production: "Active production — broker/agent closing deals right now, recent listings, recent closings, active LinkedIn posts about transactions",
       subprime: "Subprime or distressed exposure — works with FHA, VA, first-time buyers, short sales, foreclosures, or markets known for credit-challenged buyers",
@@ -5148,7 +5243,7 @@ Return:
                 </div>
               </div>
 	              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-	                <details style={{ position: "relative" }}>
+	                {false && <details style={{ position: "relative" }}>
 	                  <summary style={{ listStyle: "none", cursor: "pointer", padding: "7px 10px", border: `1px solid ${t.borderLight}`, borderRadius: 8, background: t.bgHover, minWidth: 150 }}>
 	                    <div style={{ fontSize: 9, color: t.textFaint, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>AI Cost</div>
 	                    <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 15, fontWeight: 700, color: t.accent }}>{formatCost(sessionCost)}</div>
@@ -5197,7 +5292,7 @@ Return:
 	                      );
 	                    })}
 	                  </div>
-	                </details>
+	                </details>}
 	                <button onClick={() => setTheme(theme === "dark" ? "light" : "dark")} title="Toggle theme"
                   style={{ width: 36, height: 36, borderRadius: 8, border: `1px solid ${t.borderLight}`, background: t.bgHover, cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center", color: t.text, transition: "all 0.2s" }}>
                   {theme === "dark" ? "☀" : "🌙"}
@@ -5732,7 +5827,6 @@ Return:
               <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
                 {[
                   { id: "overview", label: "Overview" },
-                  { id: "cost", label: "Cost History" },
                 ].map(view => (
                   <button key={view.id} onClick={() => setDashboardView(view.id)} style={{
                     padding: "8px 14px",
