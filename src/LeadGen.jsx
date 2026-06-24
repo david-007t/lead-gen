@@ -346,6 +346,7 @@ const LEAD_LIST_ROW_DELAY_MS = 350;
 const CREDIT_MAX_GENERATION_PASSES = 10;
 const CREDIT_CANDIDATE_BUFFER_ROWS = 5;
 const CREDIT_MAX_CANDIDATES_PER_PASS = 8;
+const CREDIT_DEMO_REAL_ROWS = 2;
 
 function extractJSONValue(fullText) {
   if (!fullText) return null;
@@ -476,21 +477,67 @@ function buildVerifiedCreditSeedRows({ region, niche, focus, count }) {
     ["The Agency", "Michelle Schwartz, Managing Partner", "(424) 230-3716", "", "Sherman Oaks, CA", "https://www.theagencyre.com/agent/michelle-schwartz", "The Agency profile lists Michelle Schwartz as Managing Partner for Sherman Oaks, Studio City, and Calabasas."],
     ["The Agency", "Melissa Platt, Real Estate Agent", "", "", "Los Angeles, CA", "https://www.theagencyre.com/agent/melissa-platt", "The Agency profile identifies Melissa Platt as a real estate agent and public referral partner candidate."],
   ];
-  return seeds.slice(0, Math.max(1, Number(count) || 5)).map(([company, maker, phone, email, rowRegion, url, signal], index) => sanitizeCreditRow({
+  return seeds.slice(0, Math.max(1, Number(count) || 5)).map(([company, maker, phone, email, rowRegion, url, signal], index) => ({
+    ...sanitizeCreditRow({
+      "Company Name": company,
+      "Decision Maker": maker,
+      "Best Phone": phone,
+      "Email": email,
+      "Region": city.includes("Los Angeles") ? rowRegion : city,
+      "Industry": industry,
+      "Company Type": index % 3 === 0 ? "Independent" : "Small firm",
+      "Referral Signal": `${signal} Signal focus: ${focusLabel}.`,
+      "Signal Proof URL": url,
+      "Source URL": url,
+      "Referral Fit": "Their clients may need credit repair before qualifying for financing, leases, or buyer-side transactions.",
+      "Pitch Angle": `"Saw your Los Angeles real estate activity and wanted to connect on credit repair support for buyers before financing blocks the deal."`,
+    }),
+    id: Date.now() + index + Math.random(),
+    proofVerification: { ok: true, verified: "verified-seed" },
+    demoKind: "real",
+  }));
+}
+
+function buildSampleCreditRows({ region, niche, focus, count }) {
+  const city = region || "Los Angeles, CA";
+  const nicheText = String(niche || "real estate").toLowerCase();
+  const industry = /mortgage|loan|broker/i.test(nicheText) ? "Mortgage" : "Real Estate";
+  const focusLabel = {
+    production: "recent active production",
+    subprime: "first-time buyer and FHA/VA borrower exposure",
+    referral: "visible referral-network activity",
+    growth: "recent brokerage growth",
+  }[focus] || "recent referral signal";
+  const samples = [
+    ["Harbor View Home Team", "Alicia Moreno, Buyer Agent", "(310) 555-0168", "sample+alicia@conquer-demo.test", "Long Beach, CA"],
+    ["Valley First Mortgage", "Derek Chen, Loan Officer", "(818) 555-0124", "sample+derek@conquer-demo.test", "Sherman Oaks, CA"],
+    ["Eastside Realty Partners", "Monica Reyes, Broker Associate", "(323) 555-0149", "sample+monica@conquer-demo.test", "Los Angeles, CA"],
+    ["Pasadena Home Advisors", "Priya Shah, Realtor", "(626) 555-0183", "sample+priya@conquer-demo.test", "Pasadena, CA"],
+    ["South Bay Buyer Group", "Kevin Brooks, Real Estate Agent", "(424) 555-0172", "sample+kevin@conquer-demo.test", "Torrance, CA"],
+    ["Glendale Lending Desk", "Nora Petrosian, Mortgage Advisor", "(818) 555-0191", "sample+nora@conquer-demo.test", "Glendale, CA"],
+    ["Downey Family Homes", "Luis Ortega, Buyer Specialist", "(562) 555-0132", "sample+luis@conquer-demo.test", "Downey, CA"],
+    ["Burbank Closing Team", "Rachel Park, Realtor", "(818) 555-0157", "sample+rachel@conquer-demo.test", "Burbank, CA"],
+    ["Whittier First-Time Buyer Group", "James Navarro, Agent", "(562) 555-0165", "sample+james@conquer-demo.test", "Whittier, CA"],
+    ["Encino Home Finance", "Leah Cohen, Loan Originator", "(818) 555-0118", "sample+leah@conquer-demo.test", "Encino, CA"],
+  ];
+  return samples.slice(0, Math.max(0, Number(count) || 0)).map(([company, maker, phone, email, rowRegion], index) => ({
+    ...sanitizeCreditRow({
     "Company Name": company,
     "Decision Maker": maker,
     "Best Phone": phone,
     "Email": email,
     "Region": city.includes("Los Angeles") ? rowRegion : city,
     "Industry": industry,
-    "Company Type": index % 3 === 0 ? "Independent" : "Small firm",
-    "Referral Signal": `${signal} Signal focus: ${focusLabel}.`,
-    "Signal Proof URL": url,
-    "Source URL": url,
+    "Company Type": index % 2 === 0 ? "Small firm" : "Independent",
+    "Referral Signal": `Sample signal: ${maker.split(",")[0]} works with clients matching ${focusLabel}.`,
+    "Signal Proof URL": "Sample row - replace with live proof URL in production",
+    "Source URL": "Sample row - representative workflow data",
     "Referral Fit": "Their clients may need credit repair before qualifying for financing, leases, or buyer-side transactions.",
-    "Pitch Angle": `"Saw your Los Angeles real estate activity and wanted to connect on credit repair support for buyers before financing blocks the deal."`,
-    id: Date.now() + index + Math.random(),
-    proofVerification: { ok: true, verified: "verified-seed" },
+    "Pitch Angle": `"Saw your buyer-side work and wanted to connect on credit repair support before financing blocks the deal."`,
+    }),
+    id: Date.now() + 1000 + index + Math.random(),
+    proofVerification: { ok: true, verified: "sample" },
+    demoKind: "sample",
   }));
 }
 
@@ -4019,53 +4066,69 @@ Respond with ONLY a JSON object:
         }),
       });
       const payload = await response.json().catch(() => ({}));
-      const liteRows = (payload.rows || []).map((row, index) => sanitizeCreditRow({
-        "Company Name": row.companyName,
-        "Decision Maker": row.decisionMaker,
-        "Best Phone": "",
-        "Email": "",
-        "Region": row.region || region,
-        "Industry": row.industry || "Real Estate",
-        "Company Type": row.companyType || "Small firm",
-        "Referral Signal": row.signal || "Public search result indicating an active local referral-partner candidate.",
-        "Signal Proof URL": row.proofUrl,
-        "Source URL": row.sourceUrl || row.proofUrl,
-        "Referral Fit": "Their clients may need credit repair before qualifying for financing, leases, or buyer-side transactions.",
-        "Pitch Angle": `"Saw your local client work and wanted to connect on credit repair support for buyers before financing blocks the deal."`,
+      const liteRows = (payload.rows || []).map((row, index) => ({
+        ...sanitizeCreditRow({
+          "Company Name": row.companyName,
+          "Decision Maker": row.decisionMaker,
+          "Best Phone": "",
+          "Email": "",
+          "Region": row.region || region,
+          "Industry": row.industry || "Real Estate",
+          "Company Type": row.companyType || "Small firm",
+          "Referral Signal": row.signal || "Public search result indicating an active local referral-partner candidate.",
+          "Signal Proof URL": row.proofUrl,
+          "Source URL": row.sourceUrl || row.proofUrl,
+          "Referral Fit": "Their clients may need credit repair before qualifying for financing, leases, or buyer-side transactions.",
+          "Pitch Angle": `"Saw your local client work and wanted to connect on credit repair support for buyers before financing blocks the deal."`,
+        }),
         id: Date.now() + index + Math.random(),
         proofVerification: { ok: true, verified: "lite-search" },
+        demoKind: "real",
       }));
       const seedRows = buildVerifiedCreditSeedRows({
         region,
         niche: creditNiche.trim(),
         focus: creditSignalFocus,
-        count: desiredCount,
+        count: CREDIT_DEMO_REAL_ROWS,
       });
       const seenRows = new Set();
-      const rows = [...liteRows, ...seedRows].filter(row => {
+      const realRows = [...liteRows, ...seedRows].filter(row => {
         const key = columnKey(`${getLeadCell(row, "Company Name")} ${getLeadCell(row, "Decision Maker")}`);
         if (!key || seenRows.has(key)) return false;
         seenRows.add(key);
         return true;
-      }).slice(0, desiredCount);
-      setCreditResults(rows);
-      if (!liteRows.length) setCreditError("Live lite search did not return rows quickly, so verified real seed leads were loaded without Anthropic spend.");
-      setCreditProgress(null);
-      setCreditLoading(false);
-      showToast(`Loaded ${rows.length} real-source leads with no Anthropic spend`);
-      return;
-    } catch {
-      const seedRows = buildVerifiedCreditSeedRows({
+      }).slice(0, Math.min(CREDIT_DEMO_REAL_ROWS, desiredCount));
+      const sampleRows = buildSampleCreditRows({
         region,
         niche: creditNiche.trim(),
         focus: creditSignalFocus,
-        count: desiredCount,
+        count: Math.max(0, desiredCount - realRows.length),
       });
-      setCreditResults(seedRows);
-      setCreditError("Live lite search failed quickly, so verified real seed leads were loaded without Anthropic spend.");
+      const rows = [...realRows, ...sampleRows].slice(0, desiredCount);
+      setCreditResults(rows);
+      setCreditError(null);
       setCreditProgress(null);
       setCreditLoading(false);
-      showToast(`Loaded ${seedRows.length} real-source leads with no Anthropic spend`);
+      showToast(`Loaded ${realRows.length} real and ${sampleRows.length} sample demo leads`);
+      return;
+    } catch {
+      const realRows = buildVerifiedCreditSeedRows({
+        region,
+        niche: creditNiche.trim(),
+        focus: creditSignalFocus,
+        count: Math.min(CREDIT_DEMO_REAL_ROWS, desiredCount),
+      });
+      const sampleRows = buildSampleCreditRows({
+        region,
+        niche: creditNiche.trim(),
+        focus: creditSignalFocus,
+        count: Math.max(0, desiredCount - realRows.length),
+      });
+      setCreditResults([...realRows, ...sampleRows].slice(0, desiredCount));
+      setCreditError(null);
+      setCreditProgress(null);
+      setCreditLoading(false);
+      showToast(`Loaded ${realRows.length} real and ${sampleRows.length} sample demo leads`);
       return;
     }
 
@@ -5413,12 +5476,14 @@ Return:
                     {creditResults.map(row => {
                       const company = getLeadCell(row, "Company Name");
                       const inPipeline = leads.some(l => l.sourceMode === "credit" && columnKey(l.company) === columnKey(company));
+                      const isSampleRow = row.demoKind === "sample";
                       return (
-                        <div key={row.id} style={{ ...cardStyle, marginBottom: 0, borderLeft: "4px solid #22c55e" }}>
+                        <div key={row.id} style={{ ...cardStyle, marginBottom: 0, borderLeft: `4px solid ${isSampleRow ? "#78716c" : "#22c55e"}` }}>
                           <div style={{ display: "flex", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 12 }}>
                             <div style={{ minWidth: 240, flex: 1 }}>
                               <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
                                 <span style={{ fontSize: 16, fontWeight: 800, color: t.text }}>{company}</span>
+                                <span style={{ fontSize: 10, background: isSampleRow ? t.bgHover : "#16653433", color: isSampleRow ? t.textMuted : "#86efac", padding: "2px 8px", borderRadius: 6, fontWeight: 800 }}>{isSampleRow ? "Sample" : "Real source"}</span>
                                 {row.proofVerification?.verified === "linkedin-structural" && <span style={{ fontSize: 10, background: "#2563eb33", color: "#93c5fd", padding: "2px 8px", borderRadius: 6, fontWeight: 800 }}>LinkedIn ✓</span>}
                                 {row.proofVerification?.verified === "http" && <span style={{ fontSize: 10, background: "#16653433", color: "#86efac", padding: "2px 8px", borderRadius: 6, fontWeight: 800 }}>Verified ✓</span>}
                                 {getLeadCell(row, "Industry") && <span style={{ fontSize: 10, background: "#16653433", color: "#86efac", padding: "2px 8px", borderRadius: 6, fontWeight: 700 }}>{getLeadCell(row, "Industry")}</span>}
@@ -5447,7 +5512,7 @@ Return:
                             ].map(([label, value]) => (
                               <div key={label} style={{ minWidth: 0 }}>
                                 <div style={{ fontSize: 10, color: t.textDim, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, marginBottom: 5 }}>{label}</div>
-                                {String(value || "").startsWith("http") ? (
+                                {!isSampleRow && String(value || "").startsWith("http") ? (
                                   <a href={value} target="_blank" rel="noreferrer" style={{ fontSize: 13, color: t.accent, overflowWrap: "anywhere" }}>{value}</a>
                                 ) : (
                                   <div style={{ fontSize: 13, color: value ? t.text : t.textFaint, lineHeight: 1.45, overflowWrap: "anywhere" }}>{value || "—"}</div>
