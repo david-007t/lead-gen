@@ -189,7 +189,7 @@ async function main() {
     if (audited.length >= desiredCount) break;
     const batchCount = Math.min(2, desiredCount - audited.length);
     const data = await postJSON("/api/anthropic", {
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 1700,
       system: "You are a careful B2B lead researcher finding referral partners for a consumer credit repair company. Your job is to find mortgage brokers, real estate agents, and adjacent professionals whose clients have personal credit problems. Return strict JSON only. No narration, no search notes, no markdown. Accuracy beats volume.",
       messages: [{ role: "user", content: buildPrompt(batchCount, queryFocus, audited.map(item => getValue(item.row, ["Company Name"])).filter(Boolean)) }],

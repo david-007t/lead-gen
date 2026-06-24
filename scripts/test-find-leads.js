@@ -427,7 +427,7 @@ async function main() {
       const batchCount = Math.min(3, searchCount);
       console.log(`Focus: ${focus}`);
       const data = await postJSON("/api/anthropic", {
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-6",
         max_tokens: 1800,
         system: "You are a fast B2B lead researcher. Use web search to find real local businesses. Return only a raw JSON array. No markdown, no explanation, no placeholders.",
         messages: [{ role: "user", content: buildPrompt(focus, batchCount) }],

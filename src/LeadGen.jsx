@@ -22,6 +22,8 @@ const supabase = createClient(
 );
 
 // ─── CONSTANTS ────────────────────────────────────────────────
+const CLAUDE_SEARCH_MODEL = "claude-sonnet-4-6";
+
 const INDUSTRIES = {
   construction: {
     label: "Construction", icon: "🏗", typeName: "Project Type", leadNoun: "project",
@@ -2106,7 +2108,7 @@ export default function LeadGen() {
 
   const callAnthropic = async (action, body) => {
     const startedAt = Date.now();
-    const model = body?.model || "claude-sonnet-4-20250514";
+    const model = body?.model || CLAUDE_SEARCH_MODEL;
     const fallbackInputTokens = estimateTokensFromText(JSON.stringify(body || {}));
     let raw = "";
     let status = 0;
@@ -2472,7 +2474,7 @@ export default function LeadGen() {
 
     const runAnthropicSearch = async ({ maxTokens, system, prompt, action }) => {
       const { response: resp, data } = await callAnthropic(action || "Find My Clients Search", {
-        model: "claude-sonnet-4-20250514",
+        model: CLAUDE_SEARCH_MODEL,
         max_tokens: maxTokens,
         system,
         messages: [{ role: "user", content: prompt }],
@@ -3004,7 +3006,7 @@ ${DEFAULT_EMAIL_SIGNATURE}`;
 
     const runShipListPrompt = async (promptText, action, maxTokens = 2200, { webSearch = false } = {}) => {
       const body = {
-        model: "claude-sonnet-4-20250514",
+        model: CLAUDE_SEARCH_MODEL,
         max_tokens: maxTokens,
         system: webSearch
           ? "You are a business research assistant. Search the web for real companies. Respond with strict JSON only. No prose, no markdown."
@@ -3376,7 +3378,7 @@ Respond with ONLY a JSON object (no markdown):
 If you cannot find a specific person, return the best guess with confidence "low".`;
 
       const { data } = await callAnthropic("Ship List Contact Search", {
-        model: "claude-sonnet-4-20250514",
+        model: CLAUDE_SEARCH_MODEL,
         max_tokens: 1000,
         system: "You are a B2B contact research assistant. Search the web and return ONLY a raw JSON object — no markdown, no explanation.",
         messages: [{ role: "user", content: prompt }],
@@ -3420,7 +3422,7 @@ ${isLinkedIn
 Return ONLY the message text. No labels, no markdown.`;
 
     const { data } = await callAnthropic("Ship List Outreach Draft", {
-      model: "claude-sonnet-4-20250514",
+      model: CLAUDE_SEARCH_MODEL,
       max_tokens: 400,
       messages: [{ role: "user", content: prompt }],
     });
@@ -3637,7 +3639,7 @@ Framework:
 Under 5 sentences. Sound like a real person, not a sales pitch. No fluff.`;
 
       const { data } = await callAnthropic("Find AI Prospects Outreach Draft", {
-        model: "claude-sonnet-4-20250514",
+        model: CLAUDE_SEARCH_MODEL,
         max_tokens: 500,
         messages: [{ role: "user", content: prompt }],
       });
@@ -3681,7 +3683,7 @@ Frame it as: you're not applying as a person — you're pitching an AI system th
 Keep it under 4 sentences. Direct, confident, no fluff.`;
 
       const { data } = await callAnthropic("Find AI Prospects Apply Pitch", {
-        model: "claude-sonnet-4-20250514",
+        model: CLAUDE_SEARCH_MODEL,
         max_tokens: 300,
         system: "You are writing cold pitches for an AI automation agency. The goal is to hijack a job application form to pitch AI services instead of a resume. Be direct, reference the pay rate, show the math. Under 4 sentences.",
         messages: [{ role: "user", content: prompt }],
@@ -3745,7 +3747,7 @@ If you genuinely cannot find contact info after searching, respond with:
 { "notFound": true }`;
 
       const { data } = await callAnthropic("Find AI Prospects Contact Search", {
-        model: "claude-sonnet-4-20250514",
+        model: CLAUDE_SEARCH_MODEL,
         max_tokens: 1000,
         system: "You are a contact research assistant. Search the web to find real contact info for business decision makers. Cross-reference industry and location to confirm you have the right company. Respond with ONLY a JSON object.",
         messages: [{ role: "user", content: prompt }],
@@ -3808,7 +3810,7 @@ My pitch: AI automation can do this job 24/7 for a fraction of what they'd pay a
 Personalize this to ${contact.name || "them"} specifically. Reference the job posting and pay rate. Show the math. Under 5 sentences. No fluff.`;
 
       const { data } = await callAnthropic("Find AI Prospects Contact Email", {
-        model: "claude-sonnet-4-20250514",
+        model: CLAUDE_SEARCH_MODEL,
         max_tokens: 400,
         system: "You are writing cold outreach emails for an AI automation agency. The recipient posted a job listing for a role AI can replace. Reference their name, company, job title, and pay rate. Show the annual cost math. Be direct, not salesy. The math sells itself.",
         messages: [{ role: "user", content: prompt }],
@@ -3856,7 +3858,7 @@ Respond with ONLY a JSON object:
 }`;
 
       const { data } = await callAnthropic("Find AI Prospects LinkedIn Messages", {
-        model: "claude-sonnet-4-20250514",
+        model: CLAUDE_SEARCH_MODEL,
         max_tokens: 500,
         system: "You are writing LinkedIn outreach messages for an AI automation agency targeting companies that posted job listings for roles AI can replace. Respond with ONLY a JSON object with connectionNote and followUpDm fields.",
         messages: [{ role: "user", content: prompt }],
@@ -4094,7 +4096,7 @@ JSON shape:
         const batchCount = Math.min(2, desiredCount - results.length);
         setCreditProgress(`Finding referral partners ${results.length}/${desiredCount}`);
         const { response, data } = await callAnthropic("Credit Lead Search", {
-          model: "claude-sonnet-4-20250514",
+          model: CLAUDE_SEARCH_MODEL,
           max_tokens: 1700,
           system: "You are a careful B2B lead researcher finding referral partners for a consumer credit repair company. Your job is to find mortgage brokers, real estate agents, and adjacent professionals whose clients have personal credit problems. Return strict JSON only. No narration, no search notes, no markdown. Accuracy beats volume.",
           messages: [{ role: "user", content: buildPrompt(batchCount, queryFocus, results.map(row => getLeadCell(row, "Company Name")).filter(Boolean)) }],
@@ -4327,7 +4329,7 @@ RESPOND WITH ONLY this JSON object:
           : `Finding more candidates (${acceptedRows.length}/${desiredCount} rows)`);
 
         const { response, data } = await callAnthropic("Build Lead List Search", {
-          model: "claude-sonnet-4-20250514",
+          model: CLAUDE_SEARCH_MODEL,
           max_tokens: 1800,
           system: "You are the Lead Request Engine for a B2B sales app. Return ONLY valid JSON. For this step, discover candidate companies only; do not deeply enrich contacts.",
           messages: [{ role: "user", content: buildDiscoveryPrompt(requestBatchSize, [...excludedCompanies]) }],
@@ -4358,7 +4360,7 @@ RESPOND WITH ONLY this JSON object:
           let row = null;
           try {
             const { response: enrichResponse, data: enrichData } = await callAnthropic("Build Lead List Company Enrichment", {
-              model: "claude-sonnet-4-20250514",
+              model: CLAUDE_SEARCH_MODEL,
               max_tokens: 1200,
               system: "You are a B2B lead researcher. Search the web for one company and return ONLY a raw JSON object for one lead row. Accuracy beats completeness; never fabricate contact data.",
               messages: [{ role: "user", content: buildEnrichmentPrompt(candidate, parsedJob) }],
@@ -4513,7 +4515,7 @@ Framework:
 Keep it 4-5 sentences max. No fluff. Sound like a real person, not a salesperson.`;
 
       const { data } = await callAnthropic("Build Lead List Outreach Draft", {
-        model: "claude-sonnet-4-20250514",
+        model: CLAUDE_SEARCH_MODEL,
         max_tokens: 400,
         messages: [{ role: "user", content: prompt }],
       });
@@ -4704,7 +4706,7 @@ Return:
 }`;
 
           const { data } = await callAnthropic("Pipeline Retry Details", {
-            model: "claude-sonnet-4-20250514",
+            model: CLAUDE_SEARCH_MODEL,
             max_tokens: 1200,
             system: "You are a B2B decision-maker researcher. Search the web and return only one raw JSON object.",
             messages: [{ role: "user", content: prompt }],

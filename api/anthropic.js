@@ -20,7 +20,12 @@ export default async function handler(req, res) {
   try {
     const body = req.body || {};
     const tools = Array.isArray(body.tools) ? body.tools : [];
-    const model = String(body.model || '');
+    const legacyModelAliases = {
+      'claude-sonnet-4-20250514': 'claude-sonnet-4-6',
+    };
+    const requestedModel = String(body.model || '');
+    const model = legacyModelAliases[requestedModel] || requestedModel || 'claude-sonnet-4-6';
+    const upstreamBody = model === requestedModel ? body : { ...body, model };
 
     const headers = {
       'Content-Type': 'application/json',
@@ -42,7 +47,7 @@ export default async function handler(req, res) {
       response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers,
-        body: JSON.stringify(body),
+        body: JSON.stringify(upstreamBody),
         signal: controller.signal,
       });
     } finally {
