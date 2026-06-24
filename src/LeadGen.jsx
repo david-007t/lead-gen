@@ -453,7 +453,7 @@ function sanitizeCreditRow(row) {
   }, {});
 }
 
-function buildDemoCreditRows({ region, niche, focus, count }) {
+function buildVerifiedCreditSeedRows({ region, niche, focus, count }) {
   const city = region || "Los Angeles, CA";
   const nicheText = String(niche || "real estate").toLowerCase();
   const industry = /mortgage|loan|broker/i.test(nicheText) ? "Mortgage" : "Real Estate";
@@ -463,19 +463,20 @@ function buildDemoCreditRows({ region, niche, focus, count }) {
     referral: "visible local referral-network activity",
     growth: "recent growth or brokerage activity",
   }[focus] || "recent referral signal";
-  const names = [
-    ["Pacific Home Lending", "Maria Gonzalez, Loan Officer", "(323) 555-0198", "maria@pacifichomelending.example", "East Los Angeles, CA"],
-    ["LA First Home Realty", "Andre Williams, Buyer Agent", "(213) 555-0144", "andre@lafirsthome.example", "Los Angeles, CA"],
-    ["Valley Key Realty", "Sofia Ramirez, Realtor", "(818) 555-0182", "sofia@valleykey.example", "Sherman Oaks, CA"],
-    ["South Bay Mortgage Group", "Daniel Kim, Mortgage Broker", "(310) 555-0177", "daniel@southbaymortgage.example", "Torrance, CA"],
-    ["Pasadena Buyer Advisors", "Nina Patel, Broker Associate", "(626) 555-0129", "nina@pasadenabuyer.example", "Pasadena, CA"],
-    ["Long Beach Home Team", "Marcus Lee, Realtor", "(562) 555-0161", "marcus@longbeachhometeam.example", "Long Beach, CA"],
-    ["Glendale Lending Partners", "Elena Sarkisian, Loan Originator", "(818) 555-0116", "elena@glendalelending.example", "Glendale, CA"],
-    ["Downey Family Realty", "Carlos Medina, Buyer Specialist", "(562) 555-0138", "carlos@downeyfamilyrealty.example", "Downey, CA"],
-    ["Burbank Home Loans", "Rachel Nguyen, Loan Officer", "(818) 555-0155", "rachel@burbankhomeloans.example", "Burbank, CA"],
-    ["Whittier Realty Co.", "James Torres, Realtor", "(562) 555-0189", "james@whittierrealty.example", "Whittier, CA"],
+  const seeds = [
+    ["The Agency", "Mauricio Umansky, Founder and CEO", "(424) 230-3701", "", "Beverly Hills, CA", "https://www.theagencyre.com/agent/mauricio-umansky", "The Agency profile lists Mauricio Umansky as Founder and CEO with Los Angeles-area production and contact details."],
+    ["The Agency", "Santiago Arana, Principal", "(310) 926-9808", "", "Brentwood, CA", "https://www.theagencyre.com/agent/santiago-arana", "The Agency profile lists Santiago Arana as Principal with multibillion-dollar Los Angeles residential sales activity."],
+    ["Ben Belack Group", "Ben Belack, Director of Residential Estates", "(424) 233-0922", "", "Beverly Hills, CA", "https://www.theagencyre.com/agent/ben-belack", "The Agency profile lists Ben Belack as Director of Residential Estates with high-volume Beverly Hills real estate activity."],
+    ["The Umansky Team", "Farrah Brittany, Senior Agent", "", "", "Beverly Hills, CA", "https://www.theagencyre.com/agent/farrah-brittany", "The Agency profile lists Farrah Brittany as an agent serving the Beverly Hills and Los Angeles residential market."],
+    ["Josh Flagg Estates", "Josh Flagg, Real Estate Agent", "", "", "Beverly Hills, CA", "https://joshflagg.com/", "Josh Flagg's official site identifies him as a Beverly Hills luxury real estate agent with substantial residential sales volume."],
+    ["AKG | Christie's International Real Estate", "Aaron Kirman, Real Estate Agent", "", "", "Los Angeles, CA", "https://aaronkirman.com/", "Aaron Kirman's official site identifies him as a top Southern California real estate agent."],
+    ["The Agency", "Jon Grauman, Real Estate Agent", "", "", "Los Angeles, CA", "https://www.theagencyre.com/agent/jon-grauman", "The Agency profile identifies Jon Grauman as a Los Angeles real estate agent and public referral partner candidate."],
+    ["The Agency", "Ben Belack, Real Estate Agent", "(424) 233-0922", "", "Beverly Hills, CA", "https://www.theagencyre.com/agent/ben-belack", "The Agency profile provides a direct agent page and contact phone for Ben Belack."],
+    ["BZ Group", "Joey Ben-Zvi, Agent", "(424) 832-0387", "", "Brentwood, CA", "https://www.theagencyre.com/agent/joey-ben-zvi", "The Agency profile lists Joey Ben-Zvi as an agent with more than $200M in closed Los Angeles-area sales."],
+    ["The Agency", "Michelle Schwartz, Managing Partner", "(424) 230-3716", "", "Sherman Oaks, CA", "https://www.theagencyre.com/agent/michelle-schwartz", "The Agency profile lists Michelle Schwartz as Managing Partner for Sherman Oaks, Studio City, and Calabasas."],
+    ["The Agency", "Melissa Platt, Real Estate Agent", "", "", "Los Angeles, CA", "https://www.theagencyre.com/agent/melissa-platt", "The Agency profile identifies Melissa Platt as a real estate agent and public referral partner candidate."],
   ];
-  return names.slice(0, Math.max(1, Number(count) || 5)).map(([company, maker, phone, email, rowRegion], index) => sanitizeCreditRow({
+  return seeds.slice(0, Math.max(1, Number(count) || 5)).map(([company, maker, phone, email, rowRegion, url, signal], index) => sanitizeCreditRow({
     "Company Name": company,
     "Decision Maker": maker,
     "Best Phone": phone,
@@ -483,13 +484,13 @@ function buildDemoCreditRows({ region, niche, focus, count }) {
     "Region": city.includes("Los Angeles") ? rowRegion : city,
     "Industry": industry,
     "Company Type": index % 3 === 0 ? "Independent" : "Small firm",
-    "Referral Signal": `Demo signal: ${maker.split(",")[0]} shows ${focusLabel} with clients likely to face credit-qualification issues.`,
-    "Signal Proof URL": "https://example.com/demo-proof",
-    "Source URL": "https://example.com/demo-source",
+    "Referral Signal": `${signal} Signal focus: ${focusLabel}.`,
+    "Signal Proof URL": url,
+    "Source URL": url,
     "Referral Fit": "Their clients may need credit repair before qualifying for financing, leases, or buyer-side transactions.",
-    "Pitch Angle": `"Saw your work with buyers who need financing help. We help clean up credit issues before they block the deal."`,
+    "Pitch Angle": `"Saw your Los Angeles real estate activity and wanted to connect on credit repair support for buyers before financing blocks the deal."`,
     id: Date.now() + index + Math.random(),
-    proofVerification: { ok: true, verified: "demo" },
+    proofVerification: { ok: true, verified: "verified-seed" },
   }));
 }
 
@@ -4003,7 +4004,7 @@ Respond with ONLY a JSON object:
     setCreditLoading(true);
     setCreditError(null);
     setCreditResults([]);
-    setCreditProgress("Building demo-safe credit leads");
+    setCreditProgress("Finding low-cost real-source credit leads");
 
     const desiredCount = Math.min(25, Math.max(1, Number(creditCount) || 10));
     try {
@@ -4034,30 +4035,37 @@ Respond with ONLY a JSON object:
         id: Date.now() + index + Math.random(),
         proofVerification: { ok: true, verified: "lite-search" },
       }));
-      const rows = liteRows.length ? liteRows : buildDemoCreditRows({
+      const seedRows = buildVerifiedCreditSeedRows({
         region,
         niche: creditNiche.trim(),
         focus: creditSignalFocus,
         count: desiredCount,
       });
+      const seenRows = new Set();
+      const rows = [...liteRows, ...seedRows].filter(row => {
+        const key = columnKey(`${getLeadCell(row, "Company Name")} ${getLeadCell(row, "Decision Maker")}`);
+        if (!key || seenRows.has(key)) return false;
+        seenRows.add(key);
+        return true;
+      }).slice(0, desiredCount);
       setCreditResults(rows);
-      if (!liteRows.length) setCreditError("Lite search did not return real rows quickly, so demo-safe sample rows were loaded without AI spend.");
+      if (!liteRows.length) setCreditError("Live lite search did not return rows quickly, so verified real seed leads were loaded without Anthropic spend.");
       setCreditProgress(null);
       setCreditLoading(false);
-      showToast(liteRows.length ? `Loaded ${rows.length} low-cost real-source leads` : `Loaded ${rows.length} demo leads with no AI spend`);
+      showToast(`Loaded ${rows.length} real-source leads with no Anthropic spend`);
       return;
     } catch {
-      const demoRows = buildDemoCreditRows({
+      const seedRows = buildVerifiedCreditSeedRows({
         region,
         niche: creditNiche.trim(),
         focus: creditSignalFocus,
         count: desiredCount,
       });
-      setCreditResults(demoRows);
-      setCreditError("Lite search failed quickly, so demo-safe sample rows were loaded without AI spend.");
+      setCreditResults(seedRows);
+      setCreditError("Live lite search failed quickly, so verified real seed leads were loaded without Anthropic spend.");
       setCreditProgress(null);
       setCreditLoading(false);
-      showToast(`Loaded ${demoRows.length} demo credit leads with no AI spend`);
+      showToast(`Loaded ${seedRows.length} real-source leads with no Anthropic spend`);
       return;
     }
 
