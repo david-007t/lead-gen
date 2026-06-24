@@ -343,6 +343,9 @@ const GENERIC_PROOF_PATH_RE = /^\/?$|^\/(about|contact|locations?|services?|comp
 const LEAD_LIST_MAX_GENERATION_PASSES = 8;
 const LEAD_LIST_BUFFER_ROWS = 2;
 const LEAD_LIST_ROW_DELAY_MS = 350;
+const CREDIT_MAX_GENERATION_PASSES = 10;
+const CREDIT_CANDIDATE_BUFFER_ROWS = 5;
+const CREDIT_MAX_CANDIDATES_PER_PASS = 8;
 
 function extractJSONValue(fullText) {
   if (!fullText) return null;
@@ -3963,7 +3966,6 @@ Respond with ONLY a JSON object:
     setCreditProgress("Finding referral partners");
 
     const desiredCount = Math.min(25, Math.max(1, Number(creditCount) || 10));
-    const searchCount = desiredCount;
     const focusText = {
       production: "Active production — broker/agent closing deals right now, recent listings, recent closings, active LinkedIn posts about transactions",
       subprime: "Subprime or distressed exposure — works with FHA, VA, first-time buyers, short sales, foreclosures, or markets known for credit-challenged buyers",
@@ -4073,6 +4075,8 @@ JSON shape:
     try {
       const seen = new Set();
       const results = [];
+      const rejectionReasons = {};
+      let candidateCount = 0;
       const mortgageMode = /mortgage|loan officer|loan originator|broker/i.test(nicheText);
       const searchAngles = mortgageMode
         ? [
@@ -4084,20 +4088,29 @@ JSON shape:
             "Pasadena Glendale Burbank Long Beach mortgage broker FHA VA first-time buyer named loan officer",
             "Beverly Hills Los Angeles non-QM mortgage broker 2026 press release named individual",
             "LA County Scotsman Guide 2026 mortgage originator named loan officer non-QM FHA VA",
+            "Los Angeles mortgage association member loan officer FHA VA first-time buyer named individual recent",
+            "Southern California mortgage broker non-QM FHA VA branch announcement named loan officer",
           ]
         : [
             focusText,
             `${nicheText} ${region} referral partners recent announcement named individual`,
             `${nicheText} ${region} podcast interview referral partner named individual`,
+            `${nicheText} ${region} recent hiring expansion owner named individual credit check clients`,
+            `${nicheText} ${region} local news interview owner named individual credit repair referral partner`,
+            `${nicheText} ${region} LinkedIn post joined launched licensed named individual`,
           ];
 
-      for (const [pass, queryFocus] of searchAngles.entries()) {
+      for (const [pass, queryFocus] of searchAngles.slice(0, CREDIT_MAX_GENERATION_PASSES).entries()) {
         if (results.length >= desiredCount) break;
-        const batchCount = Math.min(2, desiredCount - results.length);
-        setCreditProgress(`Finding referral partners ${results.length}/${desiredCount}`);
+        const remaining = desiredCount - results.length;
+        const batchCount = Math.min(
+          CREDIT_MAX_CANDIDATES_PER_PASS,
+          Math.max(remaining + CREDIT_CANDIDATE_BUFFER_ROWS, desiredCount)
+        );
+        setCreditProgress(`Finding referral partners ${results.length}/${desiredCount} · checking ${batchCount} candidates`);
         const { response, data } = await callAnthropic("Credit Lead Search", {
           model: CLAUDE_SEARCH_MODEL,
-          max_tokens: 1700,
+          max_tokens: 2600,
           system: "You are a careful B2B lead researcher finding referral partners for a consumer credit repair company. Your job is to find mortgage brokers, real estate agents, and adjacent professionals whose clients have personal credit problems. Return strict JSON only. No narration, no search notes, no markdown. Accuracy beats volume.",
           messages: [{ role: "user", content: buildPrompt(batchCount, queryFocus, results.map(row => getLeadCell(row, "Company Name")).filter(Boolean)) }],
           tools: [{ type: "web_search_20250305", name: "web_search" }],
@@ -4113,6 +4126,7 @@ JSON shape:
         const parsed = extractJSONValue(text);
         const rows = getParsedRows(parsed) || [];
         for (const [index, row] of rows.entries()) {
+          candidateCount += 1;
           const sanitized = { ...sanitizeCreditRow(row), id: Date.now() + pass + index + Math.random() };
           const key = columnKey(`${getLeadCell(sanitized, "Company Name")} ${getLeadCell(sanitized, "Decision Maker")}`);
           if (!key || seen.has(key)) continue;
@@ -4121,6 +4135,8 @@ JSON shape:
           if (quality.ok) {
             sanitized.proofVerification = quality.verification;
             results.push(sanitized);
+          } else {
+            rejectionReasons[quality.reason || "failed validation"] = (rejectionReasons[quality.reason || "failed validation"] || 0) + 1;
           }
           if (results.length >= desiredCount) break;
         }
@@ -4134,7 +4150,14 @@ JSON shape:
       }
 
       setCreditResults(results);
-      showToast(`Found ${results.length} referral partners`);
+      if (results.length < desiredCount) {
+        const topRejection = Object.entries(rejectionReasons).sort((a, b) => b[1] - a[1])[0];
+        const reasonText = topRejection ? ` Most rejected candidates failed because: ${topRejection[0]}.` : "";
+        setCreditError(`Found ${results.length} of ${desiredCount} requested after checking ${candidateCount} candidates.${reasonText} Try a broader geography or signal focus, or run again for a fresh candidate pool.`);
+        showToast(`Found ${results.length} of ${desiredCount} referral partners`, "error");
+      } else {
+        showToast(`Found ${results.length} referral partners`);
+      }
       endCostRun(costRunId, { resultCount: results.length, status: results.length < desiredCount ? "partial" : "success" });
       costRunEnded = true;
     } catch (err) {
