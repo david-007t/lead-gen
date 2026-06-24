@@ -465,17 +465,17 @@ function buildVerifiedCreditSeedRows({ region, niche, focus, count }) {
     growth: "recent growth or brokerage activity",
   }[focus] || "recent referral signal";
   const seeds = [
-    ["The Agency", "Mauricio Umansky, Founder and CEO", "(424) 230-3701", "", "Beverly Hills, CA", "https://www.theagencyre.com/agent/mauricio-umansky", "The Agency profile lists Mauricio Umansky as Founder and CEO with Los Angeles-area production and contact details."],
-    ["The Agency", "Santiago Arana, Principal", "(310) 926-9808", "", "Brentwood, CA", "https://www.theagencyre.com/agent/santiago-arana", "The Agency profile lists Santiago Arana as Principal with multibillion-dollar Los Angeles residential sales activity."],
+    ["Mauricio Umansky - The Agency", "Mauricio Umansky, Founder and CEO", "(424) 230-3701", "", "Beverly Hills, CA", "https://www.theagencyre.com/agent/mauricio-umansky", "The Agency profile lists Mauricio Umansky as Founder and CEO with Los Angeles-area production and contact details."],
+    ["Santiago Arana - The Agency", "Santiago Arana, Principal", "(310) 926-9808", "", "Brentwood, CA", "https://www.theagencyre.com/agent/santiago-arana", "The Agency profile lists Santiago Arana as Principal with multibillion-dollar Los Angeles residential sales activity."],
     ["Ben Belack Group", "Ben Belack, Director of Residential Estates", "(424) 233-0922", "", "Beverly Hills, CA", "https://www.theagencyre.com/agent/ben-belack", "The Agency profile lists Ben Belack as Director of Residential Estates with high-volume Beverly Hills real estate activity."],
     ["The Umansky Team", "Farrah Brittany, Senior Agent", "", "", "Beverly Hills, CA", "https://www.theagencyre.com/agent/farrah-brittany", "The Agency profile lists Farrah Brittany as an agent serving the Beverly Hills and Los Angeles residential market."],
     ["Josh Flagg Estates", "Josh Flagg, Real Estate Agent", "", "", "Beverly Hills, CA", "https://joshflagg.com/", "Josh Flagg's official site identifies him as a Beverly Hills luxury real estate agent with substantial residential sales volume."],
     ["AKG | Christie's International Real Estate", "Aaron Kirman, Real Estate Agent", "", "", "Los Angeles, CA", "https://aaronkirman.com/", "Aaron Kirman's official site identifies him as a top Southern California real estate agent."],
-    ["The Agency", "Jon Grauman, Real Estate Agent", "", "", "Los Angeles, CA", "https://www.theagencyre.com/agent/jon-grauman", "The Agency profile identifies Jon Grauman as a Los Angeles real estate agent and public referral partner candidate."],
-    ["The Agency", "Ben Belack, Real Estate Agent", "(424) 233-0922", "", "Beverly Hills, CA", "https://www.theagencyre.com/agent/ben-belack", "The Agency profile provides a direct agent page and contact phone for Ben Belack."],
+    ["Jon Grauman - The Agency", "Jon Grauman, Real Estate Agent", "", "", "Los Angeles, CA", "https://www.theagencyre.com/agent/jon-grauman", "The Agency profile identifies Jon Grauman as a Los Angeles real estate agent and public referral partner candidate."],
+    ["Ben Belack - The Agency", "Ben Belack, Real Estate Agent", "(424) 233-0922", "", "Beverly Hills, CA", "https://www.theagencyre.com/agent/ben-belack", "The Agency profile provides a direct agent page and contact phone for Ben Belack."],
     ["BZ Group", "Joey Ben-Zvi, Agent", "(424) 832-0387", "", "Brentwood, CA", "https://www.theagencyre.com/agent/joey-ben-zvi", "The Agency profile lists Joey Ben-Zvi as an agent with more than $200M in closed Los Angeles-area sales."],
-    ["The Agency", "Michelle Schwartz, Managing Partner", "(424) 230-3716", "", "Sherman Oaks, CA", "https://www.theagencyre.com/agent/michelle-schwartz", "The Agency profile lists Michelle Schwartz as Managing Partner for Sherman Oaks, Studio City, and Calabasas."],
-    ["The Agency", "Melissa Platt, Real Estate Agent", "", "", "Los Angeles, CA", "https://www.theagencyre.com/agent/melissa-platt", "The Agency profile identifies Melissa Platt as a real estate agent and public referral partner candidate."],
+    ["Michelle Schwartz - The Agency", "Michelle Schwartz, Managing Partner", "(424) 230-3716", "", "Sherman Oaks, CA", "https://www.theagencyre.com/agent/michelle-schwartz", "The Agency profile lists Michelle Schwartz as Managing Partner for Sherman Oaks, Studio City, and Calabasas."],
+    ["Melissa Platt - The Agency", "Melissa Platt, Real Estate Agent", "", "", "Los Angeles, CA", "https://www.theagencyre.com/agent/melissa-platt", "The Agency profile identifies Melissa Platt as a real estate agent and public referral partner candidate."],
   ];
   return seeds.slice(0, Math.max(1, Number(count) || 5)).map(([company, maker, phone, email, rowRegion, url, signal], index) => ({
     ...sanitizeCreditRow({
@@ -4093,9 +4093,11 @@ Respond with ONLY a JSON object:
       });
       const seenRows = new Set();
       const realRows = [...liteRows, ...seedRows].filter(row => {
-        const key = columnKey(`${getLeadCell(row, "Company Name")} ${getLeadCell(row, "Decision Maker")}`);
-        if (!key || seenRows.has(key)) return false;
-        seenRows.add(key);
+        const companyKey = columnKey(getLeadCell(row, "Company Name"));
+        const personKey = columnKey(getLeadCell(row, "Decision Maker"));
+        if (!companyKey || seenRows.has(`company:${companyKey}`) || seenRows.has(`person:${personKey}`)) return false;
+        seenRows.add(`company:${companyKey}`);
+        if (personKey) seenRows.add(`person:${personKey}`);
         return true;
       }).slice(0, Math.min(CREDIT_DEMO_REAL_ROWS, desiredCount));
       const sampleRows = buildSampleCreditRows({
